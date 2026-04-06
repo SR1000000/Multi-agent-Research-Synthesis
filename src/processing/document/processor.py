@@ -2,17 +2,23 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+from src.processing.chunker import TextChunkerProvider
+
 from .backend_base import OCRBackend
-from .backends import DoclingBackend, LightOnOCRBackend
+from .backends import DoclingBackend, LightOnOCRBackend, LlamaParseBackend
 from .schema import ExtractionResult, Contextualizer, Embedder
 
 BACKEND_REGISTRY: dict[str, type[OCRBackend]] = {
+    "llama_parse": LlamaParseBackend,
     "docling": DoclingBackend,
     "lighton": LightOnOCRBackend,
 }
 
 
-def get_ocr_backend(name: str = "docling") -> OCRBackend:
+def get_ocr_backend(
+    name: str = "llama_parse",
+    text_chunker: TextChunkerProvider | None = None,
+) -> OCRBackend:
     """Instantiate an OCR backend by name."""
     cls = BACKEND_REGISTRY.get(name)
     if cls is None:
@@ -20,13 +26,16 @@ def get_ocr_backend(name: str = "docling") -> OCRBackend:
             f"Unknown OCR backend '{name}'. "
             f"Available: {list(BACKEND_REGISTRY.keys())}"
         )
+    if cls is LlamaParseBackend:
+        return cls(text_chunker=text_chunker)
     return cls()
 
 
 class DocProcessor:
     def __init__(
         self,
-        backend: str | OCRBackend = "docling",
+        backend: str | OCRBackend = "llama_parse",
+        text_chunker: TextChunkerProvider | None = None,
         db: Any = None,
         contextualizer: Contextualizer | None = None,
         embedder: Embedder | None = None
@@ -35,7 +44,7 @@ class DocProcessor:
         Create a document processor with the given OCR backend and optional pipeline stages.
         """
         if isinstance(backend, str):
-            self.backend = get_ocr_backend(backend)
+            self.backend = get_ocr_backend(backend, text_chunker=text_chunker)
         else:
             self.backend = backend
         self._db = db

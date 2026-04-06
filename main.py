@@ -7,6 +7,7 @@ import os
 from src.memory import get_database
 from src.graph import build_graph
 import src.llm
+from src.processing.chunker import get_text_chunker
 from src.processing.document import DocProcessor
 import uuid
 from datetime import datetime, timezone
@@ -20,6 +21,18 @@ _PROVIDER_FLAGS = {
     "ollama":     Provider.OLLAMA,
     "openrouter": Provider.OPENROUTER,
     "gemini":     Provider.GOOGLE_AI_STUDIO,
+}
+
+_PROCESSOR_BACKEND_ALIASES = {
+    "llama": "llama_parse",
+    "llama_parse": "llama_parse",
+    "docling": "docling",
+    "lighton": "lighton",
+}
+
+_TEXT_SPLITTER_ALIASES = {
+    "none": None,
+    "semantic": "semantic",
 }
 
 def _parse_args() -> argparse.Namespace:
@@ -36,6 +49,20 @@ def _parse_args() -> argparse.Namespace:
         metavar="PATH",
         default=DEFAULT_SOURCE_PDF,
         help="Path to the PDF to analyse (default: %(default)s)"
+    )
+    parser.add_argument(
+        "--processor",
+        type=str,
+        choices=sorted(_PROCESSOR_BACKEND_ALIASES.keys()),
+        default="llama",
+        help="Document processor backend (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--text-splitter",
+        type=str,
+        choices=sorted(_TEXT_SPLITTER_ALIASES.keys()),
+        default="none",
+        help="Text splitter backend for document chunking (default: %(default)s)",
     )
     parser.add_argument(
         "-i", "--interactive",
@@ -83,8 +110,11 @@ def _process_document(args: argparse.Namespace) -> tuple[Any, str]:
     
     _t0 = time.perf_counter()
     db = get_database()
-    
-    processor = DocProcessor(db=db)
+
+    processor_backend = _PROCESSOR_BACKEND_ALIASES[args.processor]
+    chunker_name = _TEXT_SPLITTER_ALIASES[args.text_splitter]
+    text_chunker = get_text_chunker(chunker_name) if chunker_name else None
+    processor = DocProcessor(backend=processor_backend, text_chunker=text_chunker, db=db)
     artifacts = processor.process_document(str(pdf_path))
         
     _pdf_elapsed = time.perf_counter() - _t0
