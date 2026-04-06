@@ -75,7 +75,8 @@ CREATE TABLE IF NOT EXISTS text_chunks (
 CREATE_TEXT_CHUNKS_VEC_TABLE = """
 CREATE VIRTUAL TABLE IF NOT EXISTS text_chunks_vec USING vec0(
     chunk_id TEXT PRIMARY KEY,
-    embedding float[{vec_dimensions}]
+    embedding float[{vec_dimensions}],
+    source TEXT
 );
 """
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import struct
 from pathlib import Path
 
 import sqlite_vec
@@ -128,6 +129,11 @@ class SQLiteDatabase(DatabaseProvider):
         content_hash = result.content_hash
 
         with self._conn:
+            self._conn.execute(
+                "DELETE FROM text_chunks_vec WHERE chunk_id IN (SELECT id FROM text_chunks WHERE document_id = ?)",
+                (doc_id,),
+            )
+
             # 1. Save Document
             self._conn.execute(
                 """
@@ -180,7 +186,7 @@ class SQLiteDatabase(DatabaseProvider):
                 )
 
             # 5. Save Text Chunks
-            for chunk in result.source_chunks:        
+            for chunk in result.source_chunks:
                 self._conn.execute(
                     """
                     INSERT OR REPLACE INTO text_chunks 
@@ -195,6 +201,27 @@ class SQLiteDatabase(DatabaseProvider):
                         chunk.contextualized_text
                     )
                 )
+
+            embs = result.chunk_embeddings
+            sources = result.chunk_embedding_sources
+            # we have to embed all chunks from a doc or none of them, in case some chunks were malformed and doesn't create embedding
+            if (
+                embs is not None
+                and sources is not None
+                and len(embs) == len(result.source_chunks) == len(sources)
+            ):
+                dim = self.config.vec_dimensions
+                for chunk, emb, src in zip(result.source_chunks, embs, sources):
+                    if len(emb) != dim:
+                        continue
+                    blob = struct.pack(f"{dim}f", *emb)
+                    self._conn.execute(
+                        """
+                        INSERT OR REPLACE INTO text_chunks_vec (chunk_id, embedding, source)
+                        VALUES (?, ?, ?)
+                        """,
+                        (chunk.id, blob, src),
+                    )
 
     def load_document(self, doc_id: str) -> ExtractionResult | None:
         """Loads an ExtractionResult from the database."""
