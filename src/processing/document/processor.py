@@ -1,12 +1,13 @@
 import hashlib
-from pathlib import Path
 from typing import Any
 
 from src.processing.chunker import TextChunkerProvider
 
 from .backend_base import OCRBackend
 from .backends import DoclingBackend, LightOnOCRBackend, LlamaParseBackend
-from .schema import ExtractionResult, Contextualizer, Embedder
+from src.processing.embedder.base import TextEmbedder
+
+from .schema import ExtractedChunk, ExtractionResult, Contextualizer
 
 BACKEND_REGISTRY: dict[str, type[OCRBackend]] = {
     "llama_parse": LlamaParseBackend,
@@ -31,6 +32,12 @@ def get_ocr_backend(
     return cls()
 
 
+def _chunk_text_for_embedding(chunk: ExtractedChunk) -> str:
+    if chunk.contextualized_text and chunk.contextualized_text.strip():
+        return chunk.contextualized_text.strip()
+    return chunk.text
+
+
 class DocProcessor:
     def __init__(
         self,
@@ -38,10 +45,11 @@ class DocProcessor:
         text_chunker: TextChunkerProvider | None = None,
         db: Any = None,
         contextualizer: Contextualizer | None = None,
-        embedder: Embedder | None = None
+        embedder: TextEmbedder | None = None,
     ):
         """
         Create a document processor with the given OCR backend and optional pipeline stages.
+        Pass a non-None embedder to run the embedding step on chunks.
         """
         if isinstance(backend, str):
             self.backend = get_ocr_backend(backend, text_chunker=text_chunker)
@@ -58,7 +66,7 @@ class DocProcessor:
         """
         try:
             content_hash = ""
-            
+
             with open(source_path, "rb") as f:
                 content_hash = hashlib.sha256(f.read()).hexdigest()
 
@@ -79,11 +87,15 @@ class DocProcessor:
                 print(f"[DocProcessor] Contextualizing chunks...")
                 result = self._contextualizer.contextualize(result)
 
-            # Create embeddings on document chunks for retrieval
-            embeddings = None
-            if self._embedder:
+            if self._embedder is not None:
                 print(f"[DocProcessor] Embedding chunks...")
-                embeddings = self._embedder.embed_extraction_result(result)
+                try:
+                    texts = [_chunk_text_for_embedding(c) for c in result.source_chunks]
+                    result.chunk_embeddings = self._embedder.embed_queries(texts)
+                    result.chunk_embedding_sources = texts
+                except Exception:
+                    result.chunk_embeddings = None
+                    result.chunk_embedding_sources = None
 
             # Persist to database
             if self._db:

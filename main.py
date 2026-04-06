@@ -9,6 +9,7 @@ from src.graph import build_graph
 import src.llm
 from src.processing.chunker import get_text_chunker
 from src.processing.document import DocProcessor
+from src.processing.embedder.provider import get_text_embedder
 import uuid
 from datetime import datetime, timezone
 from src.llm import GLOBAL_CONFIG, Provider
@@ -110,11 +111,11 @@ def _process_document(args: argparse.Namespace) -> tuple[Any, str]:
     
     _t0 = time.perf_counter()
     db = get_database()
-
+    embedder = get_text_embedder()
     processor_backend = _PROCESSOR_BACKEND_ALIASES[args.processor]
     chunker_name = _TEXT_SPLITTER_ALIASES[args.text_splitter]
     text_chunker = get_text_chunker(chunker_name) if chunker_name else None
-    processor = DocProcessor(backend=processor_backend, text_chunker=text_chunker, db=db)
+    processor = DocProcessor(backend=processor_backend, text_chunker=text_chunker, db=db, embedder=embedder)
     artifacts = processor.process_document(str(pdf_path))
         
     _pdf_elapsed = time.perf_counter() - _t0

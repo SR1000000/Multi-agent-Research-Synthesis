@@ -93,6 +93,8 @@ class ExtractionResult:
     page_count: int = 0
     schema: str | None = None
     content_hash: str = ""
+    chunk_embeddings: list[list[float]] | None = None
+    chunk_embedding_sources: list[str] | None = None
 
     @property
     def chunk_count(self) -> int:
@@ -117,9 +119,3 @@ class Contextualizer:
     def contextualize(self, result: ExtractionResult) -> ExtractionResult:
         # TODO: Implement chunk contextualization
         return result
-
-class Embedder:
-    """Placeholder for an embedding model that vectors text chunks."""
-    def embed_extraction_result(self, result: ExtractionResult) -> Any:
-        # TODO: Implement chunk embedding
-        return None
