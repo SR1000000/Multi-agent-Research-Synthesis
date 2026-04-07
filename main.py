@@ -124,8 +124,13 @@ def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[An
         
     _pdf_elapsed = time.perf_counter() - _t0
     
-    if artifacts and artifacts.chunk_count > 0:
-        print(f"[preprocessing] PDF extraction/pipeline completed in {_pdf_elapsed:.2f}s", flush=True)
+    if artifacts.chunk_count > 0:
+        if args.use_db:
+            source_str = "DATABASE"
+        else:
+            # processor is defined in the else block above
+            source_str = processor.backend.__class__.__name__
+        print(f"[preprocessing] PDF extraction from {source_str} completed in {_pdf_elapsed:.2f}s", flush=True)
         
     if args.interactive:
         try:

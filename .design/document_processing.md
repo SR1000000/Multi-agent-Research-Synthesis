@@ -16,14 +16,18 @@ class OCRBackend(ABC):
 
 `processor.py` maintains a `BACKEND_REGISTRY` mapping string keys to concrete backend classes:
 
-| Key | Class | Status |
-|------|------|--------|
-| `"docling"` | `DoclingBackend` | ✅ Active (default) |
-| `"lighton"` | `LightOnOCRBackend` | 🚧 Stub — raises `NotImplementedError` |
-| `"chandra"` | `ChandraOCRBackend` | 🚧 Not written yet |
-| `"glm"` | `GLMOCRBackend` | 🚧 Not written yet |
+| Key | Class | Status | Requirements | Local Model Size | Processing Time (local)|
+|------|------|--------|--------------|------------------|------------------------|
+| `"lighton"` | `LightOnOCRBackend` | ✅ Active (Too slow CPU inference (~4 mins per page)) | transformers>=5.0.0, pillow, pypdfium2| ~1 GB | after 10 minutes, only 2 pages |
+| `"docling"` | `DoclingBackend` | ✅ Active (has issues with subscripts in text)| docling>=2.70,<3.0 | 1.5-2 GB | 3 minutes |
+| `"chandra"` | `ChandraOCRBackend` | ✅ Active (Too slow CPU inference (~7 mins per page))| chandra-ocr[hf] | ~7GB | after 10 minutes, only 1 page |
+| `"glm"` | `GLMOCRBackend` | ✅ Active (Slow CPU inference (~2.5 mins per page)) | transformers>=5.0.0, pillow, pypdfium2 | ~1 GB | after 10 minutes, only 4 pages |
+| `"marker"` | `MarkerBackend` | ✅ Active (Default, high-accuracy PDF→markdown via surya OCR; extracts images, tables, math) | marker-pdf | ~8 GB | 14 minutes |
 
-`DocProcessor` accepts an optional `backend` parameter (string key or `OCRBackend` instance). It defaults to `"docling"`, so existing callers are unaffected.
+`DocProcessor` accepts an optional `backend` parameter (string key or `OCRBackend` instance). It defaults to `"marker"`.  Marker is currently the best performing, Docling is the fastest, but has issues with subscripts in text.
+
+Note: some of the requirements are mutually exclusive (e.g. `docling` requires a specific `transformers` version less than 5, while LightOnOCR-2 is only implemented in `transformers` version 5 or later)
+
 
 ### Adding a new backend
 
@@ -36,26 +40,44 @@ class OCRBackend(ABC):
 
 ```
 src/processing/document/
-├── _common.py               # Schema-level helpers (no OCR dependency)
-├── backend_base.py          # OCRBackend ABC
+├── __init__.py              # Public re-exports for the document processing package
+├── _common.py               # Shared helpers: _slugify, build_artifact_references,
+│                            #   _verify_references_in_markdown (no OCR dependency)
+├── backend_base.py          # OCRBackend ABC — defines the extract() interface
 ├── backends/
-│   ├── __init__.py
-│   ├── docling_backend.py   # Full Docling pipeline (parse → chunk → extract → manifest)
-│   └── lighton_backend.py   # Stub for LightOnOCR-2-1B
-├── processor.py             # DocProcessor + backend factory/registry
-└── schema.py                # Shared data models
+│   ├── __init__.py          # Guarded imports of all backends; defines __all__
+│   ├── chandra_backend.py   # ChandraOCRBackend — local HuggingFace inference
+│   │                        #   via InferenceManager(method="hf"); image extraction
+│   │                        #   from BatchOutputItem.images; PDF→PIL via load_file()
+│   ├── docling_backend.py   # Full Docling pipeline: parse → HybridChunk → images /
+│   │                        #   tables / equations → markdown annotation → manifest
+│   ├── lighton_backend.py   # LightOnOCR-2-1B-bbox: PDF→PIL via pypdfium2, per-page
+│   │                        #   inference, bbox-based image cropping, MarkdownChunker
+│   ├── marker_backend.py    # MarkerBackend — default. Uses marker-pdf PdfConverter;
+│   │                        #   extracts images as PIL→PNG→base64; parses HTML table
+│   │                        #   blocks from markdown; annotates LaTeX equations;
+│   │                        #   works on CPU, MPS, or CUDA (auto-detected).
+│   └── glm_backend.py       # GLMOCRBackend — local HuggingFace inference via AutoModelForCausalLM;
+│                            #   uses pypdfium2 for PDF→PIL conversion
+├── chunks.py                # MarkdownChunker — LangChain header-splitter + recursive
+│                            #   char fallback; produces list[ExtractedChunk]
+├── processor.py             # DocProcessor + BACKEND_REGISTRY factory; default backend
+│                            #   is "marker"; accepts string key or OCRBackend instance
+└── schema.py                # Shared dataclasses: ExtractedChunk, ExtractedImage,
+                             #   ExtractedTable, ExtractedEquation, ExtractionManifest,
+                             #   ExtractionResult, ArtifactReference
 ```
 
 ## Multimodal Artifacts
 
 Each run ingests the PDF and writes artifacts to `artifacts/<doc>`, which includes:
 
-- `document.md`
-- `chunks.jsonl`
-- `images/`
-- `tables/`
-- `equations.jsonl`
-- `manifest.json`
+- `research.db`: SQLite database (located in `data/`) containing:
+    - `images`: Binary BLOBs of extracted pictures.
+    - `tables`: HTML representations of tables.
+    - `equations`: LaTeX or raw text formulas.
+    - `text_chunks`: Semantic markdown chunks with metadata.
+    - `manifest`: Index of document-artifact associations.
 
 ### Artifact Content
 

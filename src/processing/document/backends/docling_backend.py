@@ -276,7 +276,7 @@ class DoclingBackend(OCRBackend):
             return None
         buffered = BytesIO()
         image.save(buffered, format="PNG")
-        img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+        base64_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
         return ExtractedImage(
             id=item_id,
             mime_type="image/png",

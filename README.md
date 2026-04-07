@@ -19,8 +19,8 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Note: installing `docling` and `sqlite-vec` can take longer because they bring specialized document-processing and vector-search dependencies.
-Also Docling requires 1.5-2GB for its custom model.
+Note: installing `transformers` and `sqlite-vec` can take longer because they bring specialized document-processing and vector-search dependencies.
+The system now uses **OpenDataLoader** natively by default for high-quality OCR, formula extraction, and chunking.
 sqlite-vec provides fast, local vector similarity search directly within SQLite.
 
 ### 3. API keys
@@ -81,7 +81,7 @@ The PDF input defaults to `Transformers.pdf` in the project root directory. You 
 You change the research query by adding `--query "Your question here"` or editing `DEFAULT_QUERY` in `main.py`.
 Adding the argument `-i` or `--interactive` adds a prompt for whether the user wants to continue, which pops up if a document is extracted and after the document extraction process is complete.
 
-Adding `--use-db` (or `--skip-processing`) skips the Docling document extraction process and instead attempts to load the parsed PDF chunks and metadata directly from the `processor.db` SQLite database if it exists, saving valuable API and compute time during iterative runs pipeline tuning.
+Adding `--use-db` (or `--skip-processing`) skips the OCR process and instead attempts to load the parsed PDF chunks and metadata directly from the `data/research.db` SQLite database if it exists, saving valuable API and compute time during iterative runs pipeline tuning.
 
 ## Graph Flow
 

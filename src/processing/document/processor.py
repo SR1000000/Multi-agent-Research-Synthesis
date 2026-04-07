@@ -6,7 +6,7 @@ from src.logging.logger import AgentLogger
 from src.processing.chunker import TextChunkerProvider
 
 from .backend_base import OCRBackend
-from .backends import DoclingBackend, LightOnOCRBackend, LlamaParseBackend
+from .backends import DoclingBackend, LightOnOCRBackend, LlamaParseBackend, MarkerBackend
 from src.processing.embedder.base import TextEmbedder
 
 from .schema import ExtractedChunk, ExtractionResult, Contextualizer
@@ -16,6 +16,14 @@ BACKEND_REGISTRY: dict[str, type[OCRBackend]] = {
     "docling": DoclingBackend,
     "lighton": LightOnOCRBackend,
 }
+if DoclingBackend:
+    BACKEND_REGISTRY["docling"] = DoclingBackend
+if ChandraOCRBackend:
+    BACKEND_REGISTRY["chandra"] = ChandraOCRBackend
+if GLMOCRBackend:
+    BACKEND_REGISTRY["glm"] = GLMOCRBackend
+if MarkerBackend:
+    BACKEND_REGISTRY["marker"] = MarkerBackend
 
 
 def get_ocr_backend(
