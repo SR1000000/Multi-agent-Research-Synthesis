@@ -4,6 +4,7 @@ import json
 import sqlite3
 import struct
 from pathlib import Path
+from typing import Any
 
 import sqlite_vec
 
@@ -25,6 +26,24 @@ from .schema import (
     CREATE_TEXT_CHUNKS_TABLE,
     CREATE_TEXT_CHUNKS_VEC_TABLE,
 )
+
+
+def load_sqlite_vec_extension(conn: sqlite3.Connection) -> None:
+    """Register sqlite-vec so `vec0` virtual tables can be used on this connection."""
+    try:
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+    except Exception as e:
+        raise RuntimeError(f"Failed to load sqlite-vec: {e}") from e
+    finally:
+        conn.enable_load_extension(False)
+
+
+def connect_sqlite_with_vec(db_path: Path | str, **kwargs: Any) -> sqlite3.Connection:
+    """Open `db_path` and load sqlite-vec (same as `SQLiteDatabase` uses internally)."""
+    conn = sqlite3.connect(str(db_path), **kwargs)
+    load_sqlite_vec_extension(conn)
+    return conn
 
 
 class SQLiteDatabase(DatabaseProvider):
@@ -76,12 +95,7 @@ class SQLiteDatabase(DatabaseProvider):
         """Loads the sqlite-vec extension."""
         if not self._conn:
             raise ValueError("Database not connected.")
-        try:
-            self._conn.enable_load_extension(True)
-            sqlite_vec.load(self._conn)
-            self._conn.enable_load_extension(False)
-        except Exception as e:
-            raise RuntimeError(f"Failed to load sqlite-vec: {e}") from e
+        load_sqlite_vec_extension(self._conn)
 
     def setup(self) -> None:
         """Creates tables and indexes."""
@@ -208,7 +222,6 @@ class SQLiteDatabase(DatabaseProvider):
             if (
                 embs is not None
                 and sources is not None
-                and len(embs) == len(result.source_chunks) == len(sources)
             ):
                 dim = self.config.vec_dimensions
                 for chunk, emb, src in zip(result.source_chunks, embs, sources):
