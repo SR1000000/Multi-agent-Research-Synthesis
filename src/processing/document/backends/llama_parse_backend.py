@@ -3,12 +3,14 @@ from __future__ import annotations
 import base64
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 from urllib.request import urlopen
 
 from llama_cloud import LlamaCloud
 
+from src.logging.logger import AgentLogger
 from src.memory.objectstore import LocalObjectStore, ObjectStoreProvider
 from src.processing.chunker import TextChunkerProvider
 
@@ -22,29 +24,13 @@ from ..schema import (
     PaperMetadata,
 )
 
-
-# ---------------------------------------------------------------------------
-# LlamaParse v2 call configuration
-# ---------------------------------------------------------------------------
-# Tier choice for research papers:
-#   "agentic_plus" → best table accuracy, equation handling, figure captions.
-#   Switch to "agentic" to halve cost with only minor quality loss.
-#
-# expand values (ParsingGetResponse fields to populate):
-#   "markdown_full"           → single markdown string for the whole document
-#   "items"                   → structured per-page items (tables, images, headings, text)
-#   "metadata"                → per-page confidence + page_number list
-#   "images_content_metadata" → image presigned_url + caption + category + bbox
-#
-# output_options.images_to_save:
-#   "embedded" → only actual figure/image objects (NOT full-page screenshots)
-#   DO NOT include "screenshot" or "layout" — those inflate cost and storage.
-#
-# agentic_options.custom_prompt instructs the LLM on equation and caption format.
-# ---------------------------------------------------------------------------
-
-_TIER = "agentic_plus"
+_TIER = "agentic"
 _VERSION = "latest"
+_PARSE_CREATE_MAX_ATTEMPTS = 3
+_PARSE_WAIT_MAX_ATTEMPTS = 3
+_PARSE_WAIT_BACKOFF_SECONDS = 2
+_IMAGE_DOWNLOAD_MAX_ATTEMPTS = 3
+_IMAGE_DOWNLOAD_BACKOFF_SECONDS = 2
 
 _PARSE_KWARGS: dict[str, Any] = {
     "tier": _TIER,
@@ -60,8 +46,9 @@ _PARSE_KWARGS: dict[str, Any] = {
         ),
     },
     "output_options": {
-        # Only extract actual embedded figures — not page screenshots or layout crops.
-        "images_to_save": ["embedded"],
+        # Embeded are actual embedded images, but for complex layouts (multiple images in block or different format) we might lose out images
+        # Layout are images detected from layout, this add bit more noises (might accidentally add tables into images) but for now let's rather have extra than missing
+        "images_to_save": ["embedded", "layout"],
         # We want HTML tables in the items response. HTML is the richest format
         # (preserves merged cells). markdown and csv are also present as fallback.
         "markdown": {
@@ -70,12 +57,12 @@ _PARSE_KWARGS: dict[str, Any] = {
                 "output_tables_as_markdown": False,
                 "merge_continued_tables": True,
             },
-            "inline_images": False,
             "annotate_links": True,
         },
         "extract_printed_page_number": True,
     },
     "processing_options": {
+        "cost_optimizer": {"enable": True},
         # Catches tables that are not clearly bordered.
         "aggressive_table_extraction": True,
         "ocr_parameters": {"languages": ["en"]},
@@ -84,19 +71,13 @@ _PARSE_KWARGS: dict[str, Any] = {
             "ignore_hidden_text": True,
         },
     },
-    # Request all the data we need in one call — avoids a second .get() round-trip.
-    "expand": [
-        "markdown_full",       # full document markdown
-        "items",               # structured page items (tables, images, headings, text)
-        "metadata",            # page list with page_number
-        "images_content_metadata",  # presigned_url per extracted image
-    ],
 }
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+_PARSE_EXPAND: list[str] = [
+    "markdown_full",       # full document markdown
+    "items",               # structured page items (tables, images, headings, text)
+    "metadata",            # page list with page_number
+    "images_content_metadata",  # presigned_url per extracted image
+]
 
 def _attr(obj: Any, key: str, default: Any = None) -> Any:
     """Attribute or dict key access with a default."""
@@ -116,9 +97,15 @@ def _nested(obj: Any, *keys: str, default: Any = None) -> Any:
     return cur
 
 
-# ---------------------------------------------------------------------------
-# Markdown parsing utilities (research paper structure)
-# ---------------------------------------------------------------------------
+def _serialize_parse_payload(parse_result: Any) -> Any:
+    if hasattr(parse_result, "model_dump"):
+        return parse_result.model_dump()
+    if hasattr(parse_result, "dict"):
+        return parse_result.dict()
+    if isinstance(parse_result, dict):
+        return parse_result
+    return {"repr": repr(parse_result)}
+
 
 _RE_TITLE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
 _RE_ABSTRACT = re.compile(
@@ -246,7 +233,12 @@ def _extract_equations_from_markdown(doc_id: str, markdown: str) -> list[Extract
     # Inline equations
     for m in _RE_INLINE_EQ.finditer(markdown):
         expr = m.group(1).strip()
-        if not expr or expr in seen or len(expr) < 2:
+        if not expr or expr in seen:
+            continue
+        # Filter noise and math signal (digit, operator, backslash, underscore, caret, Greek letter)
+        if len(expr) < 4:
+            continue
+        if not re.search(r'[0-9\\+\-=<>{}_^]', expr):
             continue
         seen.add(expr)
         equations.append(ExtractedEquation(
@@ -257,11 +249,29 @@ def _extract_equations_from_markdown(doc_id: str, markdown: str) -> list[Extract
         counter += 1
 
     return equations
-
-
-# ---------------------------------------------------------------------------
-# Backend
-# ---------------------------------------------------------------------------
+def _is_garbage_table(html: str, rows: list) -> bool:
+    """
+    Detect tables that are actually misread figures/heatmaps.
+    Signals:
+    - Content is a figure caption rather than data
+    - Rows contain mostly empty cells with occasional tokens
+    """
+    if not rows:
+        return False
+    col_count = len(rows[0]) if isinstance(rows[0], list) else 1
+    row_count = len(rows)
+    # Check if cells are overwhelmingly single words (token-soup pattern)
+    flat_cells = [
+        str(cell).strip()
+        for row in rows if isinstance(row, list)
+        for cell in row
+    ]
+    if not flat_cells:
+        return False
+    single_word_ratio = sum(1 for c in flat_cells if c and len(c.split()) <= 1) / len(flat_cells)
+    if col_count >= 4 and single_word_ratio > 0.85 and row_count > 10:
+        return True
+    return False
 
 class LlamaParseBackend(OCRBackend):
     """OCR backend powered by LlamaParse v2 (llama-cloud SDK)."""
@@ -270,25 +280,28 @@ class LlamaParseBackend(OCRBackend):
         self,
         object_store: ObjectStoreProvider | None = None,
         text_chunker: TextChunkerProvider | None = None,
+        logger: AgentLogger | None = None,
     ) -> None:
         api_key = os.environ.get("LLAMA_CLOUD_API_KEY")
         self._client = LlamaCloud(api_key=api_key)
         self._object_store = object_store or LocalObjectStore()
         self._text_chunker = text_chunker
-
-    # ------------------------------------------------------------------
-    # Public
-    # ------------------------------------------------------------------
+        self._logger = logger or AgentLogger()
 
     def extract(self, source_pdf_path: str) -> ExtractionResult:
         source = Path(source_pdf_path)
         doc_id = source.stem
 
-        # Single blocking call — parse + poll + expand all in one.
-        parse_result = self._client.parsing.parse(
-            upload_file=str(source),
-            **_PARSE_KWARGS,
+        parse_result, run_id = self._parse_with_retry(str(source))
+        dump_path = self._logger.dump_json_artifact(
+            file_name=f"llamaparse_raw_{doc_id}.json",
+            payload=_serialize_parse_payload(parse_result),
+            run_id=run_id,
         )
+        if dump_path:
+            self._logger.log(f"[LlamaParseBackend] Wrote raw parse result to {dump_path}")
+        else:
+            self._logger.log("[LlamaParseBackend] Failed to write raw parse result", level="warning")
 
         markdown_full: str = _attr(parse_result, "markdown_full") or ""
         metadata_block = _attr(parse_result, "metadata")
@@ -298,7 +311,9 @@ class LlamaParseBackend(OCRBackend):
         chunks = self._extract_chunks(doc_id, markdown_full)
         tables = self._extract_tables(doc_id, parse_result)
         images = self._extract_images(doc_id, parse_result)
-        equations = _extract_equations_from_markdown(doc_id, markdown_full)
+        # llamaparse doenst natively support equations as a standalone object, we can try latext extractions but this too introduce to much noise. 
+        # We have a semantic chunker ourselves so whole equations are already embedded into the text chunks
+        equations: list[ExtractedEquation] = [] 
         paper_metadata = _parse_paper_metadata(markdown_full) if markdown_full else None
 
         return ExtractionResult(
@@ -312,11 +327,52 @@ class LlamaParseBackend(OCRBackend):
             page_count=page_count,
             paper_metadata=paper_metadata,
             schema=f"llamaparse/{_TIER}/{_VERSION}",
+            run_id=run_id,
         )
 
-    # ------------------------------------------------------------------
-    # Chunks
-    # ------------------------------------------------------------------
+    def _parse_with_retry(self, source_path: str) -> tuple[Any, str | None]:
+        last_exc: Exception | None = None
+        for create_attempt in range(1, _PARSE_CREATE_MAX_ATTEMPTS + 1):
+            job_id: str | None = None
+            try:
+                job = self._client.parsing.create(
+                    upload_file=source_path,
+                    **_PARSE_KWARGS,
+                )
+                job_id = str(_attr(job, "id") or "")
+                if job_id:
+                    print(f"[LlamaParseBackend] Parse job created id={job_id}")
+
+                for wait_attempt in range(1, _PARSE_WAIT_MAX_ATTEMPTS + 1):
+                    try:
+                        if not job_id:
+                            raise RuntimeError("LlamaParse create did not return job id.")
+                        self._client.parsing.wait_for_completion(job_id)
+                        result = self._client.parsing.get(job_id, expand=_PARSE_EXPAND)
+                        return result, job_id
+                    except Exception as exc:
+                        last_exc = exc
+                        if wait_attempt >= _PARSE_WAIT_MAX_ATTEMPTS:
+                            raise
+                        sleep_s = _PARSE_WAIT_BACKOFF_SECONDS * wait_attempt
+                        print(
+                            f"[LlamaParseBackend] wait_for_completion failed "
+                            f"(job_id={job_id}, attempt={wait_attempt}/{_PARSE_WAIT_MAX_ATTEMPTS}): {exc}. "
+                            f"Retrying in {sleep_s}s..."
+                        )
+                        time.sleep(sleep_s)
+            except Exception as exc:
+                last_exc = exc
+                if create_attempt >= _PARSE_CREATE_MAX_ATTEMPTS:
+                    break
+                sleep_s = _PARSE_WAIT_BACKOFF_SECONDS * create_attempt
+                print(
+                    f"[LlamaParseBackend] parse create/wait failed "
+                    f"(attempt={create_attempt}/{_PARSE_CREATE_MAX_ATTEMPTS}): {exc}. "
+                    f"Retrying in {sleep_s}s..."
+                )
+                time.sleep(sleep_s)
+        raise RuntimeError(f"LlamaParse parse failed after retries: {last_exc}") from last_exc
 
     def _extract_chunks(self, doc_id: str, markdown_full: str) -> list[ExtractedChunk]:
         text = markdown_full.strip()
@@ -350,10 +406,6 @@ class LlamaParseBackend(OCRBackend):
                 meta_data={"chunk_index": idx, "splitter": splitter_name},
             ))
         return result
-
-    # ------------------------------------------------------------------
-    # Tables — sourced from structured items (most reliable)
-    # ------------------------------------------------------------------
 
     def _extract_tables(self, doc_id: str, parse_result: Any) -> list[ExtractedTable]:
         """
@@ -401,6 +453,8 @@ class LlamaParseBackend(OCRBackend):
                     continue
 
                 rows = _attr(item, "rows") or []
+                if _is_garbage_table(html, rows):
+                    continue
                 row_count = len(rows) if rows else None
                 col_count = len(rows[0]) if (rows and isinstance(rows[0], list)) else None
 
@@ -420,10 +474,6 @@ class LlamaParseBackend(OCRBackend):
 
         return tables
 
-    # ------------------------------------------------------------------
-    # Images — sourced from images_content_metadata (has presigned_url)
-    # ------------------------------------------------------------------
-
     def _extract_images(self, doc_id: str, parse_result: Any) -> list[ExtractedImage]:
         """
         Download embedded figures from presigned URLs in images_content_metadata.
@@ -441,7 +491,7 @@ class LlamaParseBackend(OCRBackend):
         corresponding ImageItem in items.pages[*].items. We build a lookup
         map from index → caption using the items tree first.
         """
-        # --- Step 1: build index → caption map from structured items ---
+        
         caption_by_index: dict[int, str] = {}
         items_block = _attr(parse_result, "items")
         item_pages = _attr(items_block, "pages") or []
@@ -454,7 +504,6 @@ class LlamaParseBackend(OCRBackend):
                         caption_by_index[img_item_counter] = caption
                     img_item_counter += 1
 
-        # --- Step 2: download and store images ---
         images_meta = _attr(parse_result, "images_content_metadata")
         image_entries = _attr(images_meta, "images") or []
 
@@ -462,7 +511,7 @@ class LlamaParseBackend(OCRBackend):
         for entry in image_entries:
             category = str(_attr(entry, "category") or "").lower()
             # Only keep actual embedded figures — skip screenshots and layout crops.
-            if category and category != "embedded":
+            if category in ("screenshot"):
                 continue
 
             presigned_url: str | None = _attr(entry, "presigned_url")
@@ -475,7 +524,11 @@ class LlamaParseBackend(OCRBackend):
             caption: str = caption_by_index.get(index, "")
 
             try:
-                image_bytes = _download_bytes(presigned_url)
+                image_bytes = _download_bytes_with_retry(
+                    presigned_url,
+                    attempts=_IMAGE_DOWNLOAD_MAX_ATTEMPTS,
+                    backoff_seconds=_IMAGE_DOWNLOAD_BACKOFF_SECONDS,
+                )
             except Exception as exc:
                 print(f"[LlamaParseBackend] Failed to download image {filename}: {exc}")
                 continue
@@ -483,28 +536,53 @@ class LlamaParseBackend(OCRBackend):
             img_id = f"{doc_id}_img_{index + 1:03d}"
             ext = _extension(filename, mime_type)
             storage_key = f"{doc_id}/images/{img_id}.{ext}"
-            self._object_store.write(storage_key, image_bytes)
+            local_path: str | None = None
+            base64_data = ""
+            try:
+                self._object_store.write(storage_key, image_bytes)
+                local_path = storage_key
+            except Exception as exc:
+                print(f"[LlamaParseBackend] Failed to store image {filename}: {exc}")
+                base64_data = base64.b64encode(image_bytes).decode("utf-8")
 
             extracted.append(ExtractedImage(
                 id=img_id,
                 mime_type=mime_type,
-                base64_data=base64.b64encode(image_bytes).decode("utf-8"),
+                base64_data=base64_data,
                 page=None,  # page not present on ImagesContentMetadataImage
                 caption=caption,
-                local_path=storage_key,
+                local_path=local_path,
             ))
 
         return extracted
 
 
-# ---------------------------------------------------------------------------
-# Module-level helpers
-# ---------------------------------------------------------------------------
-
 def _download_bytes(url: str, timeout: int = 30) -> bytes:
     with urlopen(url, timeout=timeout) as resp:
         return resp.read()
 
+
+def _download_bytes_with_retry(
+    url: str,
+    timeout: int = 30,
+    attempts: int = 3,
+    backoff_seconds: int = 2,
+) -> bytes:
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return _download_bytes(url, timeout=timeout)
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= attempts:
+                break
+            sleep_s = backoff_seconds * attempt
+            print(
+                f"[LlamaParseBackend] download retry {attempt}/{attempts} failed: {exc}. "
+                f"Retrying in {sleep_s}s..."
+            )
+            time.sleep(sleep_s)
+    raise RuntimeError(f"Download failed after retries: {last_exc}") from last_exc
 
 def _extension(filename: str, mime_type: str) -> str:
     if "." in filename:

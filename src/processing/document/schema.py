@@ -135,6 +135,7 @@ class ExtractionResult:
     markdown: str | None = None
     page_count: int = 0
     schema: str | None = None
+    run_id: str | None = None
     content_hash: str = ""
     paper_metadata: PaperMetadata | None = None
     chunk_embeddings: list[list[float]] | None = None
