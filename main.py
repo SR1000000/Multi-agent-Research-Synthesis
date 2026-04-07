@@ -7,8 +7,9 @@ import os
 from src.memory import get_database
 from src.graph import build_graph
 import src.llm
+from src.processing.chunker import get_text_chunker
 from src.processing.document import DocProcessor
-from src.processing.document._common import _slugify
+from src.processing.embedder.provider import get_text_embedder
 import uuid
 from datetime import datetime, timezone
 from src.llm import GLOBAL_CONFIG, Provider
@@ -21,6 +22,18 @@ _PROVIDER_FLAGS = {
     "ollama":     Provider.OLLAMA,
     "openrouter": Provider.OPENROUTER,
     "gemini":     Provider.GOOGLE_AI_STUDIO,
+}
+
+_PROCESSOR_BACKEND_ALIASES = {
+    "llama": "llama_parse",
+    "llama_parse": "llama_parse",
+    "docling": "docling",
+    "lighton": "lighton",
+}
+
+_TEXT_SPLITTER_ALIASES = {
+    "none": None,
+    "semantic": "semantic",
 }
 
 def _parse_args() -> argparse.Namespace:
@@ -39,9 +52,18 @@ def _parse_args() -> argparse.Namespace:
         help="Path to the PDF to analyse (default: %(default)s)"
     )
     parser.add_argument(
-        "--use-db",
-        action="store_true",
-        help="Skip document processing and attempt to load artifacts from the existing SQLite database",
+        "--processor",
+        type=str,
+        choices=sorted(_PROCESSOR_BACKEND_ALIASES.keys()),
+        default="llama",
+        help="Document processor backend (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--text-splitter",
+        type=str,
+        choices=sorted(_TEXT_SPLITTER_ALIASES.keys()),
+        default="none",
+        help="Text splitter backend for document chunking (default: %(default)s)",
     )
     parser.add_argument(
         "-i", "--interactive",
@@ -56,16 +78,14 @@ def _parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
-def _get_callbacks(args):
+def _get_callbacks(args, logger: AgentLogger):
     callbacks = []
-    logger = None
 
     if args.logging is False:
         os.environ["LANGFUSE_ENABLED"] = "false"
         from langfuse.decorators import langfuse_context
         langfuse_context.configure(enabled=False)
     else:
-        logger = AgentLogger()
         langfuse_handler = logger.get_langgraph_handler()
         callbacks.append(langfuse_handler)
     return callbacks, logger
@@ -80,7 +100,7 @@ def _configure_llm(args: argparse.Namespace) -> None:
     if args.model:
         GLOBAL_CONFIG.model = args.model
 
-def _process_document(args: argparse.Namespace) -> tuple[Any, str]:
+def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[Any, str]:
     pdf_path = Path(args.pdf)
     if not pdf_path.exists():
         sys.exit(f"error: PDF not found: {pdf_path}")
@@ -88,18 +108,19 @@ def _process_document(args: argparse.Namespace) -> tuple[Any, str]:
         sys.exit(f"error: file does not have a .pdf extension: {pdf_path}")
     
     _t0 = time.perf_counter()
-    doc_id = _slugify(pdf_path.stem)
     db = get_database()
-    
-    if args.use_db:
-        artifacts = db.load_document(doc_id)
-        if not artifacts:
-            sys.exit(f"error: No cached database entry found for doc_id '{doc_id}'. The existing processor.db does not match the requested PDF. Please run without --use-db to re-process the document.")
-    else:
-        db.reset()
-        processor = DocProcessor()
-        artifacts = processor.process_document(str(pdf_path))
-        db.save_document(artifacts)
+    embedder = get_text_embedder()
+    processor_backend = _PROCESSOR_BACKEND_ALIASES[args.processor]
+    chunker_name = _TEXT_SPLITTER_ALIASES[args.text_splitter]
+    text_chunker = get_text_chunker(chunker_name) if chunker_name else None
+    processor = DocProcessor(
+        backend=processor_backend,
+        text_chunker=text_chunker,
+        db=db,
+        embedder=embedder,
+        logger=logger,
+    )
+    artifacts = processor.process_document(str(pdf_path))
         
     _pdf_elapsed = time.perf_counter() - _t0
     
@@ -119,12 +140,17 @@ def _process_document(args: argparse.Namespace) -> tuple[Any, str]:
         if response == "q":
             sys.exit("Execution stopped by user.")
     
-    status = "Extracted" if artifacts.chunk_count > 0 else "FAILED TO EXTRACT (running without documents)"
-    preprocessing_message = (
-        f"[preprocessing] {status} multimodal artifacts "
-        f"(images={artifacts.image_count}, tables={artifacts.table_count}, "
-        f"equations={artifacts.equation_count}, chunks={artifacts.chunk_count})"
-    )
+    status = "Processed" if artifacts and artifacts.chunk_count > 0 else "FAILED TO PROCESS (running without documents)"
+    
+    if artifacts:
+        preprocessing_message = (
+            f"[preprocessing] {status} multimodal artifacts "
+            f"(images={artifacts.image_count}, tables={artifacts.table_count}, "
+            f"equations={artifacts.equation_count}, chunks={artifacts.chunk_count})"
+        )
+    else:
+        preprocessing_message = f"[preprocessing] {status}"
+        
     return artifacts, preprocessing_message
 
 def _build_initial_state(args: argparse.Namespace, preprocessing_message: str, artifacts: Any) -> dict:
@@ -139,7 +165,7 @@ def _build_initial_state(args: argparse.Namespace, preprocessing_message: str, a
         'critique':         None,
         'document_context': "",
         'source_chunks':    artifacts.source_chunks if artifacts else [],
-        'doc_id':           artifacts.manifest_json.doc_id if artifacts else "unknown",
+        'doc_id':           artifacts.doc_id if artifacts else "unknown",
         'revision_history': [],
         'replan_history':   [],
         'messages':         [preprocessing_message],
@@ -148,11 +174,12 @@ def _build_initial_state(args: argparse.Namespace, preprocessing_message: str, a
 
 def main() -> None:
     args = _parse_args()
+    logger = AgentLogger()
 
     _configure_llm(args)
-    callbacks, logger = _get_callbacks(args)
+    callbacks, logger = _get_callbacks(args, logger)
 
-    artifacts, preprocessing_message = _process_document(args)
+    artifacts, preprocessing_message = _process_document(args, logger)
     initial_state = _build_initial_state(args, preprocessing_message, artifacts)
 
     graph = build_graph()

@@ -2,22 +2,24 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import hashlib
+import struct
 from pathlib import Path
+from typing import Any
+from dataclasses import asdict
 
 import sqlite_vec
 
+from src.logging.logger import AgentLogger
 from src.processing.document.schema import (
     ExtractionResult,
     ExtractedChunk,
-    ExtractionManifest,
     ExtractedImage,
     ExtractedTable,
     ExtractedEquation,
+    PaperMetadata,
 )
-from .models import TABLE_NAMES
 from ..provider.provider import DatabaseProvider
-from .config import DEFAULT_CONFIG, StorageConfig
+from .config import DEFAULT_CONFIG, StorageConfig, TABLE_NAMES
 from .schema import (
     CREATE_DOCUMENTS_TABLE,
     CREATE_EQUATIONS_TABLE,
@@ -29,6 +31,24 @@ from .schema import (
 )
 
 
+def load_sqlite_vec_extension(conn: sqlite3.Connection) -> None:
+    """Register sqlite-vec so `vec0` virtual tables can be used on this connection."""
+    try:
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+    except Exception as e:
+        raise RuntimeError(f"Failed to load sqlite-vec: {e}") from e
+    finally:
+        conn.enable_load_extension(False)
+
+
+def connect_sqlite_with_vec(db_path: Path | str, **kwargs: Any) -> sqlite3.Connection:
+    """Open `db_path` and load sqlite-vec (same as `SQLiteDatabase` uses internally)."""
+    conn = sqlite3.connect(str(db_path), **kwargs)
+    load_sqlite_vec_extension(conn)
+    return conn
+
+
 class SQLiteDatabase(DatabaseProvider):
     """
     SQLite implementation of the DatabaseProvider.
@@ -38,6 +58,7 @@ class SQLiteDatabase(DatabaseProvider):
     def __init__(self, config: StorageConfig = DEFAULT_CONFIG) -> None:
         self.config = config
         self._conn: sqlite3.Connection | None = None
+        self._logger = AgentLogger()
         self.connect()
 
     def connect(self) -> None:
@@ -78,12 +99,7 @@ class SQLiteDatabase(DatabaseProvider):
         """Loads the sqlite-vec extension."""
         if not self._conn:
             raise ValueError("Database not connected.")
-        try:
-            self._conn.enable_load_extension(True)
-            sqlite_vec.load(self._conn)
-            self._conn.enable_load_extension(False)
-        except Exception as e:
-            raise RuntimeError(f"Failed to load sqlite-vec: {e}") from e
+        load_sqlite_vec_extension(self._conn)
 
     def setup(self) -> None:
         """Creates tables and indexes."""
@@ -108,90 +124,157 @@ class SQLiteDatabase(DatabaseProvider):
                 self._conn.execute(f"DROP TABLE IF EXISTS {table}")
         self.setup()
 
+    def document_exists(self, content_hash: str) -> bool:
+        """Returns True if a document with the given content hash already exists."""
+        # Using the content_hash to determine if a document exists
+        row = self._conn.execute(
+            "SELECT 1 FROM documents WHERE content_hash = ? LIMIT 1", (content_hash,)
+        ).fetchone()
+        return row is not None
+        
+    def load_document_by_hash(self, content_hash: str) -> ExtractionResult | None:
+        """Loads an ExtractionResult from the database using its content hash."""
+        row = self._conn.execute(
+            "SELECT id FROM documents WHERE content_hash = ? LIMIT 1", (content_hash,)
+        ).fetchone()
+        if not row:
+            return None
+        return self.load_document(row["id"])
+
     def save_document(self, result: ExtractionResult) -> None:
         """Persists an ExtractionResult to the database."""
-        manifest = result.manifest_json
-        doc_id = manifest.doc_id
-        
-        # Calculate content hash if not present (using source_pdf_path + current time as fallback)
-        # In a real scenario, we'd hash the file bytes.
-        content_hash = hashlib.sha256(manifest.source_pdf_path.encode()).hexdigest()
+        doc_id = result.doc_id
+        content_hash = result.content_hash
 
         with self._conn:
+            self._conn.execute(
+                "DELETE FROM text_chunks_vec WHERE chunk_id IN (SELECT id FROM text_chunks WHERE document_id = ?)",
+                (doc_id,),
+            )
+
             # 1. Save Document
             self._conn.execute(
                 """
                 INSERT OR REPLACE INTO documents 
-                (id, source_path, filename, markdown, page_count, content_hash, docling_schema_version) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (id, source_path, filename, markdown, page_count, content_hash, run_id, schema, paper_metadata) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     doc_id,
-                    manifest.source_pdf_path,
-                    Path(manifest.source_pdf_path).name,
-                    "", # Temporary: empty markdown as it's not in ExtractionResult
-                    0,  # Temporary: page count not directly in result
+                    result.source_path,
+                    Path(result.source_path).name,
+                    result.markdown,
+                    result.page_count,
                     content_hash,
-                    None
+                    result.run_id,
+                    result.schema,
+                    json.dumps(asdict(result.paper_metadata)) if result.paper_metadata else None,
                 )
             )
 
             # 2. Save Images
-            for img in manifest.images:
+            for img in result.images:
                 self._conn.execute(
                     """
                     INSERT OR REPLACE INTO images 
-                    (id, document_id, mime_type, base64_data, page_number, caption, bbox_json, annotation_json) 
+                    (id, document_id, mime_type, base64_data, page_number, caption, local_path, contextualized_text) 
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (img.id, doc_id, img.mime_type, img.base64_data, img.page, img.caption, None, None)
+                    (
+                        img.id,
+                        doc_id,
+                        img.mime_type,
+                        img.base64_data,
+                        img.page,
+                        img.caption,
+                        img.local_path,
+                        img.contextualized_text,
+                    )
                 )
 
             # 3. Save Tables
-            for tbl in manifest.tables:
+            for tbl in result.tables:
                 self._conn.execute(
                     """
                     INSERT OR REPLACE INTO tables 
-                    (id, document_id, html_content, page_number, caption, bbox_json, col_count, row_count) 
+                    (id, document_id, content, page_number, caption, contextualized_text, col_count, row_count) 
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (tbl.id, doc_id, tbl.html_content, tbl.page, tbl.title, None, None, None)
+                    (tbl.id, doc_id, tbl.content, tbl.page, tbl.title, tbl.contextualized_text, tbl.col_count, tbl.row_count)
                 )
 
             # 4. Save Equations
-            for eq in manifest.equations:
+            for eq in result.equations:
                 self._conn.execute(
                     """
                     INSERT OR REPLACE INTO equations 
-                    (id, document_id, text, orig, page_number, bbox_json, caption) 
+                    (id, document_id, text, display_mode, contextualized_text, page_number, caption) 
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (eq.id, doc_id, eq.latex_or_text, None, eq.page, None, None)
+                    (
+                        eq.id,
+                        doc_id,
+                        eq.latex_or_text,
+                        eq.display_mode,
+                        eq.contextualized_text,
+                        eq.page,
+                        eq.caption,
+                    )
                 )
 
             # 5. Save Text Chunks
-            for idx, chunk in enumerate(result.source_chunks):
-                chunk_id = f"{doc_id}_chunk_{idx:04d}"
-                chunk_hash = hashlib.sha256(chunk.text.encode()).hexdigest()
-                
+            for chunk in result.source_chunks:
                 self._conn.execute(
                     """
                     INSERT OR REPLACE INTO text_chunks 
-                    (id, document_id, text, headings_json, captions_json, page_numbers_json, 
-                     doc_item_labels_json, chunk_index, content_hash) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, document_id, text, meta_data, contextualized_text) 
+                    VALUES (?, ?, ?, ?, ?)
                     """,
                     (
-                        chunk_id,
+                        chunk.id,
                         doc_id,
                         chunk.text,
-                        json.dumps(chunk.headings),
-                        json.dumps(chunk.captions),
-                        json.dumps(chunk.page_numbers),
-                        json.dumps([]), # doc_item_labels_json not directly available
-                        idx,
-                        chunk_hash
+                        json.dumps(chunk.meta_data),
+                        chunk.contextualized_text
                     )
+                )
+
+            embs = result.chunk_embeddings
+            sources = result.chunk_embedding_sources
+            # we have to embed all chunks from a doc or none of them, in case some chunks were malformed and doesn't create embedding
+            if (
+                embs is not None
+                and sources is not None
+            ):
+                dim = self.config.vec_dimensions
+                self._logger.log(
+                    f"[SQLiteDatabase] Writing embeddings doc_id={doc_id} "
+                    f"chunks={len(result.source_chunks)} embs={len(embs)} dim_expected={dim}"
+                )
+                inserted = 0
+                skipped_dim = 0
+                for chunk, emb, src in zip(result.source_chunks, embs, sources):
+                    if len(emb) != dim:
+                        skipped_dim += 1
+                        continue
+                    blob = struct.pack(f"{dim}f", *emb)
+                    self._conn.execute(
+                        """
+                        INSERT OR REPLACE INTO text_chunks_vec (chunk_id, embedding, source)
+                        VALUES (?, ?, ?)
+                        """,
+                        (chunk.id, blob, src),
+                    )
+                    inserted += 1
+                self._logger.log(
+                    f"[SQLiteDatabase] Embeddings write complete doc_id={doc_id} "
+                    f"inserted={inserted} skipped_dim={skipped_dim}"
+                )
+            else:
+                self._logger.log(
+                    f"[SQLiteDatabase] No embeddings to write doc_id={doc_id} "
+                    f"chunk_embeddings={'set' if result.chunk_embeddings is not None else 'None'} "
+                    f"chunk_embedding_sources={'set' if result.chunk_embedding_sources is not None else 'None'}"
                 )
 
     def load_document(self, doc_id: str) -> ExtractionResult | None:
@@ -209,7 +292,9 @@ class SQLiteDatabase(DatabaseProvider):
                 mime_type=row["mime_type"],
                 base64_data=row["base64_data"],
                 page=row["page_number"],
-                caption=row["caption"] or ""
+                caption=row["caption"] or "",
+                local_path=row["local_path"],
+                contextualized_text=row["contextualized_text"]
             ) for row in img_rows
         ]
 
@@ -218,9 +303,12 @@ class SQLiteDatabase(DatabaseProvider):
         tables = [
             ExtractedTable(
                 id=row["id"],
-                html_content=row["html_content"],
+                content=row["content"],
                 page=row["page_number"],
-                title=row["caption"] or ""
+                title=row["caption"] or "",
+                contextualized_text=row["contextualized_text"],
+                col_count=row["col_count"],
+                row_count=row["row_count"]
             ) for row in tbl_rows
         ]
 
@@ -230,47 +318,43 @@ class SQLiteDatabase(DatabaseProvider):
             ExtractedEquation(
                 id=row["id"],
                 latex_or_text=row["text"],
-                display_mode="block", # Defaulting as not stored
+                display_mode=row["display_mode"] or "block",
                 page=row["page_number"],
-                markdown_anchor=f"[[eq:{row['id']}]]"
+                caption=row["caption"] or "",
+                contextualized_text=row["contextualized_text"]
             ) for row in eq_rows
         ]
 
+        paper_metadata = None
+        if doc_row["paper_metadata"]:
+            paper_metadata = PaperMetadata(**json.loads(doc_row["paper_metadata"]))
+
         # 5. Load Chunks
         chunk_rows = self._conn.execute(
-            "SELECT * FROM text_chunks WHERE document_id = ? ORDER BY chunk_index", 
+            "SELECT * FROM text_chunks WHERE document_id = ? ORDER BY COALESCE(CAST(json_extract(meta_data, '$.chunk_index') AS INTEGER), id)", 
             (doc_id,)
         ).fetchall()
         source_chunks = [
             ExtractedChunk(
+                id=row["id"],
                 text=row["text"],
-                contextualized_text=row["text"], # Fallback
-                headings=json.loads(row["headings_json"]),
-                captions=json.loads(row["captions_json"]),
-                page_numbers=json.loads(row["page_numbers_json"]),
-                bboxes=[] # Not stored
+                contextualized_text=row["contextualized_text"],
+                meta_data=json.loads(row["meta_data"])
             ) for row in chunk_rows
         ]
 
-        # 6. Reconstruct Manifest (References are missing in current schema, we'd need a table for them)
-        # For now, minimal reconstruction
-        manifest = ExtractionManifest(
+        return ExtractionResult(
             doc_id=doc_id,
-            source_pdf_path=doc_row["source_path"],
-            markdown_path="",
+            source_path=doc_row["source_path"],
+            markdown=doc_row["markdown"],
+            source_chunks=source_chunks,
             images=images,
             tables=tables,
             equations=equations,
-            references=[] # Missing in schema, skipping for now as it's a "bare minimum"
-        )
-
-        return ExtractionResult(
-            source_chunks=source_chunks,
-            manifest_json=manifest,
-            image_count=len(images),
-            table_count=len(tables),
-            equation_count=len(equations),
-            chunk_count=len(source_chunks)
+            page_count=doc_row["page_count"],
+            run_id=doc_row["run_id"],
+            schema=doc_row["schema"],
+            paper_metadata=paper_metadata,
         )
 
     @property
