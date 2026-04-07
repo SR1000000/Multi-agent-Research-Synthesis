@@ -92,7 +92,7 @@ class OpendataloaderBackend(OCRBackend):
                 images.append(ExtractedImage(
                     id=img_id,
                     mime_type="image/png",
-                    image_bytes=b"", 
+                    base64_data="", 
                     page=page,
                     caption=caption
                 ))

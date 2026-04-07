@@ -141,10 +141,10 @@ class SQLiteDatabase(DatabaseProvider):
                 self._conn.execute(
                     """
                     INSERT OR REPLACE INTO images 
-                    (id, document_id, mime_type, data, page_number, caption, bbox_json, annotation_json) 
+                    (id, document_id, mime_type, base64_data, page_number, caption, bbox_json, annotation_json) 
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (img.id, doc_id, img.mime_type, img.image_bytes, img.page, img.caption, None, None)
+                    (img.id, doc_id, img.mime_type, img.base64_data, img.page, img.caption, None, None)
                 )
 
             # 3. Save Tables
@@ -207,7 +207,7 @@ class SQLiteDatabase(DatabaseProvider):
             ExtractedImage(
                 id=row["id"],
                 mime_type=row["mime_type"],
-                image_bytes=row["data"],
+                base64_data=row["base64_data"],
                 page=row["page_number"],
                 caption=row["caption"] or ""
             ) for row in img_rows

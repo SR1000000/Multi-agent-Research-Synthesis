@@ -1,4 +1,5 @@
 import time
+import base64
 from io import BytesIO
 from pathlib import Path
 from typing import List
@@ -87,12 +88,13 @@ class ChandraOCRBackend(OCRBackend):
 
                 buf = BytesIO()
                 crop.save(buf, format="PNG")
+                base64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
 
                 extracted_images.append(
                     ExtractedImage(
                         id=img_id,
                         mime_type="image/png",
-                        image_bytes=buf.getvalue(),
+                        base64_data=base64_str,
                         page=page_idx,
                         caption=f"Image {img_id} from page {page_idx}",
                     )

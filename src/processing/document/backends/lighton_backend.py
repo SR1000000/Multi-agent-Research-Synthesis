@@ -178,6 +178,7 @@ class LightOnOCRBackend(OCRBackend):
             buf = BytesIO()
             crop.save(buf, format="PNG")
             img_bytes = buf.getvalue()
+            base64_str = base64.b64encode(img_bytes).decode("utf-8")
             
             img_id = f"img_{start_id + i:03d}"
             token = f"[[img:{img_id}]]"
@@ -185,7 +186,7 @@ class LightOnOCRBackend(OCRBackend):
             metadata.append(ExtractedImage(
                 id=img_id,
                 mime_type="image/png",
-                image_bytes=img_bytes,
+                base64_data=base64_str,
                 page=page_no,
                 caption=f"Image {img_id} from page {page_no}"
             ))
