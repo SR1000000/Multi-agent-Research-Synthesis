@@ -47,7 +47,7 @@ class MarkerConfig:
             running fresh recognition. Useful when the existing text layer is
             incorrect or low-quality.
         use_llm: Enable LLM post-processing (requires a Gemini API key via the
-            ``GOOGLE_API_KEY`` environment variable). Significantly improves
+            ``GOOGLE_AI_STUDIO_API_KEY`` environment variable). Significantly improves
             accuracy for complex layouts, multi-column tables, and math equations.
         redo_inline_math: Re-process inline math expressions via the LLM.
             Only meaningful when ``use_llm=True``. Produces the highest-quality
