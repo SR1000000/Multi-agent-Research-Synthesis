@@ -31,7 +31,7 @@ class ImageRecord:
     id: str  # UUID4
     document_id: str  # FK to documents
     mime_type: str  # e.g. "image/png"
-    data: bytes  # binary image bytes
+    base64_data: str  # base64-encoded image bytes
     page_number: int | None = None
     caption: str | None = None
     bbox_json: str | None = None  # JSON-serialized bounding box dict {l, t, r, b}
