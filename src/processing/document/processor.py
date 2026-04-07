@@ -20,7 +20,7 @@ def get_ocr_backend(name: str = "marker") -> OCRBackend:
     """Instantiate an OCR backend by name.
 
     Args:
-        name: Key in BACKEND_REGISTRY (default: "chandra").
+        name: Key in BACKEND_REGISTRY (default: "marker").
 
     Returns:
         An instance of the requested OCRBackend.
