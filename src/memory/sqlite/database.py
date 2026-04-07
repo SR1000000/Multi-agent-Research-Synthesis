@@ -14,6 +14,7 @@ from src.processing.document.schema import (
     ExtractedImage,
     ExtractedTable,
     ExtractedEquation,
+    PaperMetadata,
 )
 from ..provider.provider import DatabaseProvider
 from .config import DEFAULT_CONFIG, StorageConfig, TABLE_NAMES
@@ -152,8 +153,8 @@ class SQLiteDatabase(DatabaseProvider):
             self._conn.execute(
                 """
                 INSERT OR REPLACE INTO documents 
-                (id, source_path, filename, markdown, page_count, content_hash, schema) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (id, source_path, filename, markdown, page_count, content_hash, schema, paper_metadata) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     doc_id,
@@ -162,7 +163,8 @@ class SQLiteDatabase(DatabaseProvider):
                     result.markdown,
                     result.page_count,
                     content_hash,
-                    result.schema
+                    result.schema,
+                    json.dumps(result.paper_metadata.__dict__) if result.paper_metadata else None,
                 )
             )
 
@@ -171,10 +173,19 @@ class SQLiteDatabase(DatabaseProvider):
                 self._conn.execute(
                     """
                     INSERT OR REPLACE INTO images 
-                    (id, document_id, mime_type, base64_data, page_number, caption, contextualized_text) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (id, document_id, mime_type, base64_data, page_number, caption, local_path, contextualized_text) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (img.id, doc_id, img.mime_type, img.base64_data, img.page, img.caption, img.contextualized_text)
+                    (
+                        img.id,
+                        doc_id,
+                        img.mime_type,
+                        img.base64_data,
+                        img.page,
+                        img.caption,
+                        img.local_path,
+                        img.contextualized_text,
+                    )
                 )
 
             # 3. Save Tables
@@ -193,10 +204,18 @@ class SQLiteDatabase(DatabaseProvider):
                 self._conn.execute(
                     """
                     INSERT OR REPLACE INTO equations 
-                    (id, document_id, text, contextualized_text, page_number, caption) 
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (id, document_id, text, display_mode, contextualized_text, page_number, caption) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (eq.id, doc_id, eq.latex_or_text, eq.contextualized_text, eq.page, eq.caption)
+                    (
+                        eq.id,
+                        doc_id,
+                        eq.latex_or_text,
+                        eq.display_mode,
+                        eq.contextualized_text,
+                        eq.page,
+                        eq.caption,
+                    )
                 )
 
             # 5. Save Text Chunks
@@ -252,6 +271,7 @@ class SQLiteDatabase(DatabaseProvider):
                 base64_data=row["base64_data"],
                 page=row["page_number"],
                 caption=row["caption"] or "",
+                local_path=row["local_path"],
                 contextualized_text=row["contextualized_text"]
             ) for row in img_rows
         ]
@@ -276,12 +296,16 @@ class SQLiteDatabase(DatabaseProvider):
             ExtractedEquation(
                 id=row["id"],
                 latex_or_text=row["text"],
-                display_mode="block", # Defaulting as not stored
+                display_mode=row["display_mode"] or "block",
                 page=row["page_number"],
                 caption=row["caption"] or "",
                 contextualized_text=row["contextualized_text"]
             ) for row in eq_rows
         ]
+
+        paper_metadata = None
+        if doc_row["paper_metadata"]:
+            paper_metadata = PaperMetadata(**json.loads(doc_row["paper_metadata"]))
 
         # 5. Load Chunks
         chunk_rows = self._conn.execute(
@@ -307,6 +331,7 @@ class SQLiteDatabase(DatabaseProvider):
             equations=equations,
             page_count=doc_row["page_count"],
             schema=doc_row["schema"],
+            paper_metadata=paper_metadata,
         )
 
     @property
