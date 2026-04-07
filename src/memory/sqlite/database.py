@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import struct
 from pathlib import Path
+from typing import Any
+from dataclasses import asdict
 
 import sqlite_vec
 
+from src.logging.logger import AgentLogger
 from src.processing.document.schema import (
     ExtractionResult,
     ExtractedChunk,
     ExtractedImage,
     ExtractedTable,
     ExtractedEquation,
+    PaperMetadata,
 )
 from ..provider.provider import DatabaseProvider
 from .config import DEFAULT_CONFIG, StorageConfig, TABLE_NAMES
@@ -26,6 +31,24 @@ from .schema import (
 )
 
 
+def load_sqlite_vec_extension(conn: sqlite3.Connection) -> None:
+    """Register sqlite-vec so `vec0` virtual tables can be used on this connection."""
+    try:
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+    except Exception as e:
+        raise RuntimeError(f"Failed to load sqlite-vec: {e}") from e
+    finally:
+        conn.enable_load_extension(False)
+
+
+def connect_sqlite_with_vec(db_path: Path | str, **kwargs: Any) -> sqlite3.Connection:
+    """Open `db_path` and load sqlite-vec (same as `SQLiteDatabase` uses internally)."""
+    conn = sqlite3.connect(str(db_path), **kwargs)
+    load_sqlite_vec_extension(conn)
+    return conn
+
+
 class SQLiteDatabase(DatabaseProvider):
     """
     SQLite implementation of the DatabaseProvider.
@@ -35,6 +58,7 @@ class SQLiteDatabase(DatabaseProvider):
     def __init__(self, config: StorageConfig = DEFAULT_CONFIG) -> None:
         self.config = config
         self._conn: sqlite3.Connection | None = None
+        self._logger = AgentLogger()
         self.connect()
 
     def connect(self) -> None:
@@ -75,12 +99,7 @@ class SQLiteDatabase(DatabaseProvider):
         """Loads the sqlite-vec extension."""
         if not self._conn:
             raise ValueError("Database not connected.")
-        try:
-            self._conn.enable_load_extension(True)
-            sqlite_vec.load(self._conn)
-            self._conn.enable_load_extension(False)
-        except Exception as e:
-            raise RuntimeError(f"Failed to load sqlite-vec: {e}") from e
+        load_sqlite_vec_extension(self._conn)
 
     def setup(self) -> None:
         """Creates tables and indexes."""
@@ -128,12 +147,17 @@ class SQLiteDatabase(DatabaseProvider):
         content_hash = result.content_hash
 
         with self._conn:
+            self._conn.execute(
+                "DELETE FROM text_chunks_vec WHERE chunk_id IN (SELECT id FROM text_chunks WHERE document_id = ?)",
+                (doc_id,),
+            )
+
             # 1. Save Document
             self._conn.execute(
                 """
                 INSERT OR REPLACE INTO documents 
-                (id, source_path, filename, markdown, page_count, content_hash, schema) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (id, source_path, filename, markdown, page_count, content_hash, run_id, schema, paper_metadata) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     doc_id,
@@ -142,7 +166,9 @@ class SQLiteDatabase(DatabaseProvider):
                     result.markdown,
                     result.page_count,
                     content_hash,
-                    result.schema
+                    result.run_id,
+                    result.schema,
+                    json.dumps(asdict(result.paper_metadata)) if result.paper_metadata else None,
                 )
             )
 
@@ -151,10 +177,19 @@ class SQLiteDatabase(DatabaseProvider):
                 self._conn.execute(
                     """
                     INSERT OR REPLACE INTO images 
-                    (id, document_id, mime_type, base64_data, page_number, caption, contextualized_text) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (id, document_id, mime_type, base64_data, page_number, caption, local_path, contextualized_text) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (img.id, doc_id, img.mime_type, img.base64_data, img.page, img.caption, img.contextualized_text)
+                    (
+                        img.id,
+                        doc_id,
+                        img.mime_type,
+                        img.base64_data,
+                        img.page,
+                        img.caption,
+                        img.local_path,
+                        img.contextualized_text,
+                    )
                 )
 
             # 3. Save Tables
@@ -173,14 +208,22 @@ class SQLiteDatabase(DatabaseProvider):
                 self._conn.execute(
                     """
                     INSERT OR REPLACE INTO equations 
-                    (id, document_id, text, contextualized_text, page_number, caption) 
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (id, document_id, text, display_mode, contextualized_text, page_number, caption) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (eq.id, doc_id, eq.latex_or_text, eq.contextualized_text, eq.page, eq.caption)
+                    (
+                        eq.id,
+                        doc_id,
+                        eq.latex_or_text,
+                        eq.display_mode,
+                        eq.contextualized_text,
+                        eq.page,
+                        eq.caption,
+                    )
                 )
 
             # 5. Save Text Chunks
-            for chunk in result.source_chunks:        
+            for chunk in result.source_chunks:
                 self._conn.execute(
                     """
                     INSERT OR REPLACE INTO text_chunks 
@@ -194,6 +237,44 @@ class SQLiteDatabase(DatabaseProvider):
                         json.dumps(chunk.meta_data),
                         chunk.contextualized_text
                     )
+                )
+
+            embs = result.chunk_embeddings
+            sources = result.chunk_embedding_sources
+            # we have to embed all chunks from a doc or none of them, in case some chunks were malformed and doesn't create embedding
+            if (
+                embs is not None
+                and sources is not None
+            ):
+                dim = self.config.vec_dimensions
+                self._logger.log(
+                    f"[SQLiteDatabase] Writing embeddings doc_id={doc_id} "
+                    f"chunks={len(result.source_chunks)} embs={len(embs)} dim_expected={dim}"
+                )
+                inserted = 0
+                skipped_dim = 0
+                for chunk, emb, src in zip(result.source_chunks, embs, sources):
+                    if len(emb) != dim:
+                        skipped_dim += 1
+                        continue
+                    blob = struct.pack(f"{dim}f", *emb)
+                    self._conn.execute(
+                        """
+                        INSERT OR REPLACE INTO text_chunks_vec (chunk_id, embedding, source)
+                        VALUES (?, ?, ?)
+                        """,
+                        (chunk.id, blob, src),
+                    )
+                    inserted += 1
+                self._logger.log(
+                    f"[SQLiteDatabase] Embeddings write complete doc_id={doc_id} "
+                    f"inserted={inserted} skipped_dim={skipped_dim}"
+                )
+            else:
+                self._logger.log(
+                    f"[SQLiteDatabase] No embeddings to write doc_id={doc_id} "
+                    f"chunk_embeddings={'set' if result.chunk_embeddings is not None else 'None'} "
+                    f"chunk_embedding_sources={'set' if result.chunk_embedding_sources is not None else 'None'}"
                 )
 
     def load_document(self, doc_id: str) -> ExtractionResult | None:
@@ -212,6 +293,7 @@ class SQLiteDatabase(DatabaseProvider):
                 base64_data=row["base64_data"],
                 page=row["page_number"],
                 caption=row["caption"] or "",
+                local_path=row["local_path"],
                 contextualized_text=row["contextualized_text"]
             ) for row in img_rows
         ]
@@ -236,12 +318,16 @@ class SQLiteDatabase(DatabaseProvider):
             ExtractedEquation(
                 id=row["id"],
                 latex_or_text=row["text"],
-                display_mode="block", # Defaulting as not stored
+                display_mode=row["display_mode"] or "block",
                 page=row["page_number"],
                 caption=row["caption"] or "",
                 contextualized_text=row["contextualized_text"]
             ) for row in eq_rows
         ]
+
+        paper_metadata = None
+        if doc_row["paper_metadata"]:
+            paper_metadata = PaperMetadata(**json.loads(doc_row["paper_metadata"]))
 
         # 5. Load Chunks
         chunk_rows = self._conn.execute(
@@ -266,7 +352,9 @@ class SQLiteDatabase(DatabaseProvider):
             tables=tables,
             equations=equations,
             page_count=doc_row["page_count"],
+            run_id=doc_row["run_id"],
             schema=doc_row["schema"],
+            paper_metadata=paper_metadata,
         )
 
     @property

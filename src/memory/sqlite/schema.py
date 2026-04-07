@@ -10,8 +10,10 @@ CREATE TABLE IF NOT EXISTS documents (
     markdown TEXT,
     page_count INTEGER NOT NULL,
     content_hash TEXT NOT NULL,
+    run_id TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    schema TEXT
+    schema TEXT,
+    paper_metadata TEXT
 );
 """
 
@@ -24,6 +26,7 @@ CREATE TABLE IF NOT EXISTS images (
     base64_data TEXT NOT NULL,
     page_number INTEGER,
     caption TEXT,
+    local_path TEXT,
     contextualized_text TEXT,
     FOREIGN KEY (document_id) REFERENCES documents(id)
 );
@@ -50,6 +53,7 @@ CREATE TABLE IF NOT EXISTS equations (
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL,
     text TEXT NOT NULL,
+    display_mode TEXT,
     page_number INTEGER,
     caption TEXT,
     contextualized_text TEXT,
@@ -75,7 +79,8 @@ CREATE TABLE IF NOT EXISTS text_chunks (
 CREATE_TEXT_CHUNKS_VEC_TABLE = """
 CREATE VIRTUAL TABLE IF NOT EXISTS text_chunks_vec USING vec0(
     chunk_id TEXT PRIMARY KEY,
-    embedding float[{vec_dimensions}]
+    embedding float[{vec_dimensions}],
+    source TEXT
 );
 """
 

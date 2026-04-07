@@ -70,7 +70,7 @@ Choose the PDF ingestion backend with **`--processor`**:
 
 Example: `python main.py --processor docling --pdf ./.samples/Transformers.pdf`
 
-For LlamaParse, set **`LLAMA_API_KEY`** in your environment.
+For LlamaParse, set **`LLAMA_CLOUD_API_KEY`** in your environment.
 
 Optional **`--text-splitter`** controls chunking after parse: `none` (default, single chunk from full text) or `semantic` (semantic splitter). Only use this if the document processor does not natively support chunking (LLamaparse for now).
 

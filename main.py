@@ -9,6 +9,7 @@ from src.graph import build_graph
 import src.llm
 from src.processing.chunker import get_text_chunker
 from src.processing.document import DocProcessor
+from src.processing.embedder.provider import get_text_embedder
 import uuid
 from datetime import datetime, timezone
 from src.llm import GLOBAL_CONFIG, Provider
@@ -77,16 +78,14 @@ def _parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
-def _get_callbacks(args):
+def _get_callbacks(args, logger: AgentLogger):
     callbacks = []
-    logger = None
 
     if args.logging is False:
         os.environ["LANGFUSE_ENABLED"] = "false"
         from langfuse.decorators import langfuse_context
         langfuse_context.configure(enabled=False)
     else:
-        logger = AgentLogger()
         langfuse_handler = logger.get_langgraph_handler()
         callbacks.append(langfuse_handler)
     return callbacks, logger
@@ -101,7 +100,7 @@ def _configure_llm(args: argparse.Namespace) -> None:
     if args.model:
         GLOBAL_CONFIG.model = args.model
 
-def _process_document(args: argparse.Namespace) -> tuple[Any, str]:
+def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[Any, str]:
     pdf_path = Path(args.pdf)
     if not pdf_path.exists():
         sys.exit(f"error: PDF not found: {pdf_path}")
@@ -110,11 +109,17 @@ def _process_document(args: argparse.Namespace) -> tuple[Any, str]:
     
     _t0 = time.perf_counter()
     db = get_database()
-
+    embedder = get_text_embedder()
     processor_backend = _PROCESSOR_BACKEND_ALIASES[args.processor]
     chunker_name = _TEXT_SPLITTER_ALIASES[args.text_splitter]
     text_chunker = get_text_chunker(chunker_name) if chunker_name else None
-    processor = DocProcessor(backend=processor_backend, text_chunker=text_chunker, db=db)
+    processor = DocProcessor(
+        backend=processor_backend,
+        text_chunker=text_chunker,
+        db=db,
+        embedder=embedder,
+        logger=logger,
+    )
     artifacts = processor.process_document(str(pdf_path))
         
     _pdf_elapsed = time.perf_counter() - _t0
@@ -164,11 +169,12 @@ def _build_initial_state(args: argparse.Namespace, preprocessing_message: str, a
 
 def main() -> None:
     args = _parse_args()
+    logger = AgentLogger()
 
     _configure_llm(args)
-    callbacks, logger = _get_callbacks(args)
+    callbacks, logger = _get_callbacks(args, logger)
 
-    artifacts, preprocessing_message = _process_document(args)
+    artifacts, preprocessing_message = _process_document(args, logger)
     initial_state = _build_initial_state(args, preprocessing_message, artifacts)
 
     graph = build_graph()

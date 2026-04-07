@@ -1,12 +1,15 @@
 import hashlib
-from pathlib import Path
+from dataclasses import asdict
 from typing import Any
 
+from src.logging.logger import AgentLogger
 from src.processing.chunker import TextChunkerProvider
 
 from .backend_base import OCRBackend
 from .backends import DoclingBackend, LightOnOCRBackend, LlamaParseBackend
-from .schema import ExtractionResult, Contextualizer, Embedder
+from src.processing.embedder.base import TextEmbedder
+
+from .schema import ExtractedChunk, ExtractionResult, Contextualizer
 
 BACKEND_REGISTRY: dict[str, type[OCRBackend]] = {
     "llama_parse": LlamaParseBackend,
@@ -18,6 +21,7 @@ BACKEND_REGISTRY: dict[str, type[OCRBackend]] = {
 def get_ocr_backend(
     name: str = "llama_parse",
     text_chunker: TextChunkerProvider | None = None,
+    logger: AgentLogger | None = None,
 ) -> OCRBackend:
     """Instantiate an OCR backend by name."""
     cls = BACKEND_REGISTRY.get(name)
@@ -27,8 +31,14 @@ def get_ocr_backend(
             f"Available: {list(BACKEND_REGISTRY.keys())}"
         )
     if cls is LlamaParseBackend:
-        return cls(text_chunker=text_chunker)
+        return cls(text_chunker=text_chunker, logger=logger)
     return cls()
+
+
+def _chunk_text_for_embedding(chunk: ExtractedChunk) -> str:
+    if chunk.contextualized_text and chunk.contextualized_text.strip():
+        return chunk.contextualized_text.strip()
+    return chunk.text
 
 
 class DocProcessor:
@@ -38,13 +48,16 @@ class DocProcessor:
         text_chunker: TextChunkerProvider | None = None,
         db: Any = None,
         contextualizer: Contextualizer | None = None,
-        embedder: Embedder | None = None
+        embedder: TextEmbedder | None = None,
+        logger: AgentLogger | None = None,
     ):
         """
         Create a document processor with the given OCR backend and optional pipeline stages.
+        Pass a non-None embedder to run the embedding step on chunks.
         """
+        self._logger = logger or AgentLogger()
         if isinstance(backend, str):
-            self.backend = get_ocr_backend(backend, text_chunker=text_chunker)
+            self.backend = get_ocr_backend(backend, text_chunker=text_chunker, logger=self._logger)
         else:
             self.backend = backend
         self._db = db
@@ -58,7 +71,7 @@ class DocProcessor:
         """
         try:
             content_hash = ""
-            
+
             with open(source_path, "rb") as f:
                 content_hash = hashlib.sha256(f.read()).hexdigest()
 
@@ -79,14 +92,37 @@ class DocProcessor:
                 print(f"[DocProcessor] Contextualizing chunks...")
                 result = self._contextualizer.contextualize(result)
 
-            # Create embeddings on document chunks for retrieval
-            embeddings = None
-            if self._embedder:
+            if self._embedder is not None:
                 print(f"[DocProcessor] Embedding chunks...")
-                embeddings = self._embedder.embed_extraction_result(result)
+                try:
+                    texts = [_chunk_text_for_embedding(c) for c in result.source_chunks]
+                    print(f"[DocProcessor] Embedding input chunks={len(texts)}")
+                    result.chunk_embeddings = self._embedder.embed_queries(texts)
+                    result.chunk_embedding_sources = texts
+                    emb_count = len(result.chunk_embeddings) if result.chunk_embeddings is not None else 0
+                    emb_dim = len(result.chunk_embeddings[0]) if emb_count else 0
+                    print(f"[DocProcessor] Embeddings generated count={emb_count} dim={emb_dim}")
+                except Exception:
+                    result.chunk_embeddings = None
+                    result.chunk_embedding_sources = None
+                    import traceback
+                    print("[DocProcessor] Embedding failed; embeddings set to None")
+                    traceback.print_exc()
+            else:
+                print("[DocProcessor] Embedder is None; skipping embedding step")
 
             # Persist to database
             if self._db:
+                dump_path = self._logger.dump_json_artifact(
+                    file_name="last_extraction_result.json",
+                    payload=asdict(result),
+                    run_id=result.run_id,
+                )
+                if dump_path:
+                    self._logger.log(f"[DocProcessor] Wrote debug ExtractionResult to {dump_path}")
+                else:
+                    self._logger.log("[DocProcessor] Failed to write debug ExtractionResult JSON", level="warning")
+
                 print(f"[DocProcessor] Storing to database...")
                 self._db.save_document(result)
 
