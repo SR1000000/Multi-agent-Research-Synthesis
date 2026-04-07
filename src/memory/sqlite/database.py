@@ -116,6 +116,19 @@ class SQLiteDatabase(DatabaseProvider):
         with self._conn:
             for stmt in statements:
                 self._conn.execute(stmt)
+                
+            # Perform basic migrations for newly added columns if they don't exist
+            try:
+                doc_columns = [info["name"] for info in self._conn.execute("PRAGMA table_info(documents)").fetchall()]
+                if doc_columns:
+                    if "run_id" not in doc_columns:
+                        self._conn.execute("ALTER TABLE documents ADD COLUMN run_id TEXT;")
+                    if "schema" not in doc_columns:
+                        self._conn.execute("ALTER TABLE documents ADD COLUMN schema TEXT;")
+                    if "paper_metadata" not in doc_columns:
+                        self._conn.execute("ALTER TABLE documents ADD COLUMN paper_metadata TEXT;")
+            except Exception as e:
+                self._logger.log(f"[SQLiteDatabase] Schema migration error: {e}")
 
     def reset(self) -> None:
         """Drops all tables and recreates them."""

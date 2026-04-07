@@ -6,7 +6,7 @@ from src.logging.logger import AgentLogger
 from src.processing.chunker import TextChunkerProvider
 
 from .backend_base import OCRBackend
-from .backends import DoclingBackend, LightOnOCRBackend, LlamaParseBackend, MarkerBackend
+from .backends import DoclingBackend, LightOnOCRBackend, LlamaParseBackend, MarkerBackend, ChandraOCRBackend, GLMOCRBackend
 from src.processing.embedder.base import TextEmbedder
 
 from .schema import ExtractedChunk, ExtractionResult, Contextualizer

@@ -24,6 +24,11 @@ except ImportError:
     MarkerBackend = None
     MarkerConfig = None
 
+try:
+    from .llama_parse_backend import LlamaParseBackend
+except ImportError:
+    LlamaParseBackend = None
+
 __all__ = [
     "DoclingBackend",
     "ChandraOCRBackend",
@@ -31,4 +36,5 @@ __all__ = [
     "GLMOCRBackend",
     "MarkerBackend",
     "MarkerConfig",
+    "LlamaParseBackend",
 ]
