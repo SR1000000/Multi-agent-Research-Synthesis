@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS documents (
     markdown TEXT,
     page_count INTEGER NOT NULL,
     content_hash TEXT NOT NULL,
+    run_id TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     schema TEXT,
     paper_metadata TEXT

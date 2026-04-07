@@ -8,6 +8,7 @@ from typing import Any
 
 import sqlite_vec
 
+from src.logging.logger import AgentLogger
 from src.processing.document.schema import (
     ExtractionResult,
     ExtractedChunk,
@@ -56,6 +57,7 @@ class SQLiteDatabase(DatabaseProvider):
     def __init__(self, config: StorageConfig = DEFAULT_CONFIG) -> None:
         self.config = config
         self._conn: sqlite3.Connection | None = None
+        self._logger = AgentLogger()
         self.connect()
 
     def connect(self) -> None:
@@ -153,8 +155,8 @@ class SQLiteDatabase(DatabaseProvider):
             self._conn.execute(
                 """
                 INSERT OR REPLACE INTO documents 
-                (id, source_path, filename, markdown, page_count, content_hash, schema, paper_metadata) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, source_path, filename, markdown, page_count, content_hash, run_id, schema, paper_metadata) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     doc_id,
@@ -163,6 +165,7 @@ class SQLiteDatabase(DatabaseProvider):
                     result.markdown,
                     result.page_count,
                     content_hash,
+                    result.run_id,
                     result.schema,
                     json.dumps(result.paper_metadata.__dict__) if result.paper_metadata else None,
                 )
@@ -243,8 +246,15 @@ class SQLiteDatabase(DatabaseProvider):
                 and sources is not None
             ):
                 dim = self.config.vec_dimensions
+                self._logger.log(
+                    f"[SQLiteDatabase] Writing embeddings doc_id={doc_id} "
+                    f"chunks={len(result.source_chunks)} embs={len(embs)} dim_expected={dim}"
+                )
+                inserted = 0
+                skipped_dim = 0
                 for chunk, emb, src in zip(result.source_chunks, embs, sources):
                     if len(emb) != dim:
+                        skipped_dim += 1
                         continue
                     blob = struct.pack(f"{dim}f", *emb)
                     self._conn.execute(
@@ -254,6 +264,17 @@ class SQLiteDatabase(DatabaseProvider):
                         """,
                         (chunk.id, blob, src),
                     )
+                    inserted += 1
+                self._logger.log(
+                    f"[SQLiteDatabase] Embeddings write complete doc_id={doc_id} "
+                    f"inserted={inserted} skipped_dim={skipped_dim}"
+                )
+            else:
+                self._logger.log(
+                    f"[SQLiteDatabase] No embeddings to write doc_id={doc_id} "
+                    f"chunk_embeddings={'set' if result.chunk_embeddings is not None else 'None'} "
+                    f"chunk_embedding_sources={'set' if result.chunk_embedding_sources is not None else 'None'}"
+                )
 
     def load_document(self, doc_id: str) -> ExtractionResult | None:
         """Loads an ExtractionResult from the database."""
@@ -330,6 +351,7 @@ class SQLiteDatabase(DatabaseProvider):
             tables=tables,
             equations=equations,
             page_count=doc_row["page_count"],
+            run_id=doc_row["run_id"],
             schema=doc_row["schema"],
             paper_metadata=paper_metadata,
         )
