@@ -6,7 +6,7 @@ from sentence_transformers import SentenceTransformer
 
 from .base import EmbeddingError, TextEmbedder
 
-_DEFAULT_MODEL = "all-MiniLM-L6-v2"
+_DEFAULT_MODEL = "sentence-transformers/all-mpnet-base-v2"
 
 
 class SentenceTransformerEmbedder(TextEmbedder):
