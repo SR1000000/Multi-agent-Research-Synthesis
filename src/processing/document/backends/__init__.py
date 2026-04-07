@@ -19,14 +19,16 @@ except ImportError:
     LightOnOCRBackend = None
 
 try:
-    from .opendataloader_backend import OpendataloaderBackend
+    from .marker_backend import MarkerBackend, MarkerConfig
 except ImportError:
-    OpendataloaderBackend = None
+    MarkerBackend = None
+    MarkerConfig = None
 
 __all__ = [
     "DoclingBackend",
     "ChandraOCRBackend",
     "LightOnOCRBackend",
     "GLMOCRBackend",
-    "OpendataloaderBackend",
+    "MarkerBackend",
+    "MarkerConfig",
 ]

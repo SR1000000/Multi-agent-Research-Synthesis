@@ -16,17 +16,18 @@ class OCRBackend(ABC):
 
 `processor.py` maintains a `BACKEND_REGISTRY` mapping string keys to concrete backend classes:
 
-| Key | Class | Status | Requirements | Local Model Size |
-|------|------|--------|--------------|------------------|
-| `"lighton"` | `LightOnOCRBackend` | ✅ Active (Too slow CPU inference (~4 mins per page)) | transformers>=5.0.0, pillow, pypdfium2| ~1 GB |
-| `"docling"` | `DoclingBackend` | ✅ Active (has issues with subscripts in text)| docling>=2.70,<3.0 | 1.5-2 GB |
-| `"chandra"` | `ChandraOCRBackend` | ✅ Active (Too slow CPU inference (~7 mins per page))| chandra-ocr[hf] | ~7GB |  
-| `"glm"` | `GLMOCRBackend` | ✅ Active (Slow CPU inference (~2.5 mins per page)) | transformers>=5.0.0, pillow, pypdfium2 | ~1 GB |
-| `"opendataloader"` | `OpendataloaderBackend` | ✅ Active (Default, hybrid docling-fast with Java fallback) | opendataloader-pdf[hybrid], Java 17+ | Docling's 1.5-2GB |
+| Key | Class | Status | Requirements | Local Model Size | Processing Time (local)|
+|------|------|--------|--------------|------------------|------------------------|
+| `"lighton"` | `LightOnOCRBackend` | ✅ Active (Too slow CPU inference (~4 mins per page)) | transformers>=5.0.0, pillow, pypdfium2| ~1 GB | after 10 minutes, only 2 pages |
+| `"docling"` | `DoclingBackend` | ✅ Active (has issues with subscripts in text)| docling>=2.70,<3.0 | 1.5-2 GB | 3 minutes |
+| `"chandra"` | `ChandraOCRBackend` | ✅ Active (Too slow CPU inference (~7 mins per page))| chandra-ocr[hf] | ~7GB | after 10 minutes, only 1 page |
+| `"glm"` | `GLMOCRBackend` | ✅ Active (Slow CPU inference (~2.5 mins per page)) | transformers>=5.0.0, pillow, pypdfium2 | ~1 GB | after 10 minutes, only 4 pages |
+| `"marker"` | `MarkerBackend` | ✅ Active (Default, high-accuracy PDF→markdown via surya OCR; extracts images, tables, math) | marker-pdf | ~8 GB | 14 minutes |
 
-`DocProcessor` accepts an optional `backend` parameter (string key or `OCRBackend` instance). It defaults to `"opendataloader"`.
+`DocProcessor` accepts an optional `backend` parameter (string key or `OCRBackend` instance). It defaults to `"marker"`.  Marker is currently the best performing, Docling is the fastest, but has issues with subscripts in text.
 
 Note: some of the requirements are mutually exclusive (e.g. `docling` requires a specific `transformers` version less than 5, while LightOnOCR-2 is only implemented in `transformers` version 5 or later)
+
 
 ### Adding a new backend
 
@@ -52,15 +53,16 @@ src/processing/document/
 │   │                        #   tables / equations → markdown annotation → manifest
 │   ├── lighton_backend.py   # LightOnOCR-2-1B-bbox: PDF→PIL via pypdfium2, per-page
 │   │                        #   inference, bbox-based image cropping, MarkdownChunker
-│   ├── opendataloader_backend.py # Default backend. Uses opendataloader-pdf CLI;
-│   │                        #   extracts images, tables, equations; chunks markdown;
-│   │                        #   customized with 10-min timeout and robust Java fallback.
+│   ├── marker_backend.py    # MarkerBackend — default. Uses marker-pdf PdfConverter;
+│   │                        #   extracts images as PIL→PNG→base64; parses HTML table
+│   │                        #   blocks from markdown; annotates LaTeX equations;
+│   │                        #   works on CPU, MPS, or CUDA (auto-detected).
 │   └── glm_backend.py       # GLMOCRBackend — local HuggingFace inference via AutoModelForCausalLM;
 │                            #   uses pypdfium2 for PDF→PIL conversion
 ├── chunks.py                # MarkdownChunker — LangChain header-splitter + recursive
 │                            #   char fallback; produces list[ExtractedChunk]
 ├── processor.py             # DocProcessor + BACKEND_REGISTRY factory; default backend
-│                            #   is "opendataloader"; accepts string key or OCRBackend instance
+│                            #   is "marker"; accepts string key or OCRBackend instance
 └── schema.py                # Shared dataclasses: ExtractedChunk, ExtractedImage,
                              #   ExtractedTable, ExtractedEquation, ExtractionManifest,
                              #   ExtractionResult, ArtifactReference

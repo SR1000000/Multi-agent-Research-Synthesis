@@ -1,5 +1,5 @@
 from .backend_base import OCRBackend
-from .backends import ChandraOCRBackend, DoclingBackend, LightOnOCRBackend, GLMOCRBackend, OpendataloaderBackend
+from .backends import ChandraOCRBackend, DoclingBackend, LightOnOCRBackend, GLMOCRBackend, MarkerBackend
 from .schema import ExtractionManifest, ExtractionResult
 
 BACKEND_REGISTRY: dict[str, type[OCRBackend]] = {
@@ -11,12 +11,12 @@ if ChandraOCRBackend:
     BACKEND_REGISTRY["chandra"] = ChandraOCRBackend
 if GLMOCRBackend:
     BACKEND_REGISTRY["glm"] = GLMOCRBackend
-if OpendataloaderBackend:
-    BACKEND_REGISTRY["opendataloader"] = OpendataloaderBackend
+if MarkerBackend:
+    BACKEND_REGISTRY["marker"] = MarkerBackend
 
 
 
-def get_ocr_backend(name: str = "opendataloader") -> OCRBackend:
+def get_ocr_backend(name: str = "marker") -> OCRBackend:
     """Instantiate an OCR backend by name.
 
     Args:
@@ -38,7 +38,7 @@ def get_ocr_backend(name: str = "opendataloader") -> OCRBackend:
 
 
 class DocProcessor:
-    def __init__(self, backend: str | OCRBackend = "opendataloader"):
+    def __init__(self, backend: str | OCRBackend = "marker"):
         """Create a document processor with the given OCR backend.
 
         Args:
