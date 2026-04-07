@@ -87,16 +87,6 @@ def _attr(obj: Any, key: str, default: Any = None) -> Any:
         return obj.get(key, default)
     return getattr(obj, key, default)
 
-
-def _nested(obj: Any, *keys: str, default: Any = None) -> Any:
-    cur = obj
-    for k in keys:
-        cur = _attr(cur, k)
-        if cur is None:
-            return default
-    return cur
-
-
 def _serialize_parse_payload(parse_result: Any) -> Any:
     if hasattr(parse_result, "model_dump"):
         return parse_result.model_dump()
@@ -127,7 +117,6 @@ _RE_AUTHORS = re.compile(
 _RE_DOI = re.compile(r"\bdoi[:\s]+([^\s,;\)]+)", re.IGNORECASE)
 _RE_YEAR = re.compile(r"\b(19|20)\d{2}\b")
 _RE_BLOCK_EQ = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
-_RE_INLINE_EQ = re.compile(r"(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)")
 
 
 def _parse_paper_metadata(markdown: str) -> PaperMetadata:
@@ -204,12 +193,11 @@ def _parse_paper_metadata(markdown: str) -> PaperMetadata:
 
 def _extract_equations_from_markdown(doc_id: str, markdown: str) -> list[ExtractedEquation]:
     """
-    Scan markdown_full for LaTeX equation blocks and inline equations.
+    Scan markdown_full for LaTeX block equations only.
 
     LlamaParse does not emit a dedicated equation item type (as of v2).
     Equations appear in the markdown rendered by the agentic model. With the
-    custom_prompt asking for LaTeX, block equations come out as $$...$$
-    and inline as $...$.
+    custom_prompt asking for LaTeX, block equations come out as $$...$$.
 
     We deduplicate by expression content.
     """
@@ -227,24 +215,6 @@ def _extract_equations_from_markdown(doc_id: str, markdown: str) -> list[Extract
             id=f"{doc_id}_eq_{counter:03d}",
             latex_or_text=expr,
             display_mode="block",
-        ))
-        counter += 1
-
-    # Inline equations
-    for m in _RE_INLINE_EQ.finditer(markdown):
-        expr = m.group(1).strip()
-        if not expr or expr in seen:
-            continue
-        # Filter noise and math signal (digit, operator, backslash, underscore, caret, Greek letter)
-        if len(expr) < 4:
-            continue
-        if not re.search(r'[0-9\\+\-=<>{}_^]', expr):
-            continue
-        seen.add(expr)
-        equations.append(ExtractedEquation(
-            id=f"{doc_id}_eq_{counter:03d}",
-            latex_or_text=expr,
-            display_mode="inline",
         ))
         counter += 1
 
@@ -311,9 +281,7 @@ class LlamaParseBackend(OCRBackend):
         chunks = self._extract_chunks(doc_id, markdown_full)
         tables = self._extract_tables(doc_id, parse_result)
         images = self._extract_images(doc_id, parse_result)
-        # llamaparse doenst natively support equations as a standalone object, we can try latext extractions but this too introduce to much noise. 
-        # We have a semantic chunker ourselves so whole equations are already embedded into the text chunks
-        equations: list[ExtractedEquation] = [] 
+        equations = _extract_equations_from_markdown(doc_id, markdown_full)
         paper_metadata = _parse_paper_metadata(markdown_full) if markdown_full else None
 
         return ExtractionResult(
@@ -511,7 +479,7 @@ class LlamaParseBackend(OCRBackend):
         for entry in image_entries:
             category = str(_attr(entry, "category") or "").lower()
             # Only keep actual embedded figures — skip screenshots and layout crops.
-            if category in ("screenshot"):
+            if category == "screenshot":
                 continue
 
             presigned_url: str | None = _attr(entry, "presigned_url")

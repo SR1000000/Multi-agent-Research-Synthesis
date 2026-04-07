@@ -5,6 +5,7 @@ import sqlite3
 import struct
 from pathlib import Path
 from typing import Any
+from dataclasses import asdict
 
 import sqlite_vec
 
@@ -167,7 +168,7 @@ class SQLiteDatabase(DatabaseProvider):
                     content_hash,
                     result.run_id,
                     result.schema,
-                    json.dumps(result.paper_metadata.__dict__) if result.paper_metadata else None,
+                    json.dumps(asdict(result.paper_metadata)) if result.paper_metadata else None,
                 )
             )
 
