@@ -7,12 +7,12 @@ from .objectstore import (
     ObjectStoreConfig,
     ObjectStoreProvider,
 )
-from .sqlite.database import SQLiteDatabase
-from .sqlite.config import StorageConfig, DEFAULT_CONFIG
+from .research.database import ResearchDatabase
+from .research.config import StorageConfig, DEFAULT_CONFIG
 
 def get_database() -> DatabaseProvider:
     """Helper factory to obtain the active database provider."""
-    return SQLiteDatabase()
+    return ResearchDatabase()
 
 
 def get_object_store() -> ObjectStoreProvider:
@@ -22,7 +22,7 @@ def get_object_store() -> ObjectStoreProvider:
 
 __all__ = [
     "DatabaseProvider",
-    "SQLiteDatabase",
+    "ResearchDatabase",
     "StorageConfig",
     "DEFAULT_CONFIG",
     "ObjectStoreProvider",

@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from src.llm import GLOBAL_CONFIG, Provider
 from src.logging.logger import AgentLogger
+from src.memory.wip.database import WIPDatabase
 
 DEFAULT_QUERY = "Explain what Transformers are and how they are so important to AI"
 DEFAULT_SOURCE_PDF = "./.samples/Transformers.pdf"
@@ -175,6 +176,9 @@ def _build_initial_state(args: argparse.Namespace, preprocessing_message: str, a
 def main() -> None:
     args = _parse_args()
     logger = AgentLogger()
+
+    # Reset WIP database for the new run
+    WIPDatabase().reset()
 
     _configure_llm(args)
     callbacks, logger = _get_callbacks(args, logger)

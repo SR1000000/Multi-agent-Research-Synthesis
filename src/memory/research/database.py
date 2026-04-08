@@ -43,13 +43,13 @@ def load_sqlite_vec_extension(conn: sqlite3.Connection) -> None:
 
 
 def connect_sqlite_with_vec(db_path: Path | str, **kwargs: Any) -> sqlite3.Connection:
-    """Open `db_path` and load sqlite-vec (same as `SQLiteDatabase` uses internally)."""
+    """Open `db_path` and load sqlite-vec (same as `ResearchDatabase` uses internally)."""
     conn = sqlite3.connect(str(db_path), **kwargs)
     load_sqlite_vec_extension(conn)
     return conn
 
 
-class SQLiteDatabase(DatabaseProvider):
+class ResearchDatabase(DatabaseProvider):
     """
     SQLite implementation of the DatabaseProvider.
     Handles persistent document storage and vector search using sqlite-vec.
@@ -88,7 +88,7 @@ class SQLiteDatabase(DatabaseProvider):
             self._conn.close()
             self._conn = None
 
-    def __enter__(self) -> SQLiteDatabase:
+    def __enter__(self) -> ResearchDatabase:
         self.connect()
         return self
 
@@ -128,7 +128,7 @@ class SQLiteDatabase(DatabaseProvider):
                     if "paper_metadata" not in doc_columns:
                         self._conn.execute("ALTER TABLE documents ADD COLUMN paper_metadata TEXT;")
             except Exception as e:
-                self._logger.log(f"[SQLiteDatabase] Schema migration error: {e}")
+                self._logger.log(f"[ResearchDatabase] Schema migration error: {e}")
 
     def reset(self) -> None:
         """Drops all tables and recreates them."""
@@ -261,7 +261,7 @@ class SQLiteDatabase(DatabaseProvider):
             ):
                 dim = self.config.vec_dimensions
                 self._logger.log(
-                    f"[SQLiteDatabase] Writing embeddings doc_id={doc_id} "
+                    f"[ResearchDatabase] Writing embeddings doc_id={doc_id} "
                     f"chunks={len(result.source_chunks)} embs={len(embs)} dim_expected={dim}"
                 )
                 inserted = 0
@@ -280,12 +280,12 @@ class SQLiteDatabase(DatabaseProvider):
                     )
                     inserted += 1
                 self._logger.log(
-                    f"[SQLiteDatabase] Embeddings write complete doc_id={doc_id} "
+                    f"[ResearchDatabase] Embeddings write complete doc_id={doc_id} "
                     f"inserted={inserted} skipped_dim={skipped_dim}"
                 )
             else:
                 self._logger.log(
-                    f"[SQLiteDatabase] No embeddings to write doc_id={doc_id} "
+                    f"[ResearchDatabase] No embeddings to write doc_id={doc_id} "
                     f"chunk_embeddings={'set' if result.chunk_embeddings is not None else 'None'} "
                     f"chunk_embedding_sources={'set' if result.chunk_embedding_sources is not None else 'None'}"
                 )
@@ -369,6 +369,67 @@ class SQLiteDatabase(DatabaseProvider):
             schema=doc_row["schema"],
             paper_metadata=paper_metadata,
         )
+
+    def get_image(self, image_id: str) -> ExtractedImage | None:
+        """Loads a specific image from the database by its ID."""
+        row = self._conn.execute("SELECT * FROM images WHERE id = ?", (image_id,)).fetchone()
+        if not row:
+            return None
+        return ExtractedImage(
+            id=row["id"],
+            mime_type=row["mime_type"],
+            base64_data=row["base64_data"],
+            page=row["page_number"],
+            caption=row["caption"] or "",
+            local_path=row["local_path"],
+            contextualized_text=row["contextualized_text"]
+        )
+
+    def get_table(self, table_id: str) -> ExtractedTable | None:
+        """Loads a specific table from the database by its ID."""
+        row = self._conn.execute("SELECT * FROM tables WHERE id = ?", (table_id,)).fetchone()
+        if not row:
+            return None
+        return ExtractedTable(
+            id=row["id"],
+            content=row["content"],
+            page=row["page_number"],
+            title=row["caption"] or "",
+            contextualized_text=row["contextualized_text"],
+            col_count=row["col_count"],
+            row_count=row["row_count"]
+        )
+
+    def get_chunks_for_dispatch(self, doc_id: str) -> list[dict]:
+        """
+        Return all text chunks for a document ordered by chunk_index, as lightweight
+        dicts with keys: id, text, meta_data (parsed dict).
+
+        This is a cheaper alternative to load_document() — it skips images, tables,
+        equations, and embeddings so the ParseSupervisor can analyse section structure
+        without loading the full ExtractionResult.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT id, text, meta_data
+            FROM   text_chunks
+            WHERE  document_id = ?
+            ORDER BY COALESCE(
+                CAST(json_extract(meta_data, '$.chunk_index') AS INTEGER),
+                rowid
+            )
+            """,
+            (doc_id,),
+        ).fetchall()
+
+        return [
+            {
+                "id":        row["id"],
+                "text":      row["text"],
+                "meta_data": json.loads(row["meta_data"]) if row["meta_data"] else {},
+            }
+            for row in rows
+        ]
 
     @property
     def connection(self) -> sqlite3.Connection:

@@ -166,3 +166,19 @@ class Contextualizer:
     def contextualize(self, result: ExtractionResult) -> ExtractionResult:
         # TODO: Implement chunk contextualization
         return result
+
+@dataclass
+class ArtifactReference:
+    type: str
+    id: str
+    markdown_token: str
+
+@dataclass
+class ExtractionManifest:   # For backends that emit ExtractionManifest (Not LlamaParse)
+    doc_id: str
+    source_pdf_path: str
+    markdown_path: str
+    images: list[ExtractedImage]
+    tables: list[ExtractedTable]
+    equations: list[ExtractedEquation]
+    references: list[ArtifactReference]
