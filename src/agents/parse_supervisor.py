@@ -117,8 +117,9 @@ class ParseSupervisorAgent(BaseLLMAgent):
         )
 
         # 1. Load ordered chunks cheaply (no images/tables/embeddings)
-        db = ResearchDatabase()
-        raw_chunks = db.get_chunks_for_dispatch(doc_id)
+        # 1. Load ordered chunks cheaply (no images/tables/embeddings)
+        with ResearchDatabase() as db:
+            raw_chunks = db.get_chunks_for_dispatch(doc_id)
 
         if not raw_chunks:
             self._logger.log(
