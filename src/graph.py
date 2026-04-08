@@ -13,10 +13,10 @@ from src.util import MAX_REVISIONS, MAX_REPLANS
 
 
 class ResearchGraph:
-    def __init__(self):
-        self._graph = self._build()
+    def __init__(self, slides_mode: bool = False):
+        self._graph = self._build(slides_mode)
 
-    def _build(self):
+    def _build(self, slides_mode: bool):
         g = StateGraph(ResearchState)
 
         # ── Synthesis pipeline ────────────────────────────────────────────
@@ -24,8 +24,6 @@ class ResearchGraph:
         g.add_node('writer',     self._writer_with_guard)
         g.add_node('critic',     critic_node)
         g.add_node('supervisor', supervisor_node)
-
-        g.set_entry_point('planner')
 
         g.add_edge('planner', 'writer')
         g.add_edge('writer',  'critic')
@@ -38,6 +36,11 @@ class ResearchGraph:
         # research_to_slide instance then runs independently in parallel.
         g.add_node('parse_supervisor',  parse_supervisor_node)
         g.add_node('research_to_slide', research_to_slide_node)
+
+        if slides_mode:
+            g.set_entry_point('parse_supervisor')
+        else:
+            g.set_entry_point('planner')
 
         return g.compile()
 
@@ -86,5 +89,5 @@ class ResearchGraph:
         )
 
 
-def build_graph() -> ResearchGraph:
-    return ResearchGraph()
+def build_graph(slides_mode: bool = False) -> ResearchGraph:
+    return ResearchGraph(slides_mode=slides_mode)

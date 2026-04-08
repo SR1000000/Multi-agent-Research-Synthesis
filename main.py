@@ -77,6 +77,11 @@ def _parse_args() -> argparse.Namespace:
         default=True,
         help="Enable/disable Langfuse logging"
     )
+    parser.add_argument(
+        "--slides",
+        action="store_true",
+        help="Run the slide synthesis pipeline instead of research synthesis"
+    )
     return parser.parse_args()
 
 def _get_callbacks(args, logger: AgentLogger):
@@ -187,7 +192,7 @@ def main() -> None:
     artifacts, preprocessing_message = _process_document(args, logger)
     initial_state = _build_initial_state(args, preprocessing_message, artifacts)
 
-    graph = build_graph()
+    graph = build_graph(slides_mode=args.slides)
     
     final_state = initial_state
     try:
