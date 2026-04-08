@@ -63,7 +63,7 @@ def _parse_args() -> argparse.Namespace:
         type=str,
         choices=sorted(_TEXT_SPLITTER_ALIASES.keys()),
         default="none",
-        help="Text splitter backend for document chunking (default: %(default)s)",
+        help="Text splitter backend for document chunking (defaults to 'semantic' for llama_parse) (default: %(default)s)",
     )
     parser.add_argument(
         "-i", "--interactive",
@@ -112,6 +112,11 @@ def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[An
     embedder = get_text_embedder()
     processor_backend = _PROCESSOR_BACKEND_ALIASES[args.processor]
     chunker_name = _TEXT_SPLITTER_ALIASES[args.text_splitter]
+    
+    # default to 'semantic' chunking if using LlamaParser and no specific splitter chosen
+    if not chunker_name and processor_backend == "llama_parse":
+        chunker_name = "semantic"
+        
     text_chunker = get_text_chunker(chunker_name) if chunker_name else None
     processor = DocProcessor(
         backend=processor_backend,

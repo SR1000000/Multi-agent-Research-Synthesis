@@ -20,7 +20,7 @@ pip install -r requirements.txt
 ```
 
 Note: installing `transformers` and `sqlite-vec` can take longer because they bring specialized document-processing and vector-search dependencies.
-The system now uses **OpenDataLoader** natively by default for high-quality OCR, formula extraction, and chunking.
+The system now uses **LlamaParse** natively by default for high-quality OCR, formula extraction, and chunking.
 sqlite-vec provides fast, local vector similarity search directly within SQLite.
 
 ### 3. API keys
@@ -34,6 +34,7 @@ Edit `.env` — replace the placeholder values with your LLM Provider's API key.
 - [OpenRouter API](https://openrouter.ai/keys)
 - [Ollama Cloud API](https://ollama.com/settings/keys)
 - [Google AI Studio](https://github.com/google-gemini/cookbook/blob/main/quickstarts/Get_started.ipynb)
+- [LlamaCloud API](https://cloud.llamaindex.ai/api-keys)
 
 ### 4. Langfuse Logging Setup
 
@@ -72,7 +73,7 @@ Example: `python main.py --processor docling --pdf ./.samples/Transformers.pdf`
 
 For LlamaParse, set **`LLAMA_CLOUD_API_KEY`** in your environment.
 
-Optional **`--text-splitter`** controls chunking after parse: `none` (default, single chunk from full text) or `semantic` (semantic splitter). Only use this if the document processor does not natively support chunking (LLamaparse for now).
+Optional **`--text-splitter`** controls chunking after parse: `none` (single chunk from full text) or `semantic` (default, semantic splitter). Only use this if the document processor does not natively support chunking (LLamaparse for now).
 
 ### Optional Commandline Arguments
 
