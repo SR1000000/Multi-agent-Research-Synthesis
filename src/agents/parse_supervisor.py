@@ -27,7 +27,7 @@ from src.logging.logger import AgentLogger
 # Matches lines that start a new ATX heading: # / ## / ### / ####
 # We only look at the first non-empty line of each chunk so that mid-chunk
 # headings (e.g. sub-bullets with hashes) don't falsely trigger a split.
-_HEADING_RE = re.compile(r"^\s{0,3}#{1,4}\s+\S")
+_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+\S")
 
 
 def _detect_heading(chunk_text: str) -> str | None:
