@@ -119,6 +119,10 @@ class DocProcessor:
             else:
                 print("[DocProcessor] Embedder is None; skipping embedding step")
 
+            # Final sanity check to ensure chunks align with media databases
+            from ._common import verify_extraction_result
+            verify_extraction_result(result, logger=self._logger)
+
             # Persist to database
             if self._db:
                 dump_path = self._logger.dump_json_artifact(

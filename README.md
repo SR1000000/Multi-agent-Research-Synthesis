@@ -67,9 +67,7 @@ python main.py --gemini
 
 ### Document processor
 
-Choose the PDF ingestion backend with **`--processor`**:
-
-Example: `python main.py --processor docling --pdf ./.samples/Transformers.pdf`
+While there are multiple backends for document processing are implemented, due to requirement conflicts only LlamaParse is available with the provided requirements.txt.  Other backends will need additional dependencies, and likely separate environments.
 
 For LlamaParse, set **`LLAMA_CLOUD_API_KEY`** in your environment.
 
@@ -77,12 +75,13 @@ Optional **`--text-splitter`** controls chunking after parse: `none` (single chu
 
 ### Optional Commandline Arguments
 
-The PDF input defaults to `Transformers.pdf` in the project root directory. You can change this by adding `--pdf "Path to your PDF file here"` or editing `DEFAULT_SOURCE_PDF` in `main.py`.
+The PDF input defaults to `Transformers.pdf` in the .samples directory. You can change this by adding `--pdf "Path to your PDF file here"` or editing `DEFAULT_SOURCE_PDF` in `main.py`.
 
 You change the research query by adding `--query "Your question here"` or editing `DEFAULT_QUERY` in `main.py`.
+
 Adding the argument `-i` or `--interactive` adds a prompt for whether the user wants to continue, which pops up if a document is extracted and after the document extraction process is complete.
 
-Adding `--use-db` (or `--skip-processing`) skips the OCR process and instead attempts to load the parsed PDF chunks and metadata directly from the `data/research.db` SQLite database if it exists, saving valuable API and compute time during iterative runs pipeline tuning.
+Adding `--use-db` (or `--skip-processing`) skips the document processing and instead attempts to load the parsed PDF chunks and metadata directly from the `data/research.db` SQLite database if it exists, saving valuable API and compute time during iterative runs pipeline tuning.
 
 ## Graph Flow
 

@@ -51,6 +51,10 @@ class ResearchState(TypedDict):
     created_at:  str
     doc_id:      str
 
+    # -- slide coordination --
+    max_slides:    int
+    slide_numbers: List[int]
+
     # -- circuit breaker counters --
     revision_count: int
     replan_count:   int
