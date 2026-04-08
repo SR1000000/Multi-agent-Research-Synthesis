@@ -46,9 +46,11 @@ _PARSE_KWARGS: dict[str, Any] = {
         ),
     },
     "output_options": {
-        # Embeded are actual embedded images, but for complex layouts (multiple images in block or different format) we might lose out images
-        # Layout are images detected from layout, this add bit more noises (might accidentally add tables into images) but for now let's rather have extra than missing
-        "images_to_save": ["embedded", "layout"],
+        # "layout"   = LlamaParse's bbox-cropped layout detections — covers every page,
+        #              including those where figures are not embedded as PDF objects.
+        # "embedded" = actual embedded PDF objects — only present on a subset of pages
+        #              and misses figures that are part of the rendered page layout.
+        "images_to_save": ["layout"],
         # We want HTML tables in the items response. HTML is the richest format
         # (preserves merged cells). markdown and csv are also present as fallback.
         "markdown": {
@@ -117,6 +119,19 @@ _RE_AUTHORS = re.compile(
 _RE_DOI = re.compile(r"\bdoi[:\s]+([^\s,;\)]+)", re.IGNORECASE)
 _RE_YEAR = re.compile(r"\b(19|20)\d{2}\b")
 _RE_BLOCK_EQ = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
+
+# Matches Markdown image syntax used by LlamaParse: ![alt](url-or-filename)
+_IMAGE_REF_PATTERN = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+# Matches inline HTML tables emitted by LlamaParse (output_tables_as_markdown=False)
+_HTML_TABLE_PATTERN = re.compile(r"(<table[\s\S]*?</table>)", re.IGNORECASE | re.DOTALL)
+# Extracts the page number from a LlamaParse layout filename, e.g. 'page_4_chart_1_v2.jpg' → 4
+_PAGE_IN_FILENAME_RE = re.compile(r"\bpage_(\d+)_")
+
+
+def _page_from_filename(filename: str) -> int | None:
+    """Return the page number encoded in a LlamaParse layout filename, or None."""
+    m = _PAGE_IN_FILENAME_RE.search(filename)
+    return int(m.group(1)) if m else None
 
 
 def _parse_paper_metadata(markdown: str) -> PaperMetadata:
@@ -219,6 +234,78 @@ def _extract_equations_from_markdown(doc_id: str, markdown: str) -> list[Extract
         counter += 1
 
     return equations
+def _rewrite_markdown_refs(
+    markdown: str,
+    image_url_to_id: dict[str, str],
+    image_caption_to_id: dict[str, str],
+    table_ids: list[str],
+    page_to_img_ids: dict[int, list[str]] | None = None,
+    img_id_to_page: dict[str, int] | None = None,
+) -> str:
+    """
+    Replace LlamaParse's temporary presigned image URLs and inline HTML tables
+    with stable cross-reference tokens so chunks stay linked to DB records.
+
+    Image refs:  ``![caption](https://presigned-url...)``  →  ``[[img:{id}]]``
+    Image refs:  ``![caption](image)``  (LLM placeholder) →  ``[[img:{id}]]``  (matched by caption)
+    Table refs:  ``<table>...</table>``                    →  ``[[tbl:{id}]]``
+
+    Multi-panel figures: when a primary image is placed its same-page siblings
+    are emitted as additional tokens immediately adjacent, preventing them from
+    being stolen by the next caption match further in the document.
+    """
+    _page_to_imgs = page_to_img_ids or {}
+    _img_to_page = img_id_to_page or {}
+    used_ids: set[str] = set()
+
+    def _image_repl(match: re.Match) -> str:
+        alt = match.group(1).strip()
+        url = match.group(2).strip()
+
+        # Primary: match on URL, basename, or filename
+        img_id = (
+            image_url_to_id.get(url)
+            or image_url_to_id.get(Path(url).name)
+        )
+
+        # Fallback: LlamaParse agentic tier uses url='image' as a placeholder;
+        # in that case match on the alt text, which equals the figure caption.
+        if not img_id and url == "image" and alt:
+            img_id = image_caption_to_id.get(alt)
+
+        if not img_id or img_id in used_ids:
+            return match.group(0)  # leave unrecognised or already-placed refs intact
+
+        tokens: list[str] = [f"[[img:{img_id}]]"]
+        used_ids.add(img_id)
+
+        # Sibling tokens: other layout images sharing the same page that haven't
+        # been placed yet. These are sub-panels of the same multi-part figure.
+        page = _img_to_page.get(img_id)
+        if page is not None:
+            for sibling_id in _page_to_imgs.get(page, []):
+                if sibling_id != img_id and sibling_id not in used_ids:
+                    tokens.append(f"[[img:{sibling_id}]]")
+                    used_ids.add(sibling_id)
+
+        return " ".join(tokens)
+
+    markdown = _IMAGE_REF_PATTERN.sub(_image_repl, markdown)
+
+    # Replace the N-th <table>…</table> block with the N-th table token.
+    tbl_index = [0]  # mutable cell for closure
+
+    def _table_repl(match: re.Match) -> str:
+        i = tbl_index[0]
+        tbl_index[0] += 1
+        if i < len(table_ids):
+            return f"[[tbl:{table_ids[i]}]]"
+        return match.group(0)  # more HTML tables than extracted → leave as-is
+
+    markdown = _HTML_TABLE_PATTERN.sub(_table_repl, markdown)
+    return markdown
+
+
 def _is_garbage_table(html: str, rows: list) -> bool:
     """
     Detect tables that are actually misread figures/heatmaps.
@@ -278,16 +365,39 @@ class LlamaParseBackend(OCRBackend):
         pages = _attr(metadata_block, "pages") or []
         page_count = len(pages)
 
-        chunks = self._extract_chunks(doc_id, markdown_full)
+        # ── Extract tables & images first so we can build reference maps ──────
         tables = self._extract_tables(doc_id, parse_result)
         images = self._extract_images(doc_id, parse_result)
         equations = _extract_equations_from_markdown(doc_id, markdown_full)
         paper_metadata = _parse_paper_metadata(markdown_full) if markdown_full else None
 
+        # ── Rewrite markdown: replace presigned URLs / HTML tables with tokens ─
+        image_url_to_id, image_caption_to_id, page_to_img_ids, img_id_to_page = \
+            self._build_image_url_map(doc_id, parse_result)
+        table_ids = [tbl.id for tbl in tables]
+        rewritten_markdown = _rewrite_markdown_refs(
+            markdown_full,
+            image_url_to_id,
+            image_caption_to_id,
+            table_ids,
+            page_to_img_ids=page_to_img_ids,
+            img_id_to_page=img_id_to_page,
+        )
+
+        if image_url_to_id or image_caption_to_id or table_ids:
+            self._logger.log(
+                f"[LlamaParseBackend] Rewrote markdown refs: "
+                f"url_mapped={len(image_url_to_id)} caption_mapped={len(image_caption_to_id)} "
+                f"pages_with_images={len(page_to_img_ids)} table_tokens={len(table_ids)}"
+            )
+
+        # ── Chunk the rewritten markdown ───────────────────────────────────────
+        chunks = self._extract_chunks(doc_id, rewritten_markdown)
+
         return ExtractionResult(
             doc_id=doc_id,
             source_path=str(source),
-            markdown=markdown_full,
+            markdown=rewritten_markdown,
             source_chunks=chunks,
             images=images,
             tables=tables,
@@ -341,6 +451,82 @@ class LlamaParseBackend(OCRBackend):
                 )
                 time.sleep(sleep_s)
         raise RuntimeError(f"LlamaParse parse failed after retries: {last_exc}") from last_exc
+
+    def _build_image_url_map(
+        self, doc_id: str, parse_result: Any
+    ) -> tuple[dict[str, str], dict[str, str], dict[int, list[str]], dict[str, int]]:
+        """
+        Build lookup dicts for rewriting image refs in markdown_full.
+
+        Returns:
+            url_to_id:       presigned URL / filename / basename → img_id
+            caption_to_id:   figure caption text → img_id
+                             (only the FIRST layout image per page is caption-eligible;
+                             subsequent images on the same page are sub-panels that get
+                             emitted as siblings rather than matched by caption)
+            page_to_img_ids: page number → ordered list of img_ids on that page
+            img_id_to_page:  img_id → page number (reverse of page_to_img_ids)
+        """
+        url_to_id: dict[str, str] = {}
+        caption_to_id: dict[str, str] = {}
+        page_to_img_ids: dict[int, list[str]] = {}
+        img_id_to_page: dict[str, int] = {}
+
+        # ─ Step 1: caption → ordinal position, using the items walk ──────────────
+        items_block = _attr(parse_result, "items")
+        item_pages = _attr(items_block, "pages") or []
+        img_item_counter = 0
+        meta_index_to_caption: dict[int, str] = {}
+        for page in item_pages:
+            for item in (_attr(page, "items") or []):
+                if str(_attr(item, "type", "")).lower() == "image":
+                    caption = str(_attr(item, "caption") or "").strip()
+                    if caption:
+                        meta_index_to_caption[img_item_counter] = caption
+                    img_item_counter += 1
+
+        # ─ Step 2: walk images_content_metadata ──────────────────────────
+        images_meta = _attr(parse_result, "images_content_metadata")
+        image_entries = _attr(images_meta, "images") or []
+
+        caption_counter = 0            # only advances for the first image on each new page
+        last_caption_page: int | None = None
+
+        for entry in image_entries:
+            category = str(_attr(entry, "category") or "").lower()
+            if category in ("screenshot", "embedded"):
+                continue  # mirrors the filter in _extract_images
+
+            presigned_url: str | None = _attr(entry, "presigned_url")
+            if not presigned_url:
+                continue
+
+            index: int = _attr(entry, "index", 0)
+            filename: str = str(_attr(entry, "filename") or f"img_{index}.bin")
+            img_id = f"{doc_id}_img_{index + 1:03d}"
+
+            # URL/filename map
+            url_to_id[presigned_url] = img_id
+            url_to_id[filename] = img_id
+            url_to_id[Path(filename).name] = img_id
+
+            # Page grouping
+            page_num = _page_from_filename(filename)
+            if page_num is not None:
+                page_to_img_ids.setdefault(page_num, []).append(img_id)
+                img_id_to_page[img_id] = page_num
+
+            # Caption map: only the FIRST layout image on each page gets a caption.
+            # Subsequent images on the same page are sub-panels; they are emitted
+            # as siblings of the primary token rather than having their own entry.
+            if page_num != last_caption_page:
+                caption = meta_index_to_caption.get(caption_counter)
+                if caption:
+                    caption_to_id[caption] = img_id
+                caption_counter += 1
+                last_caption_page = page_num
+
+        return url_to_id, caption_to_id, page_to_img_ids, img_id_to_page
 
     def _extract_chunks(self, doc_id: str, markdown_full: str) -> list[ExtractedChunk]:
         text = markdown_full.strip()
@@ -475,11 +661,20 @@ class LlamaParseBackend(OCRBackend):
         images_meta = _attr(parse_result, "images_content_metadata")
         image_entries = _attr(images_meta, "images") or []
 
+        # Caption assignment: only the FIRST layout image on each page gets a
+        # caption from the items tree.  Additional images on the same page are
+        # sub-panels of the same figure; they are stored without a caption and
+        # referenced via the sibling-injection mechanism in _rewrite_markdown_refs.
+        caption_counter: int = 0
+        last_caption_page: int | None = None
+
         extracted: list[ExtractedImage] = []
         for entry in image_entries:
             category = str(_attr(entry, "category") or "").lower()
-            # Only keep actual embedded figures — skip screenshots and layout crops.
-            if category == "screenshot":
+            # Only keep layout detections — these cover every page, including
+            # pages where figures are not embedded PDF objects.
+            # Skip screenshots and embedded objects.
+            if category in ("screenshot", "embedded"):
                 continue
 
             presigned_url: str | None = _attr(entry, "presigned_url")
@@ -489,7 +684,15 @@ class LlamaParseBackend(OCRBackend):
             index: int = _attr(entry, "index", 0)
             filename: str = str(_attr(entry, "filename") or f"img_{index}.bin")
             mime_type: str = str(_attr(entry, "content_type") or "application/octet-stream")
-            caption: str = caption_by_index.get(index, "")
+
+            # Advance caption only when we move to a new page.
+            page_num = _page_from_filename(filename)
+            if page_num != last_caption_page:
+                caption = caption_by_index.get(caption_counter, "")
+                caption_counter += 1
+                last_caption_page = page_num
+            else:
+                caption = ""  # sub-panel, no separate caption
 
             try:
                 image_bytes = _download_bytes_with_retry(
@@ -517,7 +720,7 @@ class LlamaParseBackend(OCRBackend):
                 id=img_id,
                 mime_type=mime_type,
                 base64_data=base64_data,
-                page=None,  # page not present on ImagesContentMetadataImage
+                page=page_num,
                 caption=caption,
                 local_path=local_path,
             ))

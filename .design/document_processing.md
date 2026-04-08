@@ -23,6 +23,7 @@ class OCRBackend(ABC):
 | `"chandra"` | `ChandraOCRBackend` | ✅ Active (Too slow CPU inference (~7 mins per page))| chandra-ocr[hf] | ~7GB | after 10 minutes, only 1 page |
 | `"glm"` | `GLMOCRBackend` | ✅ Active (Slow CPU inference (~2.5 mins per page)) | transformers>=5.0.0, pillow, pypdfium2 | ~1 GB | after 10 minutes, only 4 pages |
 | `"marker"` | `MarkerBackend` | ✅ Active (Default, high-accuracy PDF→markdown via surya OCR; extracts images, tables, math) | marker-pdf | ~8 GB | 14 minutes |
+| `"llama_parse"` | `LlamaParseBackend` | ✅ Active (Cloud parser, high-accuracy tables & LaTeX, extracts layout images) | llama-cloud | N/A (Cloud) | ~25 seconds |
 
 `DocProcessor` accepts an optional `backend` parameter (string key or `OCRBackend` instance). It defaults to `"marker"`.  Marker is currently the best performing, Docling is the fastest, but has issues with subscripts in text.
 
