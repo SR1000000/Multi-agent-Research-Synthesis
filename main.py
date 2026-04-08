@@ -178,7 +178,8 @@ def main() -> None:
     logger = AgentLogger()
 
     # Reset WIP database for the new run
-    WIPDatabase().reset()
+    with WIPDatabase() as db:
+        db.reset()
 
     _configure_llm(args)
     callbacks, logger = _get_callbacks(args, logger)
