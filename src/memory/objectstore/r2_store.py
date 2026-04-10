@@ -140,7 +140,7 @@ class R2ObjectStore(ObjectStoreProvider):
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
-            if error_code == "404":
+            if error_code in ["404", "NoSuchKey"]:
                 self._logger.log(f"R2 object not found: {object_key}", level="warning")
                 raise FileNotFoundError(f"Object not found in R2: {object_key}")
             self._logger.log(f"R2 download failed for key '{object_key}': {error_code} - {str(e)}", level="error")
