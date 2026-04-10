@@ -36,7 +36,6 @@ class ResearchToSlideAgent(BaseLLMAgent):
             return Command(update={"messages": [f"[ResearchToSlide] Skipped slides {start_idx}-{end_idx} (no chunks)"]})
 
         # 1. Fetch chunks from research.db
-        # 1. Fetch chunks from research.db
         with ResearchDatabase() as research_db:
             placeholders = ','.join(['?'] * len(chunk_ids))
             query = f"SELECT id, text, contextualized_text FROM text_chunks WHERE id IN ({placeholders})"

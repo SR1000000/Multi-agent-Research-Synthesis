@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TypeVar
+from typing import TypeVar, Any
 from dotenv import load_dotenv
 from openai import OpenAI
 from ollama import Client
@@ -76,9 +76,60 @@ class OpenRouterLLM:
             req_params["max_tokens"] = mt
 
         if schema is not None:
-            raise NotImplementedError("Structured output not yet supported for OpenRouter")
+            # Prepare the schema for OpenAI-style structured outputs
+            json_schema = schema.model_json_schema()
+            
+            def _make_strict(d: Any) -> None:
+                if isinstance(d, dict):
+                    if d.get("type") == "object":
+                        d["additionalProperties"] = False
+                        if "properties" in d:
+                            # In strict mode, all properties must be in 'required'
+                            d["required"] = list(d["properties"].keys())
+                    for v in d.values():
+                        _make_strict(v)
+                elif isinstance(d, list):
+                    for item in d:
+                        _make_strict(item)
 
-        resp = self._client.chat.completions.create(**req_params)
+            _make_strict(json_schema)
+
+            req_params["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema.__name__,
+                    "strict": True,
+                    "schema": json_schema
+                }
+            }
+
+        try:
+            resp = self._client.chat.completions.create(**req_params)
+        except Exception as e:
+            # Fallback for models that don't support structured outputs (json_schema)
+            if schema is not None and any(x in str(e).lower() for x in ["structured_outputs", "json_schema", "response_format"]):
+                # Try falling back to basic JSON object mode
+                req_params["response_format"] = {"type": "json_object"}
+                
+                # Nudge the model by appending to the last user message
+                # We copy to avoid mutating the original message list for potential retries
+                msgs_copy = list(messages)
+                if msgs_copy:
+                    last_msg = msgs_copy[-1].copy()
+                    last_msg["content"] = str(last_msg.get("content", "")) + "\n\nIMPORTANT: You must respond with a valid JSON object matching the requested schema."
+                    msgs_copy[-1] = last_msg
+                    req_params["messages"] = msgs_copy
+                
+                try:
+                    resp = self._client.chat.completions.create(**req_params)
+                except Exception as fallback_err:
+                    raise NotImplementedError(
+                        f"Structured output (json_schema) and JSON mode not supported for model {self.config.model}. "
+                        f"Original error: {e}. Fallback error: {fallback_err}"
+                    ) from fallback_err
+            else:
+                raise
+
         msg = resp.choices[0].message
         raw = msg.content
         

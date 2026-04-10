@@ -17,6 +17,7 @@ class ExtractedImage:
         contextualized_text: Succinct context situated within the document
     """
     id: str
+    """Unique artifact identifier (provider-prefixed, e.g., doc_lp_img_001)"""
     mime_type: str
     base64_data: str
     page: int | None = None
@@ -41,6 +42,7 @@ class ExtractedTable:
         contextualized_text: Succinct context situated within the document
     """
     id: str
+    """Unique artifact identifier (provider-prefixed, e.g., doc_lp_tbl_001)"""
     content: str
     page: int | None = None
     caption: str = ""
@@ -55,12 +57,12 @@ class ExtractedEquation:
     """
     A mathematical equation extracted from the document.
 
-    LlamaParse does not produce a dedicated equation item type — equations appear
-    inline in markdown as $...$ or block as $$...$$. This dataclass holds
-    equations found by regex scanning the markdown_full string.
+    Equations may be extracted from dedicated formula items (e.g., Docling's
+    FormulaItem) or by regex-scanning rendered markdown — depending on what the
+    processing backend supports. See each backend for extraction specifics.
 
     Attributes:
-        id: Unique artifact identifier (e.g., eq_001)
+        id: Unique artifact identifier (provider-prefixed, e.g., doc_lp_eq_001)
         latex_or_text: LaTeX source of the equation (content between $ delimiters)
         display_mode: 'block' for $$...$$, 'inline' for $...$
         page: 1-indexed page number (best-effort from surrounding context; often None)
@@ -78,7 +80,7 @@ class ExtractedEquation:
 @dataclass
 class ExtractedChunk:
     """
-    A semantically coherent text chunk produced by the MarkdownSplitter.
+    A semantically coherent text chunk produced by the document processing pipeline.
 
     Attributes:
         id: Unique artifact identifier (e.g., chunk_0001)
@@ -174,7 +176,7 @@ class ArtifactReference:
     markdown_token: str
 
 @dataclass
-class ExtractionManifest:   # For backends that emit ExtractionManifest (Not LlamaParse)
+class ExtractionManifest:   # For backends that emit a manifest (e.g., marker, docling, glm — not LlamaParse)
     doc_id: str
     source_pdf_path: str
     markdown_path: str

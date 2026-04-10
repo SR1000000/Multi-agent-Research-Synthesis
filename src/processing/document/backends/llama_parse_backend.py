@@ -25,6 +25,10 @@ from ..schema import (
 )
 
 _TIER = "agentic"
+# Prefix embedded in every artifact ID produced by this backend.
+# Other backends should define their own prefix (e.g. "dl" for Docling)
+# so IDs remain self-describing and collision-free across providers.
+_LP_ID_PREFIX = "lp"
 _VERSION = "latest"
 _PARSE_CREATE_MAX_ATTEMPTS = 3
 _PARSE_WAIT_MAX_ATTEMPTS = 3
@@ -210,11 +214,12 @@ def _extract_equations_from_markdown(doc_id: str, markdown: str) -> list[Extract
     """
     Scan markdown_full for LaTeX block equations only.
 
-    LlamaParse does not emit a dedicated equation item type (as of v2).
-    Equations appear in the markdown rendered by the agentic model. With the
-    custom_prompt asking for LaTeX, block equations come out as $$...$$.
+    LlamaParse (agentic tier) does not emit a dedicated equation item type;
+    equations appear inline in the rendered markdown. With the custom_prompt
+    requesting LaTeX notation, block equations come out as $$...$$.
 
-    We deduplicate by expression content.
+    Equations are deduplicated by expression content.
+    IDs are prefixed with the LlamaParse provider prefix (_LP_ID_PREFIX).
     """
     equations: list[ExtractedEquation] = []
     seen: set[str] = set()
@@ -227,7 +232,7 @@ def _extract_equations_from_markdown(doc_id: str, markdown: str) -> list[Extract
             continue
         seen.add(expr)
         equations.append(ExtractedEquation(
-            id=f"{doc_id}_eq_{counter:03d}",
+            id=f"{doc_id}_{_LP_ID_PREFIX}_eq_{counter:03d}",
             latex_or_text=expr,
             display_mode="block",
         ))
@@ -503,7 +508,7 @@ class LlamaParseBackend(OCRBackend):
 
             index: int = _attr(entry, "index", 0)
             filename: str = str(_attr(entry, "filename") or f"img_{index}.bin")
-            img_id = f"{doc_id}_img_{index + 1:03d}"
+            img_id = f"{doc_id}_{_LP_ID_PREFIX}_img_{index + 1:03d}"
 
             # URL/filename map
             url_to_id[presigned_url] = img_id
@@ -616,7 +621,7 @@ class LlamaParseBackend(OCRBackend):
                 title = last_heading or f"Table {counter}"
 
                 tables.append(ExtractedTable(
-                    id=f"{doc_id}_tbl_{counter:03d}",
+                    id=f"{doc_id}_{_LP_ID_PREFIX}_tbl_{counter:03d}",
                     content=content,
                     page=page_number,
                     title=title,
@@ -704,7 +709,7 @@ class LlamaParseBackend(OCRBackend):
                 print(f"[LlamaParseBackend] Failed to download image {filename}: {exc}")
                 continue
 
-            img_id = f"{doc_id}_img_{index + 1:03d}"
+            img_id = f"{doc_id}_{_LP_ID_PREFIX}_img_{index + 1:03d}"
             ext = _extension(filename, mime_type)
             storage_key = f"{doc_id}/images/{img_id}.{ext}"
             local_path: str | None = None
