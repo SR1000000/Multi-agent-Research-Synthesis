@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from rank_bm25 import BM25Okapi
 
-from src.memory.sqlite.database import SQLiteDatabase
+from src.memory.research.database import ResearchDatabase
 from src.processing.embedder.base import TextEmbedder
 
 from .bm25 import chunk_bm25_text, chunk_display_text, table_bm25_text, tokenize
@@ -13,7 +13,7 @@ from .types import RetrievedItem
 
 
 class Retriever:
-    def __init__(self, db: SQLiteDatabase, embedder: TextEmbedder) -> None:
+    def __init__(self, db: ResearchDatabase, embedder: TextEmbedder) -> None:
         self._db = db
         self._embedder = embedder
 
@@ -57,6 +57,8 @@ class Retriever:
 
         chunk_rows = self._db.fetch_all_text_chunks_for_retrieval()
         table_rows = self._db.fetch_all_tables_for_retrieval()
+        equation_rows = self._db.fetch_all_equations_for_retrieval()
+        image_rows = self._db.fetch_all_images_for_retrieval()
 
         corpus: list[list[str]] = []
         meta: list[tuple[str, str, str, str]] = []
@@ -73,10 +75,14 @@ class Retriever:
                 tokenize(chunk_bm25_text(row.get("text") or "", row.get("contextualized_text")))
             )
 
-        for row in table_rows:
-            display_html = row.get("content") or ""
-            meta.append(("table", row["id"], row["document_id"], display_html))
-            corpus.append(tokenize(table_bm25_text(row.get("contextualized_text"), display_html)))
+        for row in equation_rows:
+            meta.append(("equation", row["id"], row["document_id"], row.get("text") or ""))
+            corpus.append(tokenize(row.get("text") or ""))
+
+        for row in image_rows:
+            meta.append(("image", row["id"], row["document_id"], row.get("caption") or row.get("storage_path") or ""))
+            # For images, we'll use the caption or storage path for keyword retrieval. Actual image fetching will be handled separately.
+            corpus.append(tokenize(row.get("caption") or row.get("storage_path") or ""))
 
         if not corpus:
             return []
@@ -93,7 +99,7 @@ class Retriever:
         for i in ranked:
             kind, doc_id, document_id, text = meta[i]
             item = RetrievedItem(
-                kind="chunk" if kind == "chunk" else "table",
+                kind=kind,  # This will now be "chunk", "table", "equation", or "image"
                 id=doc_id,
                 document_id=document_id,
                 text=text,

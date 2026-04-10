@@ -230,6 +230,21 @@ CREATE TABLE IF NOT EXISTS slide_review_events (
 );
 """
 
+# Agent retrieval call log (formerly in wip.db)
+CREATE_RETRIEVED_CHUNKS_TABLE = """
+CREATE TABLE IF NOT EXISTS retrieved_chunks (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    document_id TEXT NOT NULL,
+    text_content TEXT NOT NULL,
+    score REAL,
+    retrieved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    session_id TEXT,
+    agent_type TEXT,
+    query TEXT
+);
+"""
+
 # Indexes for performance and filtering
 CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash);",

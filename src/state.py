@@ -279,6 +279,7 @@ class ResearchState(TypedDict):
     slides_written: Annotated[List[SlideWriteRecord], operator.add]
     critic_results: Annotated[List[CriticResultRecord], operator.add]
     review_summaries: Annotated[List[ReviewCycleSummary], operator.add]
+    retrieval_queries: List[str]
 
     # -- observability --
     messages: Annotated[List[str], operator.add]
