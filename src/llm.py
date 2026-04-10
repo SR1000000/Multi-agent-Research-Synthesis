@@ -12,8 +12,40 @@ from google import genai
 from pydantic import BaseModel
 from google.genai import types
 
-T = TypeVar("T", bound=BaseModel)
 import re
+import time
+import random
+from functools import wraps
+
+T = TypeVar("T", bound=BaseModel)
+
+def with_retry(max_retries=6, initial_wait=10, backoff_factor=1.5):
+    """
+    Decorator to retry LLM calls automatically upon hitting a 429
+    (Resource Exhausted / Rate Limit) error. Uses exponential backoff.
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            wait = initial_wait
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    err_str = str(e).lower()
+                    # Check if it's a rate limit error (429)
+                    if "429" in err_str or "resource_exhausted" in err_str:
+                        if attempt == max_retries:
+                            raise
+                        # Add a small randomness to avoid thundering herd
+                        sleep_time = wait + random.uniform(0, 2)
+                        print(f"[llm] Rate limit hit (429). Retrying in {sleep_time:.1f}s... (Attempt {attempt + 1}/{max_retries})")
+                        time.sleep(sleep_time)
+                        wait *= backoff_factor
+                    else:
+                        raise
+        return wrapper
+    return decorator
 
 DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.2-3b-instruct:free"
 DEFAULT_OLLAMA_MODEL = "qwen3.5:397b-cloud"
@@ -62,6 +94,7 @@ class OpenRouterLLM:
             base_url=config.base_url,
         )
 
+    #@with_retry()
     def complete(self, messages: list[dict], schema: type[T] | None = None, **kwargs) -> str | T:
         req_params = {
             "model": self.config.model,
@@ -152,6 +185,7 @@ class OllamaLLM:
             headers={'Authorization': f'Bearer {api_key}'}
         )
 
+    #@with_retry()
     def complete(self, messages: list[dict], schema: type[T] | None = None, **kwargs) -> str | T:
         """Invoke Ollama chat. If schema is provided, constrain output to JSON schema."""
         options = {}
@@ -195,6 +229,7 @@ class GeminiLLM:
             api_key=config.resolved_api_key("GOOGLE_AI_STUDIO_API_KEY"),
         )
 
+    #@with_retry()
     def complete(self, messages: list[dict], schema: type[T] | None = None, **kwargs) -> str | T:
         system_instructions = []
         user_contents = []

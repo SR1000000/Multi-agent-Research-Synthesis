@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from langfuse.decorators import observe
 from src.llm import get_llm, _strip_think_block
 from src.state import DeliveryPlan
+from src.logging.logger import AgentLogger
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -152,6 +153,7 @@ AGENT_ROLES = {
 class BaseLLMAgent:
     def __init__(self, role: str):
         self.role = role
+        self._base_logger = AgentLogger()
 
     def _build_messages(self, turns: list[dict]) -> list[dict]:
         return [{'role': 'system', 'content': AGENT_ROLES[self.role]}, *turns]
@@ -160,6 +162,12 @@ class BaseLLMAgent:
     def _call_raw(self, turns: list[dict], schema: type[T] | None = None, max_retries: int = 2) -> str:
         messages = self._build_messages(turns)
         llm = get_llm()
+        
+        # Output the model that the agent is using
+        model_name = getattr(llm.config, 'model', 'unknown')
+        provider = getattr(llm.config, 'provider', 'unknown')
+        self._base_logger.log(f"[{self.role}] Invoking LLM ({provider}: {model_name})")
+
         for attempt in range(max_retries):
             try:
                 return llm.complete(messages, schema=schema)

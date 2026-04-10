@@ -34,6 +34,7 @@ Edit `.env` — replace the placeholder values with your LLM Provider's API key.
 - [OpenRouter API](https://openrouter.ai/keys)
 - [Ollama Cloud API](https://ollama.com/settings/keys)
 - [Google AI Studio](https://github.com/google-gemini/cookbook/blob/main/quickstarts/Get_started.ipynb)
+    - should be Tier 1 instead of Free Tier to not be rate-limited (it will still only use free resources, but the rate limits are much higher).  Get Tier 1 access by setting up billing but putting monthly spend cap at $0.
 - [LlamaCloud API](https://cloud.llamaindex.ai/api-keys)
 
 ### 4. Langfuse Logging Setup
