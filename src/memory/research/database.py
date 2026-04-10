@@ -189,8 +189,8 @@ class ResearchDatabase(DatabaseProvider):
             for img in result.images:
                 self._conn.execute(
                     """
-                    INSERT OR REPLACE INTO images 
-                    (id, document_id, mime_type, base64_data, page_number, caption, local_path, contextualized_text) 
+                    INSERT OR REPLACE INTO images
+                    (id, document_id, mime_type, base64_data, storage_path, page_number, caption, contextualized_text)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
@@ -198,9 +198,9 @@ class ResearchDatabase(DatabaseProvider):
                         doc_id,
                         img.mime_type,
                         img.base64_data,
+                        img.storage_path,
                         img.page,
                         img.caption,
-                        img.local_path,
                         img.contextualized_text,
                     )
                 )
@@ -303,11 +303,11 @@ class ResearchDatabase(DatabaseProvider):
             ExtractedImage(
                 id=row["id"],
                 mime_type=row["mime_type"],
-                base64_data=row["base64_data"],
+                base64_data=row["base64_data"] or "",
                 page=row["page_number"],
                 caption=row["caption"] or "",
-                local_path=row["local_path"],
-                contextualized_text=row["contextualized_text"]
+                storage_path=row["storage_path"],
+                contextualized_text=row["contextualized_text"],
             ) for row in img_rows
         ]
 
@@ -378,11 +378,11 @@ class ResearchDatabase(DatabaseProvider):
         return ExtractedImage(
             id=row["id"],
             mime_type=row["mime_type"],
-            base64_data=row["base64_data"],
+            base64_data=row["base64_data"] or "",
             page=row["page_number"],
             caption=row["caption"] or "",
-            local_path=row["local_path"],
-            contextualized_text=row["contextualized_text"]
+            storage_path=row["storage_path"],
+            contextualized_text=row["contextualized_text"],
         )
 
     def get_table(self, table_id: str) -> ExtractedTable | None:

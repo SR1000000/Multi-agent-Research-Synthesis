@@ -30,6 +30,7 @@ def get_ocr_backend(
     name: str = "llama_parse",
     text_chunker: TextChunkerProvider | None = None,
     logger: AgentLogger | None = None,
+    object_store: Any = None,
 ) -> OCRBackend:
     """Instantiate an OCR backend by name."""
     cls = BACKEND_REGISTRY.get(name)
@@ -39,7 +40,7 @@ def get_ocr_backend(
             f"Available: {list(BACKEND_REGISTRY.keys())}"
         )
     if cls is LlamaParseBackend:
-        return cls(text_chunker=text_chunker, logger=logger)
+        return cls(text_chunker=text_chunker, logger=logger, object_store=object_store)
     return cls()
 
 
@@ -58,6 +59,7 @@ class DocProcessor:
         contextualizer: Contextualizer | None = None,
         embedder: TextEmbedder | None = None,
         logger: AgentLogger | None = None,
+        object_store: Any = None,
     ):
         """
         Create a document processor with the given OCR backend and optional pipeline stages.
@@ -65,7 +67,7 @@ class DocProcessor:
         """
         self._logger = logger or AgentLogger()
         if isinstance(backend, str):
-            self.backend = get_ocr_backend(backend, text_chunker=text_chunker, logger=self._logger)
+            self.backend = get_ocr_backend(backend, text_chunker=text_chunker, logger=self._logger, object_store=object_store)
         else:
             self.backend = backend
         self._db = db
