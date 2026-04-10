@@ -19,7 +19,14 @@ from functools import wraps
 
 T = TypeVar("T", bound=BaseModel)
 
-def with_retry(max_retries=6, initial_wait=10, backoff_factor=1.5):
+DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.2-3b-instruct:free"
+DEFAULT_OLLAMA_MODEL = "qwen3.5:397b-cloud"
+DEFAULT_GEMINI_MODEL="gemini-3.1-flash-lite-preview"  # 3.1 has higher RPD than 2.5 on free tier for some reason
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(dotenv_path=str(_PROJECT_ROOT / ".env"))
+
+def with_retry(max_retries=3, initial_wait=60, backoff_factor=1.5):
     """
     Decorator to retry LLM calls automatically upon hitting a 429
     (Resource Exhausted / Rate Limit) error. Uses exponential backoff.
@@ -46,13 +53,6 @@ def with_retry(max_retries=6, initial_wait=10, backoff_factor=1.5):
                         raise
         return wrapper
     return decorator
-
-DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.2-3b-instruct:free"
-DEFAULT_OLLAMA_MODEL = "qwen3.5:397b-cloud"
-DEFAULT_GEMINI_MODEL="gemini-2.5-flash-lite"
-
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(dotenv_path=str(_PROJECT_ROOT / ".env"))
 
 def _strip_think_block(text: str) -> str:
     """Remove <think>...</think> blocks emitted by reasoning models (e.g. qwen3).
@@ -229,7 +229,7 @@ class GeminiLLM:
             api_key=config.resolved_api_key("GOOGLE_AI_STUDIO_API_KEY"),
         )
 
-    #@with_retry()
+    @with_retry()
     def complete(self, messages: list[dict], schema: type[T] | None = None, **kwargs) -> str | T:
         system_instructions = []
         user_contents = []
