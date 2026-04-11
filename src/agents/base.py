@@ -238,8 +238,7 @@ def _single_list_field(schema: type[BaseModel]) -> str | None:
     list_fields = [
         name
         for name, fi in schema.model_fields.items()
-        if getattr(getattr(fi.annotation, "__origin__", None), "__name__", None) == "list"
-        or getattr(fi.annotation, "__origin__", None) is list
+        if typing.get_origin(fi.annotation) is list
     ]
     return list_fields[0] if len(list_fields) == 1 else None
 
