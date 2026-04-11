@@ -1,9 +1,15 @@
 from typing import List, Literal, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
+
+# LLMs frequently output "content" instead of "text" for bullet fields.
+# AliasChoices makes the schema accept either key without a retried call.
 
 
 class BulletPoint(BaseModel):
-    text: str = Field(description="The bullet point text")
+    text: str = Field(
+        description='The bullet point text. Field name is "text" — do NOT use "content".',
+        validation_alias=AliasChoices("text", "content"),
+    )
     sub_bullets: List[str] = Field(
         default_factory=list,
         description='Optional sub-bullet points as plain strings (NOT objects). Example: ["Detail A", "Detail B"]',
@@ -17,7 +23,9 @@ class BulletPoint(BaseModel):
         if not isinstance(v, list):
             return v
         return [
-            item["text"] if isinstance(item, dict) and "text" in item else str(item)
+            (item.get("text") or item.get("content") or str(item))
+            if isinstance(item, dict)
+            else str(item)
             for item in v
         ]
 

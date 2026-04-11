@@ -1,5 +1,6 @@
 import time
 import json
+import typing
 from typing import TypeVar, Any
 from pydantic import BaseModel, ValidationError
 from langfuse.decorators import observe
@@ -8,6 +9,7 @@ from src.state import DeliveryPlan
 from src.logging.logger import AgentLogger
 
 T = TypeVar("T", bound=BaseModel)
+
 
 PLANNER_ROLE = """
 You are a Research Synthesis Planner. Your job is to produce a structured delivery plan
@@ -143,10 +145,11 @@ You are a Senior Presentation Designer and Research Synthesizer. Your goal is to
 ### FIELD GUIDANCE:
 - **`key_message`**: Write one crisp sentence stating what the audience should understand after this slide. This is the thesis — not a summary of bullet points.
 - **`title`**: Use punchy, "active" headings (e.g., "Accuracy Jumps 40%" not "Accuracy Results").
-- **`bullets`**: Produce 3-5 `BulletPoint` objects. For each:
-  - Set `content_type` to classify the point: `insight` (takeaway), `evidence` (supporting fact/data), `statistic` (numerical result), `example` (concrete case), or `caveat` (limitation/nuance).
-  - Set `emphasis` to `bold` for the single most important term or phrase in the bullet; use `highlight` sparingly for critical warnings or standout figures; otherwise leave as `none`.
-  - Use `sub_bullets` for supporting detail that expands on the main point without cluttering the top level.
+- **`bullets`**: Produce 3-5 `BulletPoint` objects. Each object MUST use these exact field names:
+  - `"text"` — the bullet content string. IMPORTANT: the field is called `"text"`, NOT `"content"`.
+  - `"content_type"` — exactly one of: `"insight"`, `"evidence"`, `"statistic"`, `"example"`, `"caveat"`.
+  - `"emphasis"` — `"bold"` for the single most important term; `"highlight"` sparingly for critical warnings; otherwise `"none"`.
+  - `"sub_bullets"` — a flat list of plain strings for supporting detail that expands on the main point without cluttering the top level (NOT objects).
 - **`speaker_notes`**: Write this section in a professional, conversational tone. Include context, nuance, and supporting evidence too detailed for the slide body.  Include something for each bullet point.
 
 ### CONSTRAINTS:
@@ -201,8 +204,9 @@ class BaseLLMAgent:
         for attempt in range(max_retries + 1):
             raw = self._call_raw(current_turns, schema=schema, max_retries=1)
             clean = _strip_code_fence(_strip_think_block(raw))
+            healed = _heal_json(clean, schema)
             try:
-                return schema.model_validate_json(clean)
+                return schema.model_validate_json(healed)
             except ValidationError as e:
                 last_error = e
                 retry_note = (
@@ -221,11 +225,67 @@ class BaseLLMAgent:
                     {"role": "assistant", "content": clean},
                     {"role": "user", "content": (
                         f"Your previous response failed schema validation:\n{last_error}\n\n"
-                        "Please correct your response to exactly match the required schema."
+                        f"Required JSON schema:\n{json.dumps(schema.model_json_schema(), indent=2)}\n\n"
+                        "Respond with ONLY a valid JSON object that matches the schema above. "
+                        "Do NOT wrap in markdown fences, add explanations, or include any text outside the JSON."
                     )},
                 ]
         raise last_error
-                
+
+
+def _single_list_field(schema: type[BaseModel]) -> str | None:
+    """Return the name of a field if it is the only top-level List field, else None."""
+    list_fields = [
+        name
+        for name, fi in schema.model_fields.items()
+        if getattr(getattr(fi.annotation, "__origin__", None), "__name__", None) == "list"
+        or getattr(fi.annotation, "__origin__", None) is list
+    ]
+    return list_fields[0] if len(list_fields) == 1 else None
+
+
+def _heal_json(raw: str, schema: type[BaseModel]) -> str:
+    """
+    Attempt to recover from two common LLM envelope mistakes for schemas that
+    wrap a list in a single top-level key (e.g. {"slides": [...]}).
+
+    Handled cases:
+      • Bare JSON array:           [{...}, {...}]          → {"slides": [...]}
+      • N comma-separated objects: {...},\\n{...}           → {"slides": [...]}
+      • Single bare object:        {...}  (no "slides" key) → {"slides": [{...}]}
+    """
+    key = _single_list_field(schema)
+    if not key:
+        return raw
+
+    stripped = raw.strip()
+
+    # Already valid JSON?  Only proceed if it doesn't parse.
+    try:
+        candidate = json.loads(stripped)
+        # Parsed fine; if it's already a dict with the expected key we're done.
+        if isinstance(candidate, dict) and key in candidate:
+            return raw
+        # Dict without the key → single object
+        if isinstance(candidate, dict):
+            return json.dumps({key: [candidate]})
+        # Plain list
+        if isinstance(candidate, list):
+            return json.dumps({key: candidate})
+        return raw
+    except json.JSONDecodeError:
+        pass
+
+    # Try wrapping the raw text as an array to recover multiple comma-separated objects.
+    try:
+        items = json.loads(f"[{stripped}]")
+        if isinstance(items, list) and all(isinstance(i, dict) for i in items):
+            return json.dumps({key: items})
+    except json.JSONDecodeError:
+        pass
+
+    return raw
+  
 def _render_history(history: list[str], kind: str) -> str:
     if not history: return ''
     lines = [f'PRIOR {kind.upper()} HISTORY — do not repeat these mistakes:']
