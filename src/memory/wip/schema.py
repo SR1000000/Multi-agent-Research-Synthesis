@@ -1,12 +1,41 @@
-from typing import List, Optional
-from pydantic import BaseModel, Field
+from typing import List, Literal, Optional
+from pydantic import BaseModel, Field, field_validator
+
+
+class BulletPoint(BaseModel):
+    text: str = Field(description="The bullet point text")
+    sub_bullets: List[str] = Field(
+        default_factory=list,
+        description='Optional sub-bullet points as plain strings (NOT objects). Example: ["Detail A", "Detail B"]',
+    )
+    emphasis: Literal["none", "bold", "highlight"] = Field(default="none", description="Visual emphasis hint for the key term or phrase in this bullet")
+    content_type: Literal["insight", "evidence", "statistic", "example", "caveat"] = Field(default="insight", description="Semantic type of this bullet point")
+
+    @field_validator("sub_bullets", mode="before")
+    @classmethod
+    def coerce_sub_bullets(cls, v: list) -> list[str]:
+        if not isinstance(v, list):
+            return v
+        return [
+            item["text"] if isinstance(item, dict) and "text" in item else str(item)
+            for item in v
+        ]
+
 
 class SlideContent(BaseModel):
-    title: str = Field(description="The title of the slide")
-    bullet_points: List[str] = Field(description="Main bullet points of the slide")
-    speaker_notes: str = Field(description="Speaker notes for this slide")
+    title: str = Field(description="Punchy, active heading for the slide (e.g. 'Accuracy Jumps 40%' not 'Accuracy Results')")
+    key_message: str = Field(description="One sentence capturing what the audience should understand after this slide")
+    bullets: List[BulletPoint] = Field(description="3-5 structured bullet points for the slide body")
+    speaker_notes: str = Field(description="Speaker notes in a professional, conversational tone — include context and nuance too detailed for the slide itself")
     media_id: Optional[str] = Field(default=None, description="Optional ID of an image or chart from research.db")
-    layout: Optional[str] = Field(default="text_only", description="Layout of the slide (e.g., 'text_only', 'media_left', 'media_right')")
+    layout: Literal["title_slide", "title_and_body", "two_column", "big_number", "quote", "media_left", "media_right"] = Field(
+        default="title_and_body",
+        description="Slide layout: 'title_slide' for openers/dividers, 'title_and_body' for standard bullet slides, 'two_column' for comparisons, 'big_number' for stat callouts, 'quote' for direct quotations, 'media_left'/'media_right' when a figure or chart is the focus"
+    )
+    narrative_role: Literal["hook", "context", "evidence", "insight", "transition", "conclusion"] = Field(
+        default="evidence",
+        description="Role this slide plays in the deck's narrative arc: 'hook' grabs attention, 'context' provides background, 'evidence' presents data, 'insight' delivers the key takeaway, 'transition' bridges sections, 'conclusion' wraps up"
+    )
 
 class ProtoSlide(BaseModel):
     slide_number: int = Field(description="The slide number")

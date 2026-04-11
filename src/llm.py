@@ -60,6 +60,26 @@ def _strip_think_block(text: str) -> str:
     """
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
+
+def _strip_code_fence(text: str) -> str:
+    """Strip markdown code fences (```json ... ``` or ``` ... ```) from LLM output.
+    Some models emit these even when constrained to JSON mode via format/schema params.
+    Falls back to extracting the first complete JSON object/array if fences aren't present.
+    """
+    # Fast path: single code fence wrapping the entire response
+    fenced = re.sub(r"^```(?:json)?\s*\n?(.*?)\n?```$", r"\1", text, flags=re.DOTALL).strip()
+    if fenced != text:
+        return fenced
+
+    # Fallback: prose preamble before the JSON — find the outermost { } or [ ]
+    for open_ch, close_ch in (("{", "}"), ("[", "]")):
+        start = text.find(open_ch)
+        end = text.rfind(close_ch)
+        if start != -1 and end != -1 and end > start:
+            return text[start : end + 1]
+
+    return text
+
 class Provider(str, Enum):
     OPENROUTER        = "openrouter"
     OLLAMA            = "ollama"

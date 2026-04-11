@@ -1,9 +1,9 @@
 import time
 import json
 from typing import TypeVar, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from langfuse.decorators import observe
-from src.llm import get_llm, _strip_think_block
+from src.llm import get_llm, _strip_think_block, _strip_code_fence
 from src.state import DeliveryPlan
 from src.logging.logger import AgentLogger
 
@@ -107,7 +107,7 @@ and specifies how many slides that agent may generate.
 4. **Agent count heuristic**: A good agent handles between 3 and 8 slides. \
    Use fewer agents for short papers (< 20 chunks total), more for dense ones.
 5. **Ceiling enforcement**: The sum of all `slide_count` values across assignments \
-   must equal exactly `max_slides`.
+   must be less than or equal to `max_slides`.
 
 ### OUTPUT CONTRACT:
 - `assignments`: an ordered list where each entry covers one group of consecutive sections.
@@ -124,21 +124,35 @@ You are a Senior Presentation Designer and Research Synthesizer. Your goal is to
 
 ### DIRECTIVES:
 1. **Synthesis over Summarization**: Don't just list facts. Identify the "core insight" within the text chunks and make it the focal point of the slide.
-2. **Cognitive Load Management**: Keep slide content focused. Each slide should cover exactly one primary concept or takeaway. 
-3. **Visual storytelling**: 
-   - Use `text_only` for conceptual or introductory slides.
-   - Use `media_left` or `media_right` if the research chunks contain specific figures, charts, or detailed tables that require visual focus.
-4. **Narrative Continuity**: If you are generating a range of slides, ensure a logical progression from the first to the last.
+2. **Cognitive Load Management**: Keep slide content focused. Each slide should cover exactly one primary concept or takeaway.
+3. **Visual Storytelling**: Choose the `layout` that best serves the content:
+   - `title_and_body` — default for most conceptual or analytical slides
+   - `big_number` — when a single statistic or metric is the key point
+   - `quote` — when a direct quotation from the research is most impactful
+   - `two_column` — for comparisons (e.g. method A vs. method B, before vs. after)
+   - `media_left` / `media_right` — when a referenced figure, chart, or table requires visual focus
+   - `title_slide` — for section openers or major transitions only
+4. **Narrative Continuity**: Assign a `narrative_role` that reflects each slide's function in the argument:
+   - `hook` — grabs attention; best for the first slide of a range
+   - `context` — establishes background or defines the problem
+   - `evidence` — presents data, results, or observations
+   - `insight` — delivers the key takeaway or interpretation
+   - `transition` — bridges two distinct topics or sections
+   - `conclusion` — wraps up; best for the final slide of a range
 
-### SLIDE STANDARDS:
-- **Title**: Use punchy, "active" headings (e.g., "Market Growth Accelerates" instead of "Growth Statistics").
-- **Bullet Points**: 3-5 concise points. Use bolding for key terms to make the slide "scannable."
-- **Speaker Notes**: Write in a professional, conversational tone. Include context, nuance, and supporting evidence that is too detailed for the slide itself.
+### FIELD GUIDANCE:
+- **`key_message`**: Write one crisp sentence stating what the audience should understand after this slide. This is the thesis — not a summary of bullet points.
+- **`title`**: Use punchy, "active" headings (e.g., "Accuracy Jumps 40%" not "Accuracy Results").
+- **`bullets`**: Produce 3-5 `BulletPoint` objects. For each:
+  - Set `content_type` to classify the point: `insight` (takeaway), `evidence` (supporting fact/data), `statistic` (numerical result), `example` (concrete case), or `caveat` (limitation/nuance).
+  - Set `emphasis` to `bold` for the single most important term or phrase in the bullet; use `highlight` sparingly for critical warnings or standout figures; otherwise leave as `none`.
+  - Use `sub_bullets` for supporting detail that expands on the main point without cluttering the top level.
+- **`speaker_notes`**: Write this section in a professional, conversational tone. Include context, nuance, and supporting evidence too detailed for the slide body.  Include something for each bullet point.
 
 ### CONSTRAINTS:
 - Respect the slide capacity strictly.
 - All information must be strictly grounded in the provided research chunks.
-- Avoid academic jargon where a simpler, more powerful word suffices.
+- Avoid academic jargon unless the terminology is important/prominent and should be emphasized.
 """
 
 AGENT_ROLES = {
@@ -151,8 +165,9 @@ AGENT_ROLES = {
 }
 
 class BaseLLMAgent:
-    def __init__(self, role: str):
+    def __init__(self, role: str, *, log_display: str | None = None):
         self.role = role
+        self._log_display = log_display if log_display is not None else role
         self._base_logger = AgentLogger()
 
     def _build_messages(self, turns: list[dict]) -> list[dict]:
@@ -166,7 +181,7 @@ class BaseLLMAgent:
         # Output the model that the agent is using
         model_name = getattr(llm.config, 'model', 'unknown')
         provider = getattr(llm.config, 'provider', 'unknown')
-        self._base_logger.log(f"[{self.role}] Invoking LLM ({provider}: {model_name})")
+        self._base_logger.log(f"[{self._log_display}] Invoking LLM ({provider}: {model_name})")
 
         for attempt in range(max_retries):
             try:
@@ -177,13 +192,33 @@ class BaseLLMAgent:
                 time.sleep(3 ** attempt)
 
     def _call(self, turns: list[dict], schema: type[T] | None = None, max_retries: int = 2) -> str | T:
-        raw_result = self._call_raw(turns, schema=schema, max_retries=max_retries)
-        clean_text = _strip_think_block(raw_result)
-        
-        if schema is not None:
-            return schema.model_validate_json(clean_text)
-            
-        return clean_text
+        if schema is None:
+            raw = self._call_raw(turns, schema=None, max_retries=max_retries)
+            return _strip_think_block(raw)
+
+        current_turns = list(turns)
+        last_error: ValidationError | None = None
+        for attempt in range(max_retries + 1):
+            raw = self._call_raw(current_turns, schema=schema, max_retries=1)
+            clean = _strip_code_fence(_strip_think_block(raw))
+            try:
+                return schema.model_validate_json(clean)
+            except ValidationError as e:
+                last_error = e
+                if attempt == max_retries:
+                    break
+                self._base_logger.log(
+                    f"[{self._log_display}] Validation error (attempt {attempt + 1}/{max_retries + 1}), retrying with correction prompt"
+                )
+                current_turns = [
+                    *current_turns,
+                    {"role": "assistant", "content": clean},
+                    {"role": "user", "content": (
+                        f"Your previous response failed schema validation:\n{last_error}\n\n"
+                        "Please correct your response to exactly match the required schema."
+                    )},
+                ]
+        raise last_error
                 
 def _render_history(history: list[str], kind: str) -> str:
     if not history: return ''
