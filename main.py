@@ -17,6 +17,8 @@ from src.logging.logger import AgentLogger
 from src.memory.wip.database import WIPDatabase
 from src.memory.objectstore import LocalObjectStore, R2ObjectStore, DEFAULT_OBJECT_STORE_CONFIG
 
+OUTPUT_DIR = Path(__file__).parent / "output"  # PowerPoint files land here
+
 DEFAULT_QUERY = "Explain what Transformers are and how they are so important to AI"
 DEFAULT_SOURCE_PDF = "./.samples/Transformers.pdf"
 
@@ -207,11 +209,23 @@ def _build_initial_state(args: argparse.Namespace, preprocessing_message: str, a
         'document_context': "",
         'source_chunks':    artifacts.source_chunks if artifacts else [],
         'doc_id':           artifacts.doc_id if artifacts else "unknown",
+        'paper_title':      (artifacts.paper_metadata.title if artifacts and artifacts.paper_metadata else "") or "",
         'revision_history': [],
         'replan_history':   [],
         'messages':         [preprocessing_message],
         'errors':           [],
     }
+
+def _sanitize_filename(name: str) -> str:
+    """Keep only alphanumeric, spaces, hyphens and underscores. Trim to length."""
+    if not name:
+        return ""
+    # Replace invalid chars with underscore
+    import re
+    safe = "".join(ch if ch.isalnum() or ch in (" ", "-", "_") else "_" for ch in name)
+    # Collapse multiple underscores/spaces and switch spaces to underscores
+    safe = re.sub(r"[ _]+", "_", safe).strip("_")
+    return safe[:150]
 
 def main() -> None:
     args = _parse_args()
@@ -246,13 +260,31 @@ def main() -> None:
     for msg in final_state.get("messages", []):
         print(msg)
 
-    print("\n--- Final Draft (Last Known State) ---")
-    final_draft = final_state.get('draft')
-    if final_draft:
-        print(final_draft['document'])
+
+    if args.slides:
+        from src.processing.export.pptx_builder import PptxBuilder
+        
+        # Use paper title if available, fallback to doc_id or session_id
+        raw_name = final_state.get('paper_title') or final_state.get('doc_id') or final_state['session_id']
+        safe_name = _sanitize_filename(raw_name)
+        if not safe_name:
+            safe_name = final_state['session_id']
+            
+        pptx_path = OUTPUT_DIR / f"{safe_name}.pptx"
+        try:
+            with WIPDatabase() as wip_db:
+                out = PptxBuilder(output_path=pptx_path, db=wip_db).build()
+            print(f"\n[export] Presentation saved → {out}")
+        except ValueError as exc:
+            print(f"\n[export] Could not generate PPTX: {exc}")
     else:
-        print('(no draft produced)')
-    
+        print("\n--- Final Draft (Last Known State) ---")
+        final_draft = final_state.get('draft')
+        if final_draft:
+            print(final_draft['document'])
+        else:
+            print('(no draft produced)')
+
     if logger:
         logger.flush()
 

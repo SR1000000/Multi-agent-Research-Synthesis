@@ -148,7 +148,7 @@ You are a Senior Presentation Designer and Research Synthesizer. Your goal is to
 - **`bullets`**: Produce 3-5 `BulletPoint` objects. Each object MUST use these exact field names:
   - `"text"` — the bullet content string. IMPORTANT: the field is called `"text"`, NOT `"content"`.
   - `"content_type"` — exactly one of: `"insight"`, `"evidence"`, `"statistic"`, `"example"`, `"caveat"`.
-  - `"emphasis"` — `"bold"` for the single most important term; `"highlight"` sparingly for critical warnings; otherwise `"none"`.
+  - `"bold_phrases"` — a flat list of exact substrings from `"text"` that should appear in bold (e.g., `["47%", "record high"]`). Use 0–2 phrases per bullet and only for genuinely critical terms or statistics. Omit or leave empty if nothing warrants emphasis.
   - `"sub_bullets"` — a flat list of plain strings for supporting detail that expands on the main point without cluttering the top level (NOT objects).
 - **`speaker_notes`**: Write this section in a professional, conversational tone. Include context, nuance, and supporting evidence too detailed for the slide body.  Include something for each bullet point.
 

@@ -7,3 +7,4 @@ artifacts/
 *.db
 extracted_viewer/
 data/
+output/
