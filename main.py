@@ -84,6 +84,12 @@ def _parse_args() -> argparse.Namespace:
         help="Run the slide synthesis pipeline instead of research synthesis"
     )
     parser.add_argument(
+        "--max-slides",
+        type=int,
+        default=12,
+        help="Maximum number of slides to generate (default: %(default)s)",
+    )
+    parser.add_argument(
         "--object-store",
         type=str,
         choices=["local", "r2"],
@@ -196,6 +202,8 @@ def _build_initial_state(args: argparse.Namespace, preprocessing_message: str, a
         'plan':             None,
         'draft':            None,
         'critique':         None,
+        'max_slides':       args.max_slides,
+        'slide_numbers':    [],
         'document_context': "",
         'source_chunks':    artifacts.source_chunks if artifacts else [],
         'doc_id':           artifacts.doc_id if artifacts else "unknown",
