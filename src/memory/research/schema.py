@@ -17,16 +17,16 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 """
 
-# Images table stores extracted image data as base64 TEXT
+# Images table stores extracted image data
 CREATE_IMAGES_TABLE = """
 CREATE TABLE IF NOT EXISTS images (
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL,
     mime_type TEXT NOT NULL,
-    base64_data TEXT NOT NULL,
+    base64_data TEXT,
+    storage_path TEXT,
     page_number INTEGER,
     caption TEXT,
-    local_path TEXT,
     contextualized_text TEXT,
     FOREIGN KEY (document_id) REFERENCES documents(id)
 );

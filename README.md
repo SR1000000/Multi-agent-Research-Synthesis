@@ -67,11 +67,22 @@ python main.py --gemini
 
 ### Document processor
 
-While there are multiple backends for document processing are implemented, due to requirement conflicts only LlamaParse is available with the provided requirements.txt.  Other backends will need additional dependencies, and likely separate environments.
+While there are multiple backends for document processing are implemented, due to requirement conflicts only LlamaParse is available with the provided requirements.txt. Other backends will need additional dependencies, and likely separate environments.
 
 For LlamaParse, set **`LLAMA_CLOUD_API_KEY`** in your environment.
 
 Optional **`--text-splitter`** controls chunking after parse: `none` (single chunk from full text) or `semantic` (default, semantic splitter). Only use this if the document processor does not natively support chunking (LLamaparse for now).
+
+### Cloud storage
+
+Project has an optional [Cloudflare R2 Storage](https://developers.cloudflare.com/r2/get-started/s3/) for images extracted from document processors and a local storage. To use the cloud store, set up your API keys and credentials as follow:
+
+```
+CLOUDFLARE_ACCOUNT_ID=your_key_here
+R2_ACCESS_KEY_ID=your_key_here
+R2_SECRET_ACCESS_KEY=your_key_here
+R2_BUCKET_NAME=multiagentsynthesis
+```
 
 ### Optional Commandline Arguments
 

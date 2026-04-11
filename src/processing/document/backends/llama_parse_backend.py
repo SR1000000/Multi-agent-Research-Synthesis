@@ -712,13 +712,13 @@ class LlamaParseBackend(OCRBackend):
             img_id = f"{doc_id}_{_LP_ID_PREFIX}_img_{index + 1:03d}"
             ext = _extension(filename, mime_type)
             storage_key = f"{doc_id}/images/{img_id}.{ext}"
-            local_path: str | None = None
+            storage_path: str | None = None
             base64_data = ""
             try:
-                self._object_store.write(storage_key, image_bytes)
-                local_path = storage_key
+                storage_path = self._object_store.write(storage_key, image_bytes)
             except Exception as exc:
-                print(f"[LlamaParseBackend] Failed to store image {filename}: {exc}")
+                print(f"[LlamaParseBackend] Failed to store image {filename} in object store: {exc}")
+                # Fallback to storing as base64 data
                 base64_data = base64.b64encode(image_bytes).decode("utf-8")
 
             extracted.append(ExtractedImage(
@@ -727,7 +727,7 @@ class LlamaParseBackend(OCRBackend):
                 base64_data=base64_data,
                 page=page_num,
                 caption=caption,
-                local_path=local_path,
+                storage_path=storage_path,
             ))
 
         return extracted

@@ -13,7 +13,7 @@ class ExtractedImage:
         base64_data: The raw base64 encoded string of the image
         page: 1-indexed page number where the image was found
         caption: Extracted caption text associated with the figure (from ImageItem.caption)
-        local_path: Path where the image file is stored (local now, cloud key later)
+        storage_path: Path/URL where the image file is stored (local path or cloud URL)
         contextualized_text: Succinct context situated within the document
     """
     id: str
@@ -22,7 +22,7 @@ class ExtractedImage:
     base64_data: str
     page: int | None = None
     caption: str = ""
-    local_path: str | None = None
+    storage_path: str | None = None
     contextualized_text: str | None = None
 
 

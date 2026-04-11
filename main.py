@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from src.llm import GLOBAL_CONFIG, Provider
 from src.logging.logger import AgentLogger
 from src.memory.wip.database import WIPDatabase
+from src.memory.objectstore import LocalObjectStore, R2ObjectStore, DEFAULT_OBJECT_STORE_CONFIG
 
 DEFAULT_QUERY = "Explain what Transformers are and how they are so important to AI"
 DEFAULT_SOURCE_PDF = "./.samples/Transformers.pdf"
@@ -82,6 +83,13 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run the slide synthesis pipeline instead of research synthesis"
     )
+    parser.add_argument(
+        "--object-store",
+        type=str,
+        choices=["local", "r2"],
+        default=None,  # Default behavior remains as before (R2 with fallback to local)
+        help="Object store type: 'local' for local filesystem, 'r2' for Cloudflare R2 (default: R2 with local fallback)"
+    )
     return parser.parse_args()
 
 def _get_callbacks(args, logger: AgentLogger):
@@ -112,17 +120,35 @@ def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[An
         sys.exit(f"error: PDF not found: {pdf_path}")
     if pdf_path.suffix.lower() != ".pdf":
         sys.exit(f"error: file does not have a .pdf extension: {pdf_path}")
-    
+
     _t0 = time.perf_counter()
+
+    # Initialize object store based on CLI argument
+    if args.object_store == "local":
+        object_store = LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
+        logger.log("Using LocalObjectStore for image storage (explicitly selected)", level="info")
+    elif args.object_store == "r2":
+        r2_config = DEFAULT_OBJECT_STORE_CONFIG
+        object_store = R2ObjectStore(config=r2_config)
+        logger.log("Using R2ObjectStore for image storage (explicitly selected)", level="info")
+    else:  # Default behavior
+        try:
+            r2_config = DEFAULT_OBJECT_STORE_CONFIG
+            object_store = R2ObjectStore(config=r2_config)
+            logger.log("Using R2ObjectStore for image storage (default behavior)", level="info")
+        except Exception as e:
+            logger.log(f"R2ObjectStore initialization failed: {str(e)}. Falling back to LocalObjectStore.", level="warning")
+            object_store = LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
+
     db = get_database()
     embedder = get_text_embedder()
     processor_backend = _PROCESSOR_BACKEND_ALIASES[args.processor]
     chunker_name = _TEXT_SPLITTER_ALIASES[args.text_splitter]
-    
+
     # default to 'semantic' chunking if using LlamaParser and no specific splitter chosen
     if not chunker_name and processor_backend == "llama_parse":
         chunker_name = "semantic"
-        
+
     text_chunker = get_text_chunker(chunker_name) if chunker_name else None
     processor = DocProcessor(
         backend=processor_backend,
@@ -130,14 +156,15 @@ def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[An
         db=db,
         embedder=embedder,
         logger=logger,
+        object_store=object_store,
     )
     artifacts = processor.process_document(str(pdf_path))
-        
+
     _pdf_elapsed = time.perf_counter() - _t0
-    
+
     if artifacts and artifacts.chunk_count > 0:
         print(f"[preprocessing] PDF extraction/pipeline completed in {_pdf_elapsed:.2f}s", flush=True)
-        
+
     if args.interactive:
         try:
             response = input("Press Enter to continue, or type 'q' to quit: ").strip().lower()
@@ -145,9 +172,9 @@ def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[An
             sys.exit("\nAborted.")
         if response == "q":
             sys.exit("Execution stopped by user.")
-    
+
     status = "Processed" if artifacts and artifacts.chunk_count > 0 else "FAILED TO PROCESS (running without documents)"
-    
+
     if artifacts:
         preprocessing_message = (
             f"[preprocessing] {status} multimodal artifacts "
@@ -156,7 +183,7 @@ def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[An
         )
     else:
         preprocessing_message = f"[preprocessing] {status}"
-        
+
     return artifacts, preprocessing_message
 
 def _build_initial_state(args: argparse.Namespace, preprocessing_message: str, artifacts: Any) -> dict:
