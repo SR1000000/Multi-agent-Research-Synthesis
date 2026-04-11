@@ -55,13 +55,13 @@ Edit `--model` argument when running project.
 ## Run
 
 ```bash
-# To use Ollama Cloud (default):
+# To use Ollama Cloud:
 python main.py --ollama
 
 # To use OpenRouter:
 python main.py --open-router
 
-# To use Google Gemini
+# To use Google Gemini (default):
 python main.py --gemini
 ```
 

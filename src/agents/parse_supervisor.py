@@ -11,7 +11,7 @@ The agent then fans the assignments out via LangGraph's Send API.
 from __future__ import annotations
 
 import re
-from typing import List
+from typing import List, Literal
 
 from langgraph.types import Command, Send
 from pydantic import BaseModel, Field
@@ -107,16 +107,15 @@ class ParseSupervisorAgent(BaseLLMAgent):
     # Public entry point — called by the graph node
     # ------------------------------------------------------------------
 
-    def run(self, state: ResearchState) -> list[Send]:
+    def run(self, state: ResearchState) -> Command[Literal["research_to_slide"]]:
         doc_id     = state["doc_id"]
-        max_slides = state.get("max_slides", 10)
+        max_slides = state.get("max_slides", 12)
         session_id = state.get("session_id", "")
 
         self._logger.log(
             f"[ParseSupervisor] Starting — doc_id={doc_id} max_slides={max_slides}"
         )
 
-        # 1. Load ordered chunks cheaply (no images/tables/embeddings)
         # 1. Load ordered chunks cheaply (no images/tables/embeddings)
         with ResearchDatabase() as db:
             raw_chunks = db.get_chunks_for_dispatch(doc_id)
@@ -125,7 +124,7 @@ class ParseSupervisorAgent(BaseLLMAgent):
             self._logger.log(
                 "[ParseSupervisor] No chunks found in research.db — nothing to dispatch"
             )
-            return []
+            return Command(goto=[])
 
         # 2. Detect section boundaries and group chunks into sections
         sections = self._detect_sections(raw_chunks)
@@ -149,13 +148,15 @@ class ParseSupervisorAgent(BaseLLMAgent):
         # 5. Validate & repair the plan (ensure slide counts sum to max_slides)
         plan = self._repair_plan(plan, sections, max_slides)
 
-        # 6. Convert assignments → Send objects
+        # 6. Convert assignments → Send objects and fan out.
+        # Command(goto=[Send(...)]) is the idiomatic LangGraph pattern for
+        # dynamic parallel dispatch — no conditional edge or state key needed.
         sends = self._build_sends(plan, sections, session_id)
 
         self._logger.log(
             f"[ParseSupervisor] Dispatching {len(sends)} research_to_slide agents"
         )
-        return sends
+        return Command(goto=sends)
 
     # ------------------------------------------------------------------
     # Step 2 — Section detection
@@ -373,5 +374,5 @@ class ParseSupervisorAgent(BaseLLMAgent):
 # LangGraph node function
 # ---------------------------------------------------------------------------
 
-def parse_supervisor_node(state: ResearchState) -> list[Send]:
+def parse_supervisor_node(state: ResearchState) -> Command[Literal["research_to_slide"]]:
     return ParseSupervisorAgent().run(state)
