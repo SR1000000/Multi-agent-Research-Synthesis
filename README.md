@@ -94,6 +94,8 @@ Adding the argument `-i` or `--interactive` adds a prompt for whether the user w
 
 Adding `--use-db` (or `--skip-processing`) skips the document processing and instead attempts to load the parsed PDF chunks and metadata directly from the `data/research.db` SQLite database if it exists, saving valuable API and compute time during iterative runs pipeline tuning.
 
+Adding `--slides` will generate powerpoint slides instead of a single document. The number of slides is controlled by the `--max-slides` argument, which defaults to 12.
+
 ## Graph Flow
 
 ```
