@@ -4,12 +4,6 @@ from typing import Any
 import time
 from pathlib import Path
 import os
-from dotenv import load_dotenv
-
-# We must load .env variables before importing any Langfuse-decorated functions
-# or classes that might expect these environment variables on import/init.
-load_dotenv()
-
 from src.memory import get_database
 from src.graph import build_graph
 import src.llm

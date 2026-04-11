@@ -205,11 +205,17 @@ class BaseLLMAgent:
                 return schema.model_validate_json(clean)
             except ValidationError as e:
                 last_error = e
+                retry_note = (
+                    " Retrying with correction prompt."
+                    if attempt < max_retries
+                    else " No retries left; propagating error."
+                )
+                self._base_logger.log(
+                    f"[{self._log_display}] Validation error (attempt {attempt + 1}/{max_retries + 1}).{retry_note}\n"
+                    f"{e}\n\nOffending JSON:\n{clean}"
+                )
                 if attempt == max_retries:
                     break
-                self._base_logger.log(
-                    f"[{self._log_display}] Validation error (attempt {attempt + 1}/{max_retries + 1}), retrying with correction prompt"
-                )
                 current_turns = [
                     *current_turns,
                     {"role": "assistant", "content": clean},

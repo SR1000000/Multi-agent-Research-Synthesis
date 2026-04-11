@@ -23,19 +23,32 @@ class AgentLogger:
             self._logger.addHandler(handler)
         self._logger.setLevel(logging.INFO)
         self._logger.propagate = False
+        self._handlers = []
 
     def get_langgraph_handler(self, **kwargs) -> CallbackHandler:
         """
         Returns a Langfuse CallbackHandler for LangGraph. 
         Hooks directly into the graph's config to trace node execution.
         """
-        return CallbackHandler(**kwargs)
+        handler = CallbackHandler(**kwargs)
+        self._handlers.append(handler)
+        return handler
 
     def flush(self):
         """
         Flushes queued events to the Langfuse backend. 
         Should be called before the process exits.
         """
+        # Flush any created CallbackHandlers
+        if hasattr(self, "_handlers"):
+            for h in self._handlers:
+                h.flush()
+        
+        # Flush traces from @observe decorators
+        from langfuse.decorators import langfuse_context
+        langfuse_context.flush()
+        
+        # Flush the main client
         self.client.flush()
 
     def log(self, message: str, level: str = "info") -> None:
