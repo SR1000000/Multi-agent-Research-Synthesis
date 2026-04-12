@@ -6,13 +6,12 @@ from pathlib import Path
 import os
 from src.memory import get_database
 from src.graph import build_graph
-import src.llm
+from src.llm.llm import init_from_config
 from src.processing.chunker import get_text_chunker
 from src.processing.document import DocProcessor
 from src.processing.embedder.provider import get_text_embedder
 import uuid
 from datetime import datetime, timezone
-from src.llm import DEFAULT_LITELLM_MODEL
 from src.logging.logger import AgentLogger
 from src.memory.wip.database import WIPDatabase
 from src.memory.objectstore import LocalObjectStore, R2ObjectStore, DEFAULT_OBJECT_STORE_CONFIG
@@ -36,12 +35,11 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Multi-agent research synthesis")
     parser.add_argument("--query", type=str, default=DEFAULT_QUERY, help="Research query")
     parser.add_argument(
-        "--model",
+        "--llm-config",
         type=str,
-        help=(
-            "LiteLLM model id for this run (e.g. gemini/gemini-2.0-flash-001, "
-            "openrouter/..., ollama/...). Omit to use DEFAULT_LITELLM_MODEL from src.llm."
-        ),
+        default=None,
+        metavar="PATH",
+        help="YAML file with providers and LiteLLM Router settings (default: src/llm/config.yaml)",
     )
     parser.add_argument(
         "--pdf",
@@ -76,14 +74,6 @@ def _parse_args() -> argparse.Namespace:
         help="Enable/disable Langfuse logging"
     )
     parser.add_argument(
-        "--fallbacks",
-        type=str,
-        help=(
-            "Comma-separated LiteLLM model ids tried in order after --model if the primary fails "
-            "(same id format as --model; optional)"
-        ),
-    )
-    parser.add_argument(
         "--slides",
         action="store_true",
         help="Run the slide synthesis pipeline instead of research synthesis"
@@ -116,18 +106,7 @@ def _get_callbacks(args, logger: AgentLogger):
     return callbacks, logger
 
 def _configure_llm(args: argparse.Namespace) -> None:
-    import src.llm as llm_module
-
-    primary = (args.model or llm_module.DEFAULT_LITELLM_MODEL).strip()
-    if args.fallbacks:
-        fallbacks = [f.strip() for f in args.fallbacks.split(",") if f.strip()]
-        if not fallbacks:
-            fallbacks = list(llm_module.DEFAULT_CROSS_PROVIDER_FALLBACKS)
-    else:
-        fallbacks = list(llm_module.DEFAULT_CROSS_PROVIDER_FALLBACKS)
-    chain = [primary] + fallbacks
-    llm_module.GLOBAL_CONFIG.model = primary
-    llm_module.ROUTER = llm_module.build_router(chain, llm_module.GLOBAL_CONFIG)
+    init_from_config(config_path=args.llm_config)
 
 def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[Any, str]:
     pdf_path = Path(args.pdf)

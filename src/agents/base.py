@@ -2,7 +2,7 @@ import json
 import typing
 from typing import TypeVar
 from pydantic import BaseModel, ValidationError
-from src.llm import get_llm, _strip_think_block, _strip_code_fence, _heal_json
+from src.llm.llm import get_llm, _strip_think_block, _strip_code_fence, _heal_json
 from src.state import DeliveryPlan
 from src.logging.logger import AgentLogger
 
@@ -194,10 +194,9 @@ class BaseLLMAgent:
         llm_config_override: dict | None = None,
     ) -> str:
         """
-        Single LLM call with no retry logic.
-
-        Reliability (retries, ordered fallbacks) is handled by LiteLLM’s
-        ``Router`` inside ``LiteLLMProvider.complete()``.
+        Single LLM completion call. Transport reliability (retries, fallbacks,
+        cooldowns, timeouts — per LiteLLM Router) is handled inside
+        ``LiteLLMProvider.complete()``; this method does not add a second retry layer.
 
         Schema validation retries (with correction prompts) live in _call().
 
@@ -205,8 +204,7 @@ class BaseLLMAgent:
             turns:               User/assistant conversation turns.
             schema:              Pydantic schema — activates JSON mode.
                                  Parsing and validation happen in _call(), not here.
-            model:               LiteLLM model string override for this call,
-                                 e.g. "gemini/gemini-2.0-flash-001".
+            model:               Router alias from ``router.default_model_name`` / ``model_list`` for this call.
             llm_config_override: Dict of LLMConfig field overrides for this call.
 
         Returns:

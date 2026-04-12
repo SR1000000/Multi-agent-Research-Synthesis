@@ -43,21 +43,20 @@ LANGFUSE_BASE_URL="https://cloud.langfuse.com"
 
 The codebase uses `langfuse` which will automatically pick up these environment variables to trace agent runs.
 
-### 5. (Optional) Model and fallbacks
+### 5. LLM providers and routing
 
-`--model` is a **LiteLLM model id** (for example `gemini/gemini-2.0-flash-001`, `openrouter/...`, `ollama/...`). It is not a short nickname for a vendor. If you omit `--model`, the CLI uses `DEFAULT_LITELLM_MODEL` in `src/llm.py` (change that constant to switch the project default).
+Models and providers are defined in **`src/llm/config.yaml`**. The app merges YAML into LiteLLM’s **`Router`**; reliability (same-alias pooling, cooldowns, `num_retries`, optional **`router.fallbacks`**, `rpm`/`tpm`, etc.) is handled by LiteLLM — see [Router – Load Balancing](https://docs.litellm.ai/docs/routing). Structure: **`router.default_model_name`**, **`router.providers`**, optional **`fallback_model_name`** / **`fallback_providers`** and **`fallbacks`**, and **`router.settings`** (`**kwargs` to `Router`). You can use `os.environ/VAR` strings in YAML; LiteLLM resolves them.
 
-`--fallbacks` is an optional comma-separated list of the same kind of ids; they are tried in order after `--model` if the primary deployment fails (no extra env-based chain).
+Override the file path for a single run:
+
+```bash
+python main.py --llm-config path/to/your/config.yaml
+```
 
 ## Run
 
 ```bash
 python main.py
-
-# Examples with explicit models:
-python main.py --model gemini/gemini-2.0-flash-001
-python main.py --model openrouter/meta-llama/llama-3.2-3b-instruct:free
-python main.py --model ollama/qwen3.5:397b-cloud
 ```
 
 ### Document processor
@@ -91,11 +90,9 @@ Adding `--use-db` (or `--skip-processing`) skips the document processing and ins
 
 Adding `--slides` will generate powerpoint slides instead of a single document. The number of slides is controlled by the `--max-slides` argument, which defaults to 12.
 
-**Model configuration**
+**LLM configuration**
 
-- `--model` — Full **LiteLLM** model id for this run (not a provider alias). If omitted, `DEFAULT_LITELLM_MODEL` in `src/llm.py` is used.
-
-- `--fallbacks` — Comma-separated LiteLLM model ids, same format as `--model`. Applied to that primary only; routing/retries use LiteLLM’s Router (see [LiteLLM routing](https://docs.litellm.ai/docs/routing)).
+- Edit **`src/llm/config.yaml`** to add providers, backend model strings, and Router behavior. Optional **`--llm-config PATH`** points at another YAML for that run only.
 
 ## Graph Flow
 
