@@ -1,30 +1,35 @@
-# Router group aliases: optional per-model-row ``model_name`` assigns a deployment to an alias
-# (default for ``providers`` is ``default_model_name``; for ``fallback_providers`` it is
-# ``fallback_model_name``). Use ``_call(..., model="writer")`` etc. to target an alias.
+# Sample LiteLLM Router config — copy to ``config.yaml`` and set env vars.
 #
-# Example (commented):
-#   models:
-#     - model: "gemini/gemini-2.5-pro"
-#       model_name: "app"
-#     - model: "gemini/gemini-2.5-flash"
-#       model_name: "writer"
+# - Rows without ``model_name`` use ``default_model_name`` (here ``app``).
+# - ``model_name: writer`` / ``fast`` register extra Router groups; use ``_call(..., model="writer")`` etc.
+# - ``router.fallbacks`` maps each alias to backup aliases (e.g. all can fall back to ``fallback``).
 
 router:
   default_model_name: "app"
   fallback_model_name: "fallback"
   fallbacks:
     - app: ["fallback"]
-    # - writer: ["fallback"]
-    # - fast: ["fallback"]
+    - writer: ["fallback"]
+    - fast: ["fallback"]
 
   providers:
     gemini:
       api_key: "os.environ/GEMINI_API_KEY"
       api_base: "os.environ/GEMINI_BASE_URL"
       models:
+        # Primary / planning pool (alias ``app`` — block default)
         - model: "gemini/gemini-2.5-pro"
         - model: "gemini/gemini-2.5-flash"
+
+        # Writer pool: two deployments under alias ``writer`` (intra-group failover)
         - model: "gemini/gemini-2.5-flash-lite"
+          model_name: "writer"
+        - model: "gemini/gemini-2.0-flash"
+          model_name: "writer"
+
+        # Short / supervisor-style calls (alias ``fast``)
+        - model: "gemini/gemini-2.5-flash-lite"
+          model_name: "fast"
 
   fallback_providers:
     openrouter:
@@ -32,14 +37,18 @@ router:
       api_base: "os.environ/OPENROUTER_BASE_URL"
       models:
         - model: "openrouter/openai/gpt-oss-120b:free"
+          model_name: "fallback"
         - model: "openrouter/openai/gpt-oss-20b:free"
+          model_name: "fallback"
 
     ollama:
       api_key: "os.environ/OLLAMA_API_KEY"
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
         - model: "ollama/qwen3.5:397b-cloud"
+          model_name: "fallback"
         - model: "ollama/gemma3:27b-cloud"
+          model_name: "fallback"
 
   settings:
     num_retries: 2

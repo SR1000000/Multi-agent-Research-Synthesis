@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 import litellm
 from litellm.router import Router
+from litellm.types.router import DeploymentTypedDict
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -26,7 +27,7 @@ DEFAULT_MODEL_NAME: str = "app"
 
 @dataclass
 class LLMConfig:
-    """Per-call kwargs for ``router.completion`` (``model`` is the Router alias from YAML)."""
+    """Per-call kwargs for ``router.completion`` (``model`` is the Router group alias from YAML)."""
 
     model: str | None = None
     temperature: float | None = None
@@ -35,8 +36,16 @@ class LLMConfig:
 
 GLOBAL_CONFIG = LLMConfig()
 
-def build_litellm_model_list(config: dict[str, Any], model_name: str) -> list[dict[str, Any]]:
-    """Merge ``providers`` into LiteLLM ``model_list`` rows (raw dicts; LiteLLM resolves ``os.environ/``)."""
+def build_litellm_model_list(
+    config: dict[str, Any],
+    default_alias: str,
+) -> list[DeploymentTypedDict]:
+    """Merge ``providers`` into LiteLLM ``model_list`` rows.
+
+    Each model row may set ``model_name`` to register that deployment under a Router group alias
+    (e.g. ``writer``). 
+    If omitted, ``default_alias`` is used (``default_model_name`` or ``fallback_model_name`` for the block).
+    """
     out: list[dict[str, Any]] = []
     for _provider, prov in (config.get("providers") or {}).items():
         if not isinstance(prov, dict):
@@ -50,7 +59,12 @@ def build_litellm_model_list(config: dict[str, Any], model_name: str) -> list[di
             merged = {**shared, **row}
             if not merged.get("model"):
                 continue
-            out.append({"model_name": model_name, "litellm_params": merged})
+            alias_raw = merged.pop("model_name", None)
+            if isinstance(alias_raw, str) and alias_raw.strip():
+                effective_alias = alias_raw.strip()
+            else:
+                effective_alias = default_alias
+            out.append({"model_name": effective_alias, "litellm_params": merged})
     return out
 
 
@@ -82,6 +96,22 @@ def build_router_from_config_data(config_data: dict[str, Any]) -> Router:
 
 
 def init_from_config(config_path: str | None = None) -> None:
+    """
+    Load ``config.yaml`` and build a LiteLLM ``Router``.
+
+    **Deployments** — Each ``model_list`` entry is one backend (``litellm_params``) plus a Router **alias**
+    (``model_name`` in LiteLLM terms). YAML rows use the block default (``default_model_name`` or
+    ``fallback_model_name``) unless the row sets ``model_name: <alias>`` (e.g. ``writer``, ``fast``).
+
+    **Same alias (intra-group)** — Rows that share one alias (e.g. two Gemini models both under ``app``)
+    are one pool. The Router moves between those deployments on its own: routing strategy, retries,
+    cooldowns, rate limits. No ``router.fallbacks`` entry is required for that.
+
+    **Different aliases (cross-group)** — To move from one logical name to another (e.g. ``app`` →
+    ``fallback``), LiteLLM uses ``Router(fallbacks=...)``. We pass ``router.fallbacks`` from YAML when
+    present. If you omit it, the ``fallback`` group still exists in ``model_list`` but nothing auto-switches
+    to it; call ``router.completion(model="…")`` with another alias (or set ``LLMConfig.model``).
+    """
     global ROUTER, DEFAULT_MODEL_NAME
 
     path = Path(config_path) if config_path else _DEFAULT_CONFIG_PATH

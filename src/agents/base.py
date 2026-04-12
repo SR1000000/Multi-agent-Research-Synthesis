@@ -204,7 +204,8 @@ class BaseLLMAgent:
             turns:               User/assistant conversation turns.
             schema:              Pydantic schema — activates JSON mode.
                                  Parsing and validation happen in _call(), not here.
-            model:               Router alias from ``router.default_model_name`` / ``model_list`` for this call.
+            model:               Router group alias: ``router.default_model_name`` when omitted, or any alias
+                                 defined in YAML (including per-row ``model_name`` on a provider model).
             llm_config_override: Dict of LLMConfig field overrides for this call.
 
         Returns:
@@ -279,17 +280,6 @@ class BaseLLMAgent:
                 ]
 
         raise last_error
-
-
-def _single_list_field(schema: type[BaseModel]) -> str | None:
-    """Return the sole top-level List field name, or None if there isn't exactly one."""
-    list_fields = [
-        name
-        for name, fi in schema.model_fields.items()
-        if typing.get_origin(fi.annotation) is list
-    ]
-    return list_fields[0] if len(list_fields) == 1 else None
-
 
 def _render_history(history: list[str], kind: str) -> str:
     if not history:

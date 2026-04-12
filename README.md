@@ -45,13 +45,41 @@ The codebase uses `langfuse` which will automatically pick up these environment 
 
 ### 5. LLM providers and routing
 
-Models and providers are defined in **`src/llm/config.yaml`**. The app merges YAML into LiteLLM’s **`Router`**; reliability (same-alias pooling, cooldowns, `num_retries`, optional **`router.fallbacks`**, `rpm`/`tpm`, etc.) is handled by LiteLLM — see [Router – Load Balancing](https://docs.litellm.ai/docs/routing). Structure: **`router.default_model_name`**, **`router.providers`**, optional **`fallback_model_name`** / **`fallback_providers`** and **`fallbacks`**, and **`router.settings`** (`**kwargs` to `Router`). You can use `os.environ/VAR` strings in YAML; LiteLLM resolves them.
+Runtime LLM comes from a **LiteLLM Router** built from YAML. The app reads **`src/llm/config.yaml`** at startup (see `init_from_config` in `src/llm/llm.py`).
 
-Override the file path for a single run:
+#### Create your `config.yaml`
+
+1. Copy the template: **`src/llm/config.sample.yaml`** or use the current **`src/llm/config.yaml`**
+2. Fill in **API keys and base URLs** via `.env` using the `os.environ/VAR_NAME` placeholders from the sample (LiteLLM resolves those strings when the Router starts). You can also add whatever API providers you have.
+3. Adjust **`router.providers`** and **`router.fallback_providers`** to match the models and backends you actually use.
+
+You can keep multiple experimental YAML files elsewhere and point the app at one for a single run:
 
 ```bash
 python main.py --llm-config path/to/your/config.yaml
 ```
+
+#### Provider entries (LiteLLM format)
+
+You are not limited to the providers in the sample: **any provider and model string LiteLLM supports** can be added by following the same config structure in `config.yaml`.
+
+- The config file follows a provider-first approach. Under **`router.providers`**, each key (e.g. `gemini`, `openrouter`) is a **named block**, and API Keys and API base URLs **shared** for every row in that block.
+- Each item under **`models`** is one **deployment**: a `model:` string in LiteLLM form `<provider>/<model-string>` (e.g. `gemini/gemini-2.5-pro`, `openrouter/...`) plus any extra per-model fields merged into `litellm_params`.
+- **`router.fallback_providers`** uses the same structure; its default group alias is **`fallback_model_name`** instead of **`default_model_name`** (see below).
+
+For exact parameter names and provider-specific options, use the [LiteLLM provider docs](https://docs.litellm.ai/docs/providers). By default LiteLLM follows [OpenAI API](https://developers.openai.com/api/reference/resources/responses).
+
+#### Router groups: same name vs different names vs `fallbacks`
+
+LiteLLM’s Router groups **deployments** by a string **`model_name`** (this repo and the sample YAML call that a **group alias** — one logical “model group” you can target in code).
+
+| Concept                          | Meaning                                                                                                                                                                                                                                                                                                                                                                                            |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **One group (one `model_name`)** | Every `models` row that ends up with the **same** alias shares one pool. The Router **routes inside that pool** (e.g. load balancing, retries, cooldowns, rate-limit handling) without you configuring anything extra. Rows inherit the block default (`default_model_name` for `providers`, `fallback_model_name` for `fallback_providers`) unless you set **`model_name: <alias>`** on that row. |
+| **Different groups**             | Different aliases (e.g. `app`, `writer`, `fast`, `fallback`) are **separate** pools. The app chooses which group to call via the Router **`model=`** argument (and `LLMConfig.model` / agent defaults). Nothing automatically jumps from `app` to `writer` unless **you** request that alias or configure cross-group fallbacks.                                                                   |
+| **`router.fallbacks`**           | Optional **cross-group** order: if primary group calls fail, the Router can try the listed backup **aliases** (e.g. map `app` → try `fallback`). If you omit `fallbacks`, other groups still exist in `model_list`, but there is **no** automatic chain between aliases—you pick the alias explicitly.                                                                                             |
+
+So: **routing within a group** = multiple deployments behind one alias; **switching groups** = explicit `model=` or an explicit **`fallbacks`** map in YAML.
 
 ## Run
 
@@ -89,10 +117,6 @@ Adding the argument `-i` or `--interactive` adds a prompt for whether the user w
 Adding `--use-db` (or `--skip-processing`) skips the document processing and instead attempts to load the parsed PDF chunks and metadata directly from the `data/research.db` SQLite database if it exists, saving valuable API and compute time during iterative runs pipeline tuning.
 
 Adding `--slides` will generate powerpoint slides instead of a single document. The number of slides is controlled by the `--max-slides` argument, which defaults to 12.
-
-**LLM configuration**
-
-- Edit **`src/llm/config.yaml`** to add providers, backend model strings, and Router behavior. Optional **`--llm-config PATH`** points at another YAML for that run only.
 
 ## Graph Flow
 
