@@ -6,25 +6,18 @@ from pathlib import Path
 import os
 from src.memory import get_database
 from src.graph import build_graph
-import src.llm
+from src.llm.llm import init_from_config
 from src.processing.chunker import get_text_chunker
 from src.processing.document import DocProcessor
 from src.processing.embedder.provider import get_text_embedder
 import uuid
 from datetime import datetime, timezone
-from src.llm import GLOBAL_CONFIG, Provider
 from src.logging.logger import AgentLogger
 from src.memory.wip.database import WIPDatabase
 from src.memory.objectstore import LocalObjectStore, R2ObjectStore, DEFAULT_OBJECT_STORE_CONFIG
 
 DEFAULT_QUERY = "Explain what Transformers are and how they are so important to AI"
 DEFAULT_SOURCE_PDF = "./.samples/Transformers.pdf"
-
-_PROVIDER_FLAGS = {
-    "ollama":     Provider.OLLAMA,
-    "openrouter": Provider.OPENROUTER,
-    "gemini":     Provider.GOOGLE_AI_STUDIO,
-}
 
 _PROCESSOR_BACKEND_ALIASES = {
     "llama": "llama_parse",
@@ -40,12 +33,14 @@ _TEXT_SPLITTER_ALIASES = {
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Multi-agent research synthesis")
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--ollama",     action="store_true", help="Use Ollama provider")
-    group.add_argument("--openrouter", action="store_true", help="Use OpenRouter provider")
-    group.add_argument("--gemini",     action="store_true", help="Use Google AI Studio (Gemini) provider (default)")
     parser.add_argument("--query", type=str, default=DEFAULT_QUERY, help="Research query")
-    parser.add_argument("--model", type=str, help="Override the default model for the provider")
+    parser.add_argument(
+        "--llm-config",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="YAML file with providers and LiteLLM Router settings (default: src/llm/config.yaml)",
+    )
     parser.add_argument(
         "--pdf",
         type=str,
@@ -111,14 +106,7 @@ def _get_callbacks(args, logger: AgentLogger):
     return callbacks, logger
 
 def _configure_llm(args: argparse.Namespace) -> None:
-    # resolve which provider flag was set
-    selected = next(
-        (prov for flag, prov in _PROVIDER_FLAGS.items() if getattr(args, flag)),
-        Provider.GOOGLE_AI_STUDIO,
-    )
-    GLOBAL_CONFIG.provider = selected
-    if args.model:
-        GLOBAL_CONFIG.model = args.model
+    init_from_config(config_path=args.llm_config)
 
 def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[Any, str]:
     pdf_path = Path(args.pdf)
