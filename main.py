@@ -12,19 +12,13 @@ from src.processing.document import DocProcessor
 from src.processing.embedder.provider import get_text_embedder
 import uuid
 from datetime import datetime, timezone
-from src.llm import GLOBAL_CONFIG, Provider
+from src.llm import DEFAULT_LITELLM_MODEL
 from src.logging.logger import AgentLogger
 from src.memory.wip.database import WIPDatabase
 from src.memory.objectstore import LocalObjectStore, R2ObjectStore, DEFAULT_OBJECT_STORE_CONFIG
 
 DEFAULT_QUERY = "Explain what Transformers are and how they are so important to AI"
 DEFAULT_SOURCE_PDF = "./.samples/Transformers.pdf"
-
-_PROVIDER_FLAGS = {
-    "ollama":     Provider.OLLAMA,
-    "openrouter": Provider.OPENROUTER,
-    "gemini":     Provider.GOOGLE_AI_STUDIO,
-}
 
 _PROCESSOR_BACKEND_ALIASES = {
     "llama": "llama_parse",
@@ -40,12 +34,15 @@ _TEXT_SPLITTER_ALIASES = {
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Multi-agent research synthesis")
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--ollama",     action="store_true", help="Use Ollama provider")
-    group.add_argument("--openrouter", action="store_true", help="Use OpenRouter provider")
-    group.add_argument("--gemini",     action="store_true", help="Use Google AI Studio (Gemini) provider (default)")
     parser.add_argument("--query", type=str, default=DEFAULT_QUERY, help="Research query")
-    parser.add_argument("--model", type=str, help="Override the default model for the provider")
+    parser.add_argument(
+        "--model",
+        type=str,
+        help=(
+            "LiteLLM model id for this run (e.g. gemini/gemini-2.0-flash-001, "
+            "openrouter/..., ollama/...). Omit to use DEFAULT_LITELLM_MODEL from src.llm."
+        ),
+    )
     parser.add_argument(
         "--pdf",
         type=str,
@@ -77,6 +74,14 @@ def _parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Enable/disable Langfuse logging"
+    )
+    parser.add_argument(
+        "--fallbacks",
+        type=str,
+        help=(
+            "Comma-separated LiteLLM model ids tried in order after --model if the primary fails "
+            "(same id format as --model; optional)"
+        ),
     )
     parser.add_argument(
         "--slides",
@@ -111,14 +116,18 @@ def _get_callbacks(args, logger: AgentLogger):
     return callbacks, logger
 
 def _configure_llm(args: argparse.Namespace) -> None:
-    # resolve which provider flag was set
-    selected = next(
-        (prov for flag, prov in _PROVIDER_FLAGS.items() if getattr(args, flag)),
-        Provider.GOOGLE_AI_STUDIO,
-    )
-    GLOBAL_CONFIG.provider = selected
-    if args.model:
-        GLOBAL_CONFIG.model = args.model
+    import src.llm as llm_module
+
+    primary = (args.model or llm_module.DEFAULT_LITELLM_MODEL).strip()
+    if args.fallbacks:
+        fallbacks = [f.strip() for f in args.fallbacks.split(",") if f.strip()]
+        if not fallbacks:
+            fallbacks = list(llm_module.DEFAULT_CROSS_PROVIDER_FALLBACKS)
+    else:
+        fallbacks = list(llm_module.DEFAULT_CROSS_PROVIDER_FALLBACKS)
+    chain = [primary] + fallbacks
+    llm_module.GLOBAL_CONFIG.model = primary
+    llm_module.ROUTER = llm_module.build_router(chain, llm_module.GLOBAL_CONFIG)
 
 def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[Any, str]:
     pdf_path = Path(args.pdf)

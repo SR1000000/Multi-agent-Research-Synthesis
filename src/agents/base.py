@@ -1,10 +1,8 @@
-import time
 import json
 import typing
-from typing import TypeVar, Any
+from typing import TypeVar
 from pydantic import BaseModel, ValidationError
-from langfuse.decorators import observe
-from src.llm import get_llm, _strip_think_block, _strip_code_fence
+from src.llm import get_llm, _strip_think_block, _strip_code_fence, _heal_json
 from src.state import DeliveryPlan
 from src.logging.logger import AgentLogger
 
@@ -29,7 +27,7 @@ If you are replanning (prior history is provided):
 """
 
 WRITER_ROLE = """
-You are a Synthesis Writer. Your job is to produce a concise, insightful 
+You are a Synthesis Writer. Your job is to produce a concise, insightful
 summary that highlights the most important findings from the research by following a structured delivery plan
 
 A good synthesis:
@@ -45,21 +43,21 @@ If you are revising (revision history is provided):
 """
 
 CRITIC_ROLE = """
-You are a Research Synthesis Critic. Your job is to review a synthesized draft 
+You are a Research Synthesis Critic. Your job is to review a synthesized draft
 and determine if it is well enough for publication based on the Success Criteria.
 
 Core Directives:
-1. Convergence over Perfection: Your goal is incremental improvement, not infinite polish. 
+1. Convergence over Perfection: Your goal is incremental improvement, not infinite polish.
 An issue is only an "issue" if it prevents understanding, degrades quality, or violates success criteria.
 2. Synthesis over Detail: Reject drafts that are "wordy" or feel like a data dump. Prioritize generating understanding through clear, context-backed explanations that offers specific insights.
-3. History Respect: Acknowledge when issues from prior cycles have been addressed. 
+3. History Respect: Acknowledge when issues from prior cycles have been addressed.
 4. Sufficiency Check: If the synthesis goals are met and the core takeaways are clear, prioritize acceptance.
 
 For each issue found:
 - Assign a unique ID (ISS_001, ISS_002, ...)
 - Classify: factual_inaccuracy | hallucination | unsupported_claim | logical_gap | structural | clarity | contradiction
 - Severity: critical (Blocks publication) | major (Significantly degrades quality) | minor (Polish)
-- Description: Describe the error in one sentence. 
+- Description: Describe the error in one sentence.
 """
 
 SUPERVISOR_ROLE = """
@@ -100,7 +98,7 @@ and specifies how many slides that agent may generate.
 
 ### DECISION PRINCIPLES:
 1. **Respect paper structure**: Never split a single logical section across two agents. \
-   A section with sub-sections (e.g. "3 Methodology" followed by "3.1 Dataset", "3.2 Model") \
+   A section with sub-sections (e.g., "3 Methodology" followed by "3.1 Dataset", "3.2 Model") \
    should generally stay together unless it is very large.
 2. **Proportional slide allocation**: Allocate slides proportionally to the total chunk count \
    within each group. Sections with more chunks deserve more slides.
@@ -167,6 +165,7 @@ AGENT_ROLES = {
     'research_to_slide': RESEARCH_TO_SLIDE_ROLE,
 }
 
+
 class BaseLLMAgent:
     def __init__(self, role: str, *, log_display: str | None = None):
         self.role = role
@@ -174,35 +173,84 @@ class BaseLLMAgent:
         self._base_logger = AgentLogger()
 
     def _build_messages(self, turns: list[dict]) -> list[dict]:
+        """Build the full message list by prepending the system prompt.
+
+        LiteLLM handles system message translation for all providers including
+        Gemini (which doesn't accept role=system natively) — no manual separation
+        needed here.
+
+        For prompt caching (Anthropic/Gemini), wrap the system content as a list:
+            {'role': 'system', 'content': [
+                {'type': 'text', 'text': '...', 'cache_control': {'type': 'ephemeral'}}
+            ]}
+        """
         return [{'role': 'system', 'content': AGENT_ROLES[self.role]}, *turns]
 
-    @observe(as_type='generation')
-    def _call_raw(self, turns: list[dict], schema: type[T] | None = None, max_retries: int = 2) -> str:
+    def _call_raw(
+        self,
+        turns: list[dict],
+        schema: type[T] | None = None,
+        model: str | None = None,
+        llm_config_override: dict | None = None,
+    ) -> str:
+        """
+        Single LLM call with no retry logic.
+
+        Reliability (retries, ordered fallbacks) is handled by LiteLLM’s
+        ``Router`` inside ``LiteLLMProvider.complete()``.
+
+        Schema validation retries (with correction prompts) live in _call().
+
+        Args:
+            turns:               User/assistant conversation turns.
+            schema:              Pydantic schema — activates JSON mode.
+                                 Parsing and validation happen in _call(), not here.
+            model:               LiteLLM model string override for this call,
+                                 e.g. "gemini/gemini-2.0-flash-001".
+            llm_config_override: Dict of LLMConfig field overrides for this call.
+
+        Returns:
+            Raw string response from the model (may contain think blocks or
+            code fences — callers strip those themselves).
+        """
         messages = self._build_messages(turns)
-        llm = get_llm()
-        
-        # Output the model that the agent is using
-        model_name = getattr(llm.config, 'model', 'unknown')
-        provider = getattr(llm.config, 'provider', 'unknown')
-        self._base_logger.log(f"[{self._log_display}] Invoking LLM ({provider}: {model_name})")
+        override = dict(llm_config_override) if llm_config_override else {}
+        if model is not None:
+            override["model"] = model
+        llm = get_llm(llm_config_override=override if override else None)
+        label = model or "default"
+        self._base_logger.log(f"[{self._log_display}] Invoking LLM (model: {label})")
+        return llm.complete(messages, schema=schema)
 
-        for attempt in range(max_retries):
-            try:
-                return llm.complete(messages, schema=schema)
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    raise
-                time.sleep(3 ** attempt)
+    def _call(
+        self,
+        turns: list[dict],
+        schema: type[T] | None = None,
+        max_retries: int = 2,
+        model: str | None = None,
+        llm_config_override: dict | None = None,
+    ) -> str | T:
+        """
+        High-level call with optional Pydantic schema validation + correction retries.
 
-    def _call(self, turns: list[dict], schema: type[T] | None = None, max_retries: int = 2) -> str | T:
+        For text (no schema): one _call_raw, strip think blocks, return string.
+        For structured output:
+          1. Call _call_raw with schema (JSON mode).
+          2. Strip think blocks and code fences.
+          3. Attempt _heal_json to fix common envelope mistakes.
+          4. Validate with schema.model_validate_json.
+          5. On ValidationError, append a correction prompt and retry up to
+             max_retries times.
+        """
         if schema is None:
-            raw = self._call_raw(turns, schema=None, max_retries=max_retries)
+            raw = self._call_raw(turns, schema=None, model=model, llm_config_override=llm_config_override)
             return _strip_think_block(raw)
 
         current_turns = list(turns)
         last_error: ValidationError | None = None
+
         for attempt in range(max_retries + 1):
-            raw = self._call_raw(current_turns, schema=schema, max_retries=1)
+            raw = self._call_raw(current_turns, schema=schema, model=model, llm_config_override=llm_config_override)
             clean = _strip_code_fence(_strip_think_block(raw))
             healed = _heal_json(clean, schema)
             try:
@@ -215,7 +263,8 @@ class BaseLLMAgent:
                     else " No retries left; propagating error."
                 )
                 self._base_logger.log(
-                    f"[{self._log_display}] Validation error (attempt {attempt + 1}/{max_retries + 1}).{retry_note}\n"
+                    f"[{self._log_display}] Validation error "
+                    f"(attempt {attempt + 1}/{max_retries + 1}).{retry_note}\n"
                     f"{e}\n\nOffending JSON:\n{clean}"
                 )
                 if attempt == max_retries:
@@ -230,11 +279,12 @@ class BaseLLMAgent:
                         "Do NOT wrap in markdown fences, add explanations, or include any text outside the JSON."
                     )},
                 ]
+
         raise last_error
 
 
 def _single_list_field(schema: type[BaseModel]) -> str | None:
-    """Return the name of a field if it is the only top-level List field, else None."""
+    """Return the sole top-level List field name, or None if there isn't exactly one."""
     list_fields = [
         name
         for name, fi in schema.model_fields.items()
@@ -243,55 +293,16 @@ def _single_list_field(schema: type[BaseModel]) -> str | None:
     return list_fields[0] if len(list_fields) == 1 else None
 
 
-def _heal_json(raw: str, schema: type[BaseModel]) -> str:
-    """
-    Attempt to recover from two common LLM envelope mistakes for schemas that
-    wrap a list in a single top-level key (e.g. {"slides": [...]}).
-
-    Handled cases:
-      • Bare JSON array:           [{...}, {...}]          → {"slides": [...]}
-      • N comma-separated objects: {...},\\n{...}           → {"slides": [...]}
-      • Single bare object:        {...}  (no "slides" key) → {"slides": [{...}]}
-    """
-    key = _single_list_field(schema)
-    if not key:
-        return raw
-
-    stripped = raw.strip()
-
-    # Already valid JSON?  Only proceed if it doesn't parse.
-    try:
-        candidate = json.loads(stripped)
-        # Parsed fine; if it's already a dict with the expected key we're done.
-        if isinstance(candidate, dict) and key in candidate:
-            return raw
-        # Dict without the key → single object
-        if isinstance(candidate, dict):
-            return json.dumps({key: [candidate]})
-        # Plain list
-        if isinstance(candidate, list):
-            return json.dumps({key: candidate})
-        return raw
-    except json.JSONDecodeError:
-        pass
-
-    # Try wrapping the raw text as an array to recover multiple comma-separated objects.
-    try:
-        items = json.loads(f"[{stripped}]")
-        if isinstance(items, list) and all(isinstance(i, dict) for i in items):
-            return json.dumps({key: items})
-    except json.JSONDecodeError:
-        pass
-
-    return raw
-  
 def _render_history(history: list[str], kind: str) -> str:
-    if not history: return ''
+    if not history:
+        return ''
     lines = [f'PRIOR {kind.upper()} HISTORY — do not repeat these mistakes:']
     for i, entry in enumerate(history):
-        lines.append(f'  Cycle {i+1}: {entry}')
+        lines.append(f'  Cycle {i + 1}: {entry}')
     return '\n'.join(lines)
 
+
 def _plan_to_text(plan: DeliveryPlan | None) -> str:
-    if plan is None: return '(no plan yet)'
+    if plan is None:
+        return '(no plan yet)'
     return json.dumps(plan.model_dump(), indent=2)

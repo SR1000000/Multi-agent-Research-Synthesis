@@ -25,16 +25,11 @@ sqlite-vec provides fast, local vector similarity search directly within SQLite.
 
 ### 3. API keys
 
+The system supports dynamic routing between model providers through `LiteLLM`. See `.env.sample` for API keys we support, and replace the placeholder values with your LLM Provider's API key.
+
 ```bash
 copy .env.sample .env
 ```
-
-Edit `.env` — replace the placeholder values with your LLM Provider's API key. We have options for
-
-- [OpenRouter API](https://openrouter.ai/keys)
-- [Ollama Cloud API](https://ollama.com/settings/keys)
-- [Google AI Studio](https://github.com/google-gemini/cookbook/blob/main/quickstarts/Get_started.ipynb)
-- [LlamaCloud API](https://cloud.llamaindex.ai/api-keys)
 
 ### 4. Langfuse Logging Setup
 
@@ -48,21 +43,21 @@ LANGFUSE_BASE_URL="https://cloud.langfuse.com"
 
 The codebase uses `langfuse` which will automatically pick up these environment variables to trace agent runs.
 
-### 5. (Optional) Change model
+### 5. (Optional) Model and fallbacks
 
-Edit `--model` argument when running project.
+`--model` is a **LiteLLM model id** (for example `gemini/gemini-2.0-flash-001`, `openrouter/...`, `ollama/...`). It is not a short nickname for a vendor. If you omit `--model`, the CLI uses `DEFAULT_LITELLM_MODEL` in `src/llm.py` (change that constant to switch the project default).
+
+`--fallbacks` is an optional comma-separated list of the same kind of ids; they are tried in order after `--model` if the primary deployment fails (no extra env-based chain).
 
 ## Run
 
 ```bash
-# To use Ollama Cloud:
-python main.py --ollama
+python main.py
 
-# To use OpenRouter:
-python main.py --open-router
-
-# To use Google Gemini (default):
-python main.py --gemini
+# Examples with explicit models:
+python main.py --model gemini/gemini-2.0-flash-001
+python main.py --model openrouter/meta-llama/llama-3.2-3b-instruct:free
+python main.py --model ollama/qwen3.5:397b-cloud
 ```
 
 ### Document processor
@@ -95,6 +90,12 @@ Adding the argument `-i` or `--interactive` adds a prompt for whether the user w
 Adding `--use-db` (or `--skip-processing`) skips the document processing and instead attempts to load the parsed PDF chunks and metadata directly from the `data/research.db` SQLite database if it exists, saving valuable API and compute time during iterative runs pipeline tuning.
 
 Adding `--slides` will generate powerpoint slides instead of a single document. The number of slides is controlled by the `--max-slides` argument, which defaults to 12.
+
+**Model configuration**
+
+- `--model` — Full **LiteLLM** model id for this run (not a provider alias). If omitted, `DEFAULT_LITELLM_MODEL` in `src/llm.py` is used.
+
+- `--fallbacks` — Comma-separated LiteLLM model ids, same format as `--model`. Applied to that primary only; routing/retries use LiteLLM’s Router (see [LiteLLM routing](https://docs.litellm.ai/docs/routing)).
 
 ## Graph Flow
 
