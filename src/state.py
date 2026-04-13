@@ -50,6 +50,7 @@ class ResearchState(TypedDict):
     session_id:  str
     created_at:  str
     doc_id:      str
+    paper_title: str
 
     # -- slide coordination --
     max_slides:    int
