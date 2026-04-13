@@ -4,6 +4,7 @@ from typing import Any
 import time
 from pathlib import Path
 import os
+import re
 from src.memory import get_database
 from src.graph import build_graph
 from src.llm.llm import init_from_config
@@ -209,7 +210,6 @@ def _sanitize_filename(name: str) -> str:
     if not name:
         return ""
     # Replace invalid chars with underscore
-    import re
     safe = "".join(ch if ch.isalnum() or ch in (" ", "-", "_") else "_" for ch in name)
     # Collapse multiple underscores/spaces and switch spaces to underscores
     safe = re.sub(r"[ _]+", "_", safe).strip("_")

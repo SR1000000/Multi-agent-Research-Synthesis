@@ -2,7 +2,7 @@ import json
 import typing
 from typing import TypeVar
 from pydantic import BaseModel, ValidationError
-from src.llm.llm import get_llm, _strip_think_block, _strip_code_fence, _heal_json
+from src.llm.llm import get_llm, _strip_think_block, _strip_code_fence, _heal_json, DEFAULT_MODEL_NAME
 from src.state import DeliveryPlan
 from src.logging.logger import AgentLogger
 
@@ -217,9 +217,11 @@ class BaseLLMAgent:
         if model is not None:
             override["model"] = model
         llm = get_llm(llm_config_override=override if override else None)
-        label = model or "default"
-        self._base_logger.log(f"[{self._log_display}] Invoking LLM (model: {label})")
-        return llm.complete(messages, schema=schema)
+        content = llm.complete(messages, schema=schema)
+        actual_model = llm.last_model_used or (model or DEFAULT_MODEL_NAME)
+        label = f"default ({actual_model})" if model is None else f"{model} ({actual_model})"
+        self._base_logger.log(f"[{self._log_display}] Invoked LLM (model: {label})")
+        return content
 
     def _call(
         self,
