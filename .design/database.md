@@ -1,40 +1,58 @@
 # Database Persistence Architecture
 
-This document describes the design behind the database layer used to store extraction artifacts. The goal is to avoid cluttering the disk with temporary markdown, JSON, or PNG files in an `artifacts/` folder, and instead use a robust database backend.
+This document describes the design of the database layer used to store extraction artifacts and intermediate synthesis state. The project utilizes a dual-database architecture to separate persistent research data from volatile session data.
 
 ## Overview
 
-The processing pipeline completely parses PDF documents into memory using Docling. This memory structure (`ExtractionResult`) is then persisted into a unified SQLite database (`processor.db`) using the `DatabaseProvider` interface.
+The system uses two distinct SQLite databases located in the `data/` directory:
 
-To support rapid iteration and debugging, all data—including images and equations—are stored using native, easily scannable text formats.
+1.  **`research.db`**: A long-term storage for processed documents. It acts as a cache to avoid re-parsing expensive PDFs and provides vector search capabilities for the research agents.
+2.  **`wip.db`**: A temporary workspace used during the slide synthesis pipeline. It stores "proto-slides" which are intermediate representations of presentation content before they are exported to PowerPoint.
 
-## Schema Details
+## Research Database (`research.db`)
 
-The exact SQL tables map directly to the datatypes in `src.processing.document.schema`.
-- **`documents`**: Tracks the original PDF path for a given `doc_id`.
-- **`chunks`**: Stores all text chunks, context breadcrumbs, and referenced metadata as JSON arrays (`headings_json`, `captions_json`).
-- **`equations`**: Stores the LaTeX form or string form of equations mapped to `id`.
-- **`tables`**: Contains raw `html_content` of complex tables extracted via Docling.
-- **`images`**: Uses `mime_type` and `base64_data` to store the PNG bytestrings from PIL images instead of utilizing binary schemas.
-- **`references_map`**: Tracks where in the markdown string specific items (images, equations, tables) exist.
+The `research.db` uses `sqlite-vec` to provide native vector search within SQLite. It stores the full output of the `DocProcessor` pipeline.
 
-### Base64 Images and Markdown In-Memory
-Docling utilizes `ImageRefMode.REFERENCED` when generating Markdown, normally pointing to physical local paths. Our pipeline captures the Markdown and Image objects before they are dumped to disk. It extracts the `docling.document.pictures` natively, converts them to `.PNG` bytes, encodes them in base64, and inserts them into SQLite. The LLM can then query `processor.db` to reconstruct the multimodal assets directly.
+### Schema Details
 
-## Inspecting the Database Manually
+The tables in `research.db` map to the models defined in `src.processing.document.schema`.
 
-Because the backend relies heavily on JSON and string schemas instead of binary objects, users can quickly inspect the data pipeline outputs.
+-   **`documents`**: Tracks ingested files by `doc_id`. Stores the raw `markdown` representation, `page_count`, and `paper_metadata` (title, authors, etc.).
+-   **`text_chunks`**: Stores semantic text blocks extracted from the document. Each chunk includes its original `text` and often a `contextualized_text` (LLM-augmented for better retrieval).
+-   **`text_chunks_vec`**: A virtual table (using `sqlite-vec`) storing embeddings for each text chunk to support semantic search.
+-   **`images`**: Stores image metadata, `caption`, and either `base64_data` or a `storage_path` (pointing to the Object Store).
+-   **`tables`**: Stores extracted tables as HTML `content` along with rows/column counts and captions.
+-   **`equations`**: Stores LaTeX or text representations of math equations found in the PDF.
 
-**Recommendation:** Use [DB Browser for SQLite](https://sqlitebrowser.org/) or a similar graphical interface.
+### Automatic Caching
 
-1. Open `processor.db` from the project root.
-2. Select **Browse Data**.
-3. Select the `chunks` table to read precisely what semantic blocks the LLM will see.
-4. Select the `images` table to see the base64 mapping, page location, and captions.
+Caching is handled automatically by `DocProcessor`. When a PDF is processed:
+1.  The file's SHA-256 `content_hash` is calculated.
+2.  The database is queried to see if a document with that hash already exists.
+3.  If found, the system loads the results directly from the database, skipping OCR and embedding steps.
 
-## Utilizing the `--use-db` Flag
+## WIP Database (`wip.db`)
 
-To skip the expensive processing times for debugging graphs/LLM calls, you can point the app to load entirely from the DB.
-`python main.py --pdf my_doc.pdf --use-db`
+The `wip.db` is reset at the start of every execution of `main.py`. It serves as a shared memory between the synthesis agents and the presentation builder.
 
-**Note:** If `--use-db` is set but the `doc_id` inside the `processor.db` does not match the inferred `doc_id` of the `--pdf` passed (or default document), the script will explicitly crash and exit. This provides strong guarantees against downstream poisoning using the wrong pipeline DB cache.
+### Schema Details
+
+-   **`proto_slides`**: 
+    -   `slide_number` (ID): The sequence position of the slide.
+    -   `content` (JSON): The structured slide content (title, bullet points, image descriptors).
+    -   `chunk_references` (JSON): A list of IDs linking back to the `text_chunks` in `research.db` that provided the evidence for this slide.
+
+## Inspecting the Databases
+
+The databases are standard SQLite files and can be inspected with any SQLite client.
+
+**Recommendation:** Use [DB Browser for SQLite](https://sqlitebrowser.org/) or SQLite Viewer extension for VS Code.
+
+1.  Open `data/research.db` to see indexed papers and their extracted media.
+2.  Open `data/wip.db` (while the agent is running or after the program finishes) to see the intermediate slide data being generated.
+
+## Technical Notes
+
+-   **Vector Search**: The project requires the `sqlite-vec` extension. This is handled automatically via the `sqlite-vec` Python package.
+-   **WAL Mode**: Both databases use Write-Ahead Logging (`PRAGMA journal_mode=WAL`) for better performance and concurrency.
+-   **Object Storage**: While metadata is in SQLite, actual image bytes may reside in a local directory or R2 bucket depending on the `--object-store` CLI flag, with the path stored in the `images` table.
