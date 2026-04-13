@@ -7,16 +7,16 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 class BulletPoint(BaseModel):
     text: str = Field(
-        description='The bullet point text. Field name is "text" — do NOT use "content".',
+        description=(
+            'The bullet point text. Supports Markdown formatting and LaTeX math '
+            '(e.g., inline `$E=mc^2$` or display `$$\\frac{a}{b}$$`). '
+            'Field name is "text" — do NOT use "content".'
+        ),
         validation_alias=AliasChoices("text", "content"),
     )
     sub_bullets: List[str] = Field(
         default_factory=list,
         description='Optional sub-bullet points as plain strings (NOT objects). Example: ["Detail A", "Detail B"]',
-    )
-    bold_phrases: List[str] = Field(
-        default_factory=list,
-        description='Exact substrings from `text` that should be rendered in bold. Use 0–2 per bullet. Example: ["47%", "record high"]',
     )
     content_type: Literal["insight", "evidence", "statistic", "example", "caveat"] = Field(default="insight", description="Semantic type of this bullet point")
 
@@ -30,19 +30,6 @@ class BulletPoint(BaseModel):
             if isinstance(item, dict)
             else str(item)
             for item in v
-        ]
-
-    @field_validator("bold_phrases", mode="before")
-    @classmethod
-    def coerce_bold_phrases(cls, v: object) -> list[str]:
-        if not isinstance(v, list):
-            return []
-        return [
-            (item.get("text") or item.get("content") or str(item))
-            if isinstance(item, dict)
-            else str(item)
-            for item in v
-            if item
         ]
 
 
