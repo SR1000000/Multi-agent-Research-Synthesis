@@ -25,16 +25,11 @@ sqlite-vec provides fast, local vector similarity search directly within SQLite.
 
 ### 3. API keys
 
+The system supports dynamic routing between model providers through `LiteLLM`. See `.env.sample` for API keys we support, and replace the placeholder values with your LLM Provider's API key.
+
 ```bash
 copy .env.sample .env
 ```
-
-Edit `.env` — replace the placeholder values with your LLM Provider's API key. We have options for
-
-- [OpenRouter API](https://openrouter.ai/keys)
-- [Ollama Cloud API](https://ollama.com/settings/keys)
-- [Google AI Studio](https://github.com/google-gemini/cookbook/blob/main/quickstarts/Get_started.ipynb)
-- [LlamaCloud API](https://cloud.llamaindex.ai/api-keys)
 
 ### 4. Langfuse Logging Setup
 
@@ -48,21 +43,48 @@ LANGFUSE_BASE_URL="https://cloud.langfuse.com"
 
 The codebase uses `langfuse` which will automatically pick up these environment variables to trace agent runs.
 
-### 5. (Optional) Change model
+### 5. LLM providers and routing
 
-Edit `--model` argument when running project.
+Runtime LLM comes from a **LiteLLM Router** built from YAML. The app reads **`src/llm/config.yaml`** at startup (see `init_from_config` in `src/llm/llm.py`).
+
+#### Create your `config.yaml`
+
+1. Copy the template: **`src/llm/config.sample.yaml`** or use the current **`src/llm/config.yaml`**
+2. Fill in **API keys and base URLs** via `.env` using the `os.environ/VAR_NAME` placeholders from the sample (LiteLLM resolves those strings when the Router starts). You can also add whatever API providers you have.
+3. Adjust **`router.providers`** and **`router.fallback_providers`** to match the models and backends you actually use.
+
+You can keep multiple experimental YAML files elsewhere and point the app at one for a single run:
+
+```bash
+python main.py --llm-config path/to/your/config.yaml
+```
+
+#### Provider entries (LiteLLM format)
+
+You are not limited to the providers in the sample: **any provider and model string LiteLLM supports** can be added by following the same config structure in `config.yaml`.
+
+- The config file follows a provider-first approach. Under **`router.providers`**, each key (e.g. `gemini`, `openrouter`) is a **named block**, and API Keys and API base URLs **shared** for every row in that block.
+- Each item under **`models`** is one **deployment**: a `model:` string in LiteLLM form `<provider>/<model-string>` (e.g. `gemini/gemini-2.5-pro`, `openrouter/...`) plus any extra per-model fields merged into `litellm_params`.
+- **`router.fallback_providers`** uses the same structure; its default group alias is **`fallback_model_name`** instead of **`default_model_name`** (see below).
+
+For exact parameter names and provider-specific options, use the [LiteLLM provider docs](https://docs.litellm.ai/docs/providers). By default LiteLLM follows [OpenAI API](https://developers.openai.com/api/reference/resources/responses).
+
+#### Router groups: same name vs different names vs `fallbacks`
+
+LiteLLM’s Router groups **deployments** by a string **`model_name`** (this repo and the sample YAML call that a **group alias** — one logical “model group” you can target in code).
+
+| Concept                          | Meaning                                                                                                                                                                                                                                                                                                                                                                                            |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **One group (one `model_name`)** | Every `models` row that ends up with the **same** alias shares one pool. The Router **routes inside that pool** (e.g. load balancing, retries, cooldowns, rate-limit handling) without you configuring anything extra. Rows inherit the block default (`default_model_name` for `providers`, `fallback_model_name` for `fallback_providers`) unless you set **`model_name: <alias>`** on that row. |
+| **Different groups**             | Different aliases (e.g. `app`, `writer`, `fast`, `fallback`) are **separate** pools. The app chooses which group to call via the Router **`model=`** argument (and `LLMConfig.model` / agent defaults). Nothing automatically jumps from `app` to `writer` unless **you** request that alias or configure cross-group fallbacks.                                                                   |
+| **`router.fallbacks`**           | Optional **cross-group** order: if primary group calls fail, the Router can try the listed backup **aliases** (e.g. map `app` → try `fallback`). If you omit `fallbacks`, other groups still exist in `model_list`, but there is **no** automatic chain between aliases—you pick the alias explicitly.                                                                                             |
+
+So: **routing within a group** = multiple deployments behind one alias; **switching groups** = explicit `model=` or an explicit **`fallbacks`** map in YAML.
 
 ## Run
 
 ```bash
-# To use Ollama Cloud:
-python main.py --ollama
-
-# To use OpenRouter:
-python main.py --open-router
-
-# To use Google Gemini (default):
-python main.py --gemini
+python main.py
 ```
 
 ### Document processor

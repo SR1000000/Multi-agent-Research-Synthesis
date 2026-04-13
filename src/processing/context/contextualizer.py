@@ -4,8 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from google import genai
-from google.genai import types
+from src.llm import get_llm, LLMConfig
 
 from .prompts import ARTIFACT_CONTEXT_PROMPT, CHUNK_CONTEXT_PROMPT
 
@@ -14,9 +13,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class ContextConfig:
-    model: str = "gemini-2.5-flash"
+    """Configuration for document contextualization.
+
+    Attributes:
+        model: Model identifier for contextualization (default: "gemini-2.0-flash")
+        skip_chunk_token_threshold: Minimum token count to skip contextualization for short chunks with sufficient headings
+        api_key: Optional API key override
+    """
+    model: str = "gemini-2.0-flash"
     skip_chunk_token_threshold: int = 120
     api_key: str | None = None
 
@@ -24,27 +31,38 @@ class ContextConfig:
 DEFAULT_CONTEXT_CONFIG = ContextConfig()
 
 
-class GeminiContextualizer:
+class Contextualizer:
     """
-    Handles document contextualization using the Gemini API via implicit caching.
+    Handles document contextualization using LiteLLM.
+
+    Supports implicit caching via LiteLLM's cache_control for providers that support it
+    (Anthropic, Gemini). Add cache_control to system message parts in _generate() if needed.
     """
     def __init__(self, config: ContextConfig = DEFAULT_CONTEXT_CONFIG) -> None:
         self.config = config
-        self._client = genai.Client(api_key=config.api_key)
+        self._llm_config = LLMConfig(
+            model=config.model,
+            api_key=config.api_key,
+        )
+        self._llm = get_llm(config=self._llm_config)
 
     def contextualize(self, result: ExtractionResult) -> ExtractionResult:
         """
         Main entry point. Iterates through chunks and artifacts to provide context.
-        Uses implicit Gemini caching by prefixing every prompt with the document markdown.
+
+        For prompt caching, the document markdown can be cached as a system message:
+            messages = [{'role': 'system', 'content': [
+                {'type': 'text', 'text': markdown, 'cache_control': {'type': 'ephemeral'}}
+            ]}]
         """
         markdown = result.markdown
-        
+
         # Contextualize text chunks
         for chunk in result.source_chunks:
             if len(chunk.text) < self.config.skip_chunk_token_threshold and len(chunk.meta_data.get("headings", [])) >= 2:
                 chunk.contextualized_text = chunk.text
                 continue
-            
+
             prompt = CHUNK_CONTEXT_PROMPT.format(
                 document_markdown=markdown,
                 chunk_text=chunk.text
@@ -56,7 +74,7 @@ class GeminiContextualizer:
         for artifact in artifacts:
             text_before, text_after = self._find_surrounding_chunks(artifact.page, result.source_chunks)
             artifact_content = self._get_artifact_content(artifact)
-            
+
             prompt = ARTIFACT_CONTEXT_PROMPT.format(
                 document_markdown=markdown,
                 text_before=text_before,
@@ -110,22 +128,16 @@ class GeminiContextualizer:
         return ""
 
     def _generate(self, prompt: str) -> str:
-        """Generates content and logs implicit cache usage metadata."""
-        res = self._client.models.generate_content(
-            model=self.config.model,
-            contents=prompt
-        )
-        self._log_cache_usage(res)
-        return res.text.strip()
+        """Generates content using LiteLLM."""
+        messages = [{'role': 'user', 'content': prompt}]
 
-    def _log_cache_usage(self, response: Any) -> None:
-        """Logs whether the response utilized the implicit context cache."""
-        usage = getattr(response, "usage_metadata", None)
-        if usage:
-            cached_count = getattr(usage, "cached_content_token_count", 0)
-            if cached_count > 0:
-                logger.info(f"Implicit Cache HIT: {cached_count} tokens reused.")
-            else:
-                logger.info("Implicit Cache MISS: Full prefix processed.")
-        else:
-            logger.debug("No usage metadata found in response.")
+        # For prompt caching (optional), you can structure messages like:
+        # messages = [
+        #     {'role': 'system', 'content': [
+        #         {'type': 'text', 'text': 'Document context:', 'cache_control': {'type': 'ephemeral'}}
+        #     ]},
+        #     {'role': 'user', 'content': prompt}
+        # ]
+
+        response = self._llm.complete(messages)
+        return response.strip()
