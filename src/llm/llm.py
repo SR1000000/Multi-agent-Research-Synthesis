@@ -179,6 +179,7 @@ class LiteLLMProvider:
         if ROUTER is None:
             init_from_config()
         self._router = ROUTER
+        self.last_model_used: str | None = None
 
     def complete(
         self,
@@ -204,6 +205,7 @@ class LiteLLMProvider:
             kw["response_format"] = {"type": "json_object"}
 
         resp = self._router.completion(**kw)
+        self.last_model_used = getattr(resp, "model", None) or kw["model"]
         return resp.choices[0].message.content or ""
 
 

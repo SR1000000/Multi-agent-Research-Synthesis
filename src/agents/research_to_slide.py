@@ -87,7 +87,7 @@ class ResearchToSlideAgent(BaseLLMAgent):
         
         # 2. Invoke LLM
         output_schema = SlideGenerationOutput
-        result: SlideGenerationOutput = self._call(turns, schema=output_schema)
+        result: SlideGenerationOutput = self._call(turns, schema=output_schema, model="slides")
 
         # 3. Save to wip.db
         wip_db = WIPDatabase()

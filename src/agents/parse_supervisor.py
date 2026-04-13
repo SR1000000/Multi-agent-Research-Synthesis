@@ -251,7 +251,7 @@ class ParseSupervisorAgent(BaseLLMAgent):
             f"into parallel agent assignments with a total slide budget of {max_slides}."
         )
         turns = [{"role": "user", "content": user_msg}]
-        return self._call(turns, schema=PartitionPlan)
+        return self._call(turns, schema=PartitionPlan, model="slides")
 
     # ------------------------------------------------------------------
     # Step 5 — Plan repair

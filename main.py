@@ -4,6 +4,7 @@ from typing import Any
 import time
 from pathlib import Path
 import os
+import re
 from src.memory import get_database
 from src.graph import build_graph
 from src.llm.llm import init_from_config
@@ -209,7 +210,6 @@ def _sanitize_filename(name: str) -> str:
     if not name:
         return ""
     # Replace invalid chars with underscore
-    import re
     safe = "".join(ch if ch.isalnum() or ch in (" ", "-", "_") else "_" for ch in name)
     # Collapse multiple underscores/spaces and switch spaces to underscores
     safe = re.sub(r"[ _]+", "_", safe).strip("_")
@@ -250,18 +250,18 @@ def main() -> None:
 
 
     if args.slides:
-        from src.processing.export.pptx_builder import PptxBuilder
-        
+        from src.processing.export.pandoc_builder import PandocBuilder
+
         # Use paper title if available, fallback to doc_id or session_id
         raw_name = final_state.get('paper_title') or final_state.get('doc_id') or final_state['session_id']
         safe_name = _sanitize_filename(raw_name)
         if not safe_name:
             safe_name = final_state['session_id']
-            
+
         pptx_path = OUTPUT_DIR / f"{safe_name}.pptx"
         try:
             with WIPDatabase() as wip_db:
-                out = PptxBuilder(output_path=pptx_path, db=wip_db).build()
+                out = PandocBuilder(output_path=pptx_path, db=wip_db).build()
             print(f"\n[export] Presentation saved → {out}")
         except ValueError as exc:
             print(f"\n[export] Could not generate PPTX: {exc}")

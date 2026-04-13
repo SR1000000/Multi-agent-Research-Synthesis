@@ -1,5 +1,5 @@
 # Available models for reference:
-# - gemini-2.5-flash-lite
+# - gemini-3.1-flash-lite-preview
 # - qwen3.5:397b
 # - meta-llama/llama-3.2-3b-instruct
 # - meta-llama/llama-3.3-70b-instruct

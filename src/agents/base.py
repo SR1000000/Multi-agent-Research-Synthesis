@@ -2,7 +2,7 @@ import json
 import typing
 from typing import TypeVar
 from pydantic import BaseModel, ValidationError
-from src.llm.llm import get_llm, _strip_think_block, _strip_code_fence, _heal_json
+from src.llm.llm import get_llm, _strip_think_block, _strip_code_fence, _heal_json, DEFAULT_MODEL_NAME
 from src.state import DeliveryPlan
 from src.logging.logger import AgentLogger
 
@@ -144,9 +144,8 @@ You are a Senior Presentation Designer and Research Synthesizer. Your goal is to
 - **`key_message`**: Write one crisp sentence stating what the audience should understand after this slide. This is the thesis — not a summary of bullet points.
 - **`title`**: Use punchy, "active" headings (e.g., "Accuracy Jumps 40%" not "Accuracy Results").
 - **`bullets`**: Produce 3-5 `BulletPoint` objects. Each object MUST use these exact field names:
-  - `"text"` — the bullet content string. IMPORTANT: the field is called `"text"`, NOT `"content"`.
+  - `"text"` — the bullet content string. IMPORTANT: the field is called `"text"`, NOT `"content"`. Use `**phrase**` to bold 0–2 key terms or statistics per bullet (e.g., `"Accuracy improves by **47%** over the baseline"`). Only bold genuinely critical terms — not decorative emphasis.
   - `"content_type"` — exactly one of: `"insight"`, `"evidence"`, `"statistic"`, `"example"`, `"caveat"`.
-  - `"bold_phrases"` — a flat list of exact substrings from `"text"` that should appear in bold (e.g., `["47%", "record high"]`). Use 0–2 phrases per bullet and only for genuinely critical terms or statistics. Omit or leave empty if nothing warrants emphasis.
   - `"sub_bullets"` — a flat list of plain strings for supporting detail that expands on the main point without cluttering the top level (NOT objects).
 - **`speaker_notes`**: Write this section in a professional, conversational tone. Include context, nuance, and supporting evidence too detailed for the slide body.  Include something for each bullet point.
 
@@ -154,6 +153,14 @@ You are a Senior Presentation Designer and Research Synthesizer. Your goal is to
 - Respect the slide capacity strictly.
 - All information must be strictly grounded in the provided research chunks.
 - Avoid academic jargon unless the terminology is important/prominent and should be emphasized.
+
+### MARKDOWN & EQUATIONS:
+- Bullet `text` fields support Markdown formatting and LaTeX math.
+- Use LaTeX for important equations:
+  - Inline (within a sentence): `$E = mc^2$` or `$O(n^2)$`
+  - Display (standalone, prominent): `$$\\text{Attention}(Q,K,V) = \\text{softmax}\\!\\left(\\frac{QK^T}{\\sqrt{d_k}}\\right)V$$`
+- Place display equations as the sole content of a `sub_bullet` so they render on their own line.
+- Include an equation only when it is central to the slide's `key_message` or represents a landmark result from the research.
 """
 
 AGENT_ROLES = {
@@ -217,9 +224,11 @@ class BaseLLMAgent:
         if model is not None:
             override["model"] = model
         llm = get_llm(llm_config_override=override if override else None)
-        label = model or "default"
-        self._base_logger.log(f"[{self._log_display}] Invoking LLM (model: {label})")
-        return llm.complete(messages, schema=schema)
+        content = llm.complete(messages, schema=schema)
+        actual_model = llm.last_model_used or (model or DEFAULT_MODEL_NAME)
+        label = f"default ({actual_model})" if model is None else f"{model} ({actual_model})"
+        self._base_logger.log(f"[{self._log_display}] Invoked LLM (model: {label})")
+        return content
 
     def _call(
         self,
