@@ -11,6 +11,7 @@ from src.llm.llm import init_from_config
 from src.processing.chunker import get_text_chunker
 from src.processing.document import DocProcessor
 from src.processing.embedder.provider import get_text_embedder
+from src.processing.context.contextualizer import Contextualizer, ContextConfig
 import uuid
 from datetime import datetime, timezone
 from src.logging.logger import AgentLogger
@@ -147,10 +148,12 @@ def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[An
         chunker_name = "semantic"
 
     text_chunker = get_text_chunker(chunker_name) if chunker_name else None
+    contextualizer = Contextualizer(config=ContextConfig(model="context"), object_store=object_store)
     processor = DocProcessor(
         backend=processor_backend,
         text_chunker=text_chunker,
         db=db,
+        contextualizer=contextualizer,
         embedder=embedder,
         logger=logger,
         object_store=object_store,
@@ -227,54 +230,54 @@ def main() -> None:
     callbacks, logger = _get_callbacks(args, logger)
 
     artifacts, preprocessing_message = _process_document(args, logger)
-    initial_state = _build_initial_state(args, preprocessing_message, artifacts)
+    # initial_state = _build_initial_state(args, preprocessing_message, artifacts)
 
-    graph = build_graph(slides_mode=args.slides)
+    # graph = build_graph(slides_mode=args.slides)
     
-    final_state = initial_state
-    try:
-        # Use streaming to capture the state at each step, allowing us to recover logs if a crash occurs
-        for event in graph.stream(
-            initial_state, 
-            config={"callbacks": callbacks},
-            stream_mode="values"
-        ):
-            final_state = event
-    except Exception as e:
-        print(f"\n[!] Research Graph encountered an error mid-flight: {e}")
-        print("    Attempting to recover partial logs...")
+    # final_state = initial_state
+    # try:
+    #     # Use streaming to capture the state at each step, allowing us to recover logs if a crash occurs
+    #     for event in graph.stream(
+    #         initial_state, 
+    #         config={"callbacks": callbacks},
+    #         stream_mode="values"
+    #     ):
+    #         final_state = event
+    # except Exception as e:
+    #     print(f"\n[!] Research Graph encountered an error mid-flight: {e}")
+    #     print("    Attempting to recover partial logs...")
 
-    print("\n--- Agent Log ---")
-    for msg in final_state.get("messages", []):
-        print(msg)
+    # print("\n--- Agent Log ---")
+    # for msg in final_state.get("messages", []):
+    #     print(msg)
 
 
-    if args.slides:
-        from src.processing.export.pandoc_builder import PandocBuilder
+    # if args.slides:
+    #     from src.processing.export.pandoc_builder import PandocBuilder
 
-        # Use paper title if available, fallback to doc_id or session_id
-        raw_name = final_state.get('paper_title') or final_state.get('doc_id') or final_state['session_id']
-        safe_name = _sanitize_filename(raw_name)
-        if not safe_name:
-            safe_name = final_state['session_id']
+    #     # Use paper title if available, fallback to doc_id or session_id
+    #     raw_name = final_state.get('paper_title') or final_state.get('doc_id') or final_state['session_id']
+    #     safe_name = _sanitize_filename(raw_name)
+    #     if not safe_name:
+    #         safe_name = final_state['session_id']
 
-        pptx_path = OUTPUT_DIR / f"{safe_name}.pptx"
-        try:
-            with WIPDatabase() as wip_db:
-                out = PandocBuilder(output_path=pptx_path, db=wip_db).build()
-            print(f"\n[export] Presentation saved → {out}")
-        except ValueError as exc:
-            print(f"\n[export] Could not generate PPTX: {exc}")
-    else:
-        print("\n--- Final Draft (Last Known State) ---")
-        final_draft = final_state.get('draft')
-        if final_draft:
-            print(final_draft['document'])
-        else:
-            print('(no draft produced)')
+    #     pptx_path = OUTPUT_DIR / f"{safe_name}.pptx"
+    #     try:
+    #         with WIPDatabase() as wip_db:
+    #             out = PandocBuilder(output_path=pptx_path, db=wip_db).build()
+    #         print(f"\n[export] Presentation saved → {out}")
+    #     except ValueError as exc:
+    #         print(f"\n[export] Could not generate PPTX: {exc}")
+    # else:
+    #     print("\n--- Final Draft (Last Known State) ---")
+    #     final_draft = final_state.get('draft')
+    #     if final_draft:
+    #         print(final_draft['document'])
+    #     else:
+    #         print('(no draft produced)')
 
-    if logger:
-        logger.flush()
+    # if logger:
+    #     logger.flush()
 
 
 if __name__ == "__main__":

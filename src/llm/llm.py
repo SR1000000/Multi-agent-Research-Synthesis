@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +12,8 @@ from pydantic import BaseModel
 import litellm
 from litellm.router import Router
 from litellm.types.router import DeploymentTypedDict
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -207,6 +210,102 @@ class LiteLLMProvider:
         resp = self._router.completion(**kw)
         self.last_model_used = getattr(resp, "model", None) or kw["model"]
         return resp.choices[0].message.content or ""
+
+    def batch_complete(
+        self,
+        messages_list: list[list[dict]],
+        **kwargs,
+    ) -> list[str | Exception] | list[list[str | Exception]]:
+        """
+        Send batched completion calls.
+
+        Modes:
+        - Default (backwards compatible): many prompts -> one model (Router alias)
+          Returns: list[str | Exception] aligned with messages_list
+
+        - Opt-in: one prompt -> many models (Return ALL responses), per LiteLLM docs
+          Trigger by passing `models=[...]` in kwargs.
+          Returns: list[list[str | Exception]] where outer index is prompt index and
+          inner index is model index.
+
+        Args:
+            messages_list: List of message lists, each representing one prompt
+
+        Returns:
+            See Modes above.
+        """
+        if self._router is None:
+            raise RuntimeError("Router not initialized; call init_from_config() from main.")
+
+        models = kwargs.get("models")
+
+        # Opt-in: 1 prompt -> many models -> return all responses
+        if models is not None:
+            if not isinstance(models, list) or not all(isinstance(m, str) for m in models):
+                raise TypeError("batch_complete(models=...) expects a list[str]")
+
+            outputs: list[list[str | Exception]] = []
+            for messages in messages_list:
+                try:
+                    # Per LiteLLM docs:
+                    # https://docs.litellm.ai/docs/completion/batching
+                    resp_list = litellm.batch_completion_models_all_responses(
+                        models=models,
+                        messages=messages,
+                    )
+                    row: list[str | Exception] = []
+                    for r in resp_list:
+                        try:
+                            row.append(r.choices[0].message.content or "")
+                        except Exception as e:
+                            row.append(e)
+                    outputs.append(row)
+                except Exception as e:
+                    outputs.append([e for _ in models])
+            return outputs
+
+        # Default: many prompts -> one model (Router alias), i.e. LiteLLM `batch_completion`
+        kw: dict[str, Any] = {
+            "model": (self.config.model or DEFAULT_MODEL_NAME).strip(),
+            **(self.config.litellm_params or {}),
+        }
+        t = kwargs.get("temperature", self.config.temperature)
+        mt = kwargs.get("max_tokens", self.config.max_tokens)
+        if t is not None:
+            kw["temperature"] = t
+        if mt is not None:
+            kw["max_tokens"] = mt
+
+        # Prevent duplicate kw collisions (kw already contains model)
+        call_kw = dict(kw)
+        model_alias = call_kw.pop("model")
+
+        try:
+            # Router-side batch completion: one model group alias, many prompts.
+            results = self._router.batch_completion(model=model_alias, messages=messages_list, **call_kw)
+        except AttributeError:
+            logger.warning("Router.batch_completion not available; falling back to individual calls")
+            results = []
+            for messages in messages_list:
+                try:
+                    resp = self._router.completion(
+                        model=model_alias,
+                        messages=messages,
+                        **call_kw,
+                    )
+                    results.append(resp)
+                except Exception as e:
+                    results.append(e)
+
+        # Extract content from each response
+        outputs = []
+        for result in results:
+            if isinstance(result, Exception):
+                outputs.append(result)
+            else:
+                outputs.append(result.choices[0].message.content or "")
+
+        return outputs
 
 
 def get_llm(

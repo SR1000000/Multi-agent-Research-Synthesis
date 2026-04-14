@@ -266,14 +266,28 @@ class ResearchDatabase(DatabaseProvider):
                 )
                 inserted = 0
                 skipped_dim = 0
+                seen_chunk_ids: set[str] = set()
                 for chunk, emb, src in zip(result.source_chunks, embs, sources):
+                    if chunk.id in seen_chunk_ids:
+                        self._logger.log(
+                            f"[ResearchDatabase] Duplicate chunk_id in embedding batch; skipping duplicate id={chunk.id}",
+                            level="warning",
+                        )
+                        continue
+                    seen_chunk_ids.add(chunk.id)
                     if len(emb) != dim:
                         skipped_dim += 1
                         continue
                     blob = struct.pack(f"{dim}f", *emb)
+                    # sqlite-vec virtual tables may not honor INSERT OR REPLACE semantics.
+                    # Delete first to guarantee idempotent upsert by chunk_id.
+                    self._conn.execute(
+                        "DELETE FROM text_chunks_vec WHERE chunk_id = ?",
+                        (chunk.id,),
+                    )
                     self._conn.execute(
                         """
-                        INSERT OR REPLACE INTO text_chunks_vec (chunk_id, embedding, source)
+                        INSERT INTO text_chunks_vec (chunk_id, embedding, source)
                         VALUES (?, ?, ?)
                         """,
                         (chunk.id, blob, src),

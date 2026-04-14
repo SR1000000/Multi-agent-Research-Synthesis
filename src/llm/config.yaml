@@ -14,6 +14,7 @@ router:
   fallback_model_name: "fallback"
   fallbacks:
     - app: ["fallback"]
+    # - context: ["fallback"]
     # - writer: ["fallback"]
     # - fast: ["fallback"]
 
@@ -23,9 +24,24 @@ router:
       models:
         - model: "gemini/gemini-3.1-flash-lite-preview"
           model_name: "slides"
+        - model: "gemini/gemini-3-flash-preview"
+        - model: "gemini/gemini-2.5-flash-lite"
         - model: "gemini/gemini-2.5-pro"
         - model: "gemini/gemini-2.5-flash"
         - model: "gemini/gemini-2.5-flash-lite"
+
+    nvidia_nim:
+      api_key: "os.environ/NVIDIA_NIM_API_KEY"
+      api_base: "os.environ/NVIDIA_NIM_BASE_URL"
+      models:
+        - model: "nvidia_nim/mistralai/mistral-large-3-675b-instruct-2512"
+          model_name: "context"
+        - model: "nvidia_nim/mistralai/mistral-medium-3-instruct"
+          model_name: "context"
+        - model: "nvidia_nim/vlm/google/paligemma"
+          model_name: "context"
+        - model: "nvidia_nim/microsoft/phi-4-multimodal-instruct"
+          model_name: "context"
 
   fallback_providers:
     openrouter:
@@ -41,6 +57,12 @@ router:
       models:
         - model: "ollama/qwen3.5:397b-cloud"
         - model: "ollama/gemma3:27b-cloud"
+        - model: "ollama/qwen3.5:397b-cloud"
+          model_name: "context"
+        - model: "ollama/qwen3-vl:235b-instruct-cloud"
+          model_name: "context"
+        - model: "ollama/gemini-3-flash-preview:cloud"
+          model_name: "context"
 
   settings:
     num_retries: 2
