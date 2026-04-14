@@ -16,6 +16,7 @@ _logging.getLogger("LiteLLM Router").setLevel(_logging.ERROR)
 from litellm.router import Router
 from litellm.types.router import DeploymentTypedDict
 from litellm.integrations.custom_logger import CustomLogger
+from src.logging.logger import AgentLogger
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -23,7 +24,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
 load_dotenv(dotenv_path=str(_PROJECT_ROOT / ".env"))
 
-_agent_logger = _logging.getLogger("agentic_ai")
+_agent_logger = AgentLogger()._logger
 current_agent_label: contextvars.ContextVar[str] = contextvars.ContextVar(
     "current_agent_label", default="LLM",
 )

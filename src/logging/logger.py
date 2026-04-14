@@ -13,8 +13,21 @@ class AgentLogger:
     """
     AgentLogger handles integration with Langfuse to provide observability 
     for the multi-agent graph and LLM responses natively.
+
+    Implemented as a singleton so that repeated ``AgentLogger()`` calls across
+    agents and modules share a single Langfuse client and Python logger instance.
     """
+    _instance: "AgentLogger | None" = None
+
+    def __new__(cls) -> "AgentLogger":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self):
+        if getattr(self, "_initialized", False):
+            return
+        self._initialized = True
         # Langfuse automatically grabs LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY, 
         # and LANGFUSE_BASE_URL from environment variables.
         self.client = Langfuse()

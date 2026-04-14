@@ -19,7 +19,6 @@ from pydantic import BaseModel, Field
 from src.state import ResearchState
 from src.agents.base import BaseLLMAgent
 from src.memory.research.database import ResearchDatabase
-from src.logging.logger import AgentLogger
 
 # ---------------------------------------------------------------------------
 # Heading detection (LlamaParse produces standard ATX markdown headings)
@@ -101,7 +100,6 @@ class ParseSupervisorAgent(BaseLLMAgent):
 
     def __init__(self) -> None:
         super().__init__("parse_supervisor")
-        self._logger = AgentLogger()
 
     # ------------------------------------------------------------------
     # Public entry point — called by the graph node
