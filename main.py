@@ -1,4 +1,5 @@
 import argparse
+import shutil
 import sys
 from typing import Any
 import time
@@ -13,7 +14,7 @@ from src.processing.document import DocProcessor
 from src.processing.embedder.provider import get_text_embedder
 import uuid
 from datetime import datetime, timezone
-from src.logging.logger import AgentLogger
+from src.logging.logger import AgentLogger, VALIDATION_ERRORS_DIR
 from src.memory.wip.database import WIPDatabase
 from src.memory.objectstore import LocalObjectStore, R2ObjectStore, DEFAULT_OBJECT_STORE_CONFIG
 
@@ -219,6 +220,11 @@ def main() -> None:
     args = _parse_args()
     logger = AgentLogger()
 
+    # Clear validation error dumps from the previous run
+    if VALIDATION_ERRORS_DIR.exists():
+        shutil.rmtree(VALIDATION_ERRORS_DIR)
+    VALIDATION_ERRORS_DIR.mkdir(exist_ok=True)
+
     # Reset WIP database for the new run
     with WIPDatabase() as db:
         db.reset()
@@ -243,6 +249,10 @@ def main() -> None:
     except Exception as e:
         print(f"\n[!] Research Graph encountered an error mid-flight: {e}")
         print("    Attempting to recover partial logs...")
+
+    ve_files = list(VALIDATION_ERRORS_DIR.glob("*.json"))
+    if ve_files:
+        print(f"\n[validation] {len(ve_files)} error dump(s) written to {VALIDATION_ERRORS_DIR}/")
 
     print("\n--- Agent Log ---")
     for msg in final_state.get("messages", []):

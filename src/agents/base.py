@@ -1,8 +1,7 @@
 import json
-import typing
 from typing import TypeVar
 from pydantic import BaseModel, ValidationError
-from src.llm.llm import get_llm, _strip_think_block, _strip_code_fence, _heal_json, DEFAULT_MODEL_NAME
+from src.llm.llm import get_llm, _strip_think_block, _strip_code_fence, _heal_json, DEFAULT_MODEL_NAME, LLMCallError, current_agent_label
 from src.state import DeliveryPlan
 from src.logging.logger import AgentLogger
 
@@ -177,7 +176,8 @@ class BaseLLMAgent:
     def __init__(self, role: str, *, log_display: str | None = None):
         self.role = role
         self._log_display = log_display if log_display is not None else role
-        self._base_logger = AgentLogger()
+        self._logger = AgentLogger()
+        self._last_model_used: str | None = None  # Used for logging validation errors
 
     def _build_messages(self, turns: list[dict]) -> list[dict]:
         """Build the full message list by prepending the system prompt.
@@ -224,10 +224,24 @@ class BaseLLMAgent:
         if model is not None:
             override["model"] = model
         llm = get_llm(llm_config_override=override if override else None)
-        content = llm.complete(messages, schema=schema)
+        token = current_agent_label.set(self._log_display)
+        try:
+            content = llm.complete(messages, schema=schema)
+        except LLMCallError as exc:
+            model_label = (
+                f"{exc.model} ({exc.actual_model})" if exc.actual_model else exc.model
+            )
+            self._logger.log(
+                f"[{self._log_display}] LLM call failed (model={model_label}): {exc}",
+                level="error",
+            )
+            raise
+        finally:
+            current_agent_label.reset(token)
         actual_model = llm.last_model_used or (model or DEFAULT_MODEL_NAME)
+        self._last_model_used = actual_model
         label = f"default ({actual_model})" if model is None else f"{model} ({actual_model})"
-        self._base_logger.log(f"[{self._log_display}] Invoked LLM (model: {label})")
+        self._logger.log(f"[{self._log_display}] Invoked LLM (model: {label})")
         return content
 
     def _call(
@@ -270,10 +284,14 @@ class BaseLLMAgent:
                     if attempt < max_retries
                     else " No retries left; propagating error."
                 )
-                self._base_logger.log(
+                dump_path = self._logger.dump_validation_error(
+                    self._log_display, attempt, max_retries + 1, e, clean,
+                    model=self._last_model_used,
+                )
+                location = f" See: {dump_path}" if dump_path else ""
+                self._logger.log(
                     f"[{self._log_display}] Validation error "
-                    f"(attempt {attempt + 1}/{max_retries + 1}).{retry_note}\n"
-                    f"{e}\n\nOffending JSON:\n{clean}"
+                    f"(attempt {attempt + 1}/{max_retries + 1}).{retry_note}{location}"
                 )
                 if attempt == max_retries:
                     break

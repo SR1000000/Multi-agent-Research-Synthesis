@@ -6,7 +6,6 @@ from src.agents.base import BaseLLMAgent
 from src.memory.wip.schema import ProtoSlide, SlideContent
 from src.memory.research.database import ResearchDatabase
 from src.memory.wip.database import WIPDatabase
-from src.logging.logger import AgentLogger
 
 class SlideGenerationOutput(BaseModel):
     slides: List[SlideContent] = Field(description="The parsed slides synthesized from the text chunks")
@@ -27,7 +26,6 @@ def _slide_range_log_label(state: DispatchState) -> str:
 class ResearchToSlideAgent(BaseLLMAgent):
     def __init__(self, *, log_display: str | None = None):
         super().__init__("research_to_slide", log_display=log_display)
-        self._logger = AgentLogger()
 
     def run(self, state: DispatchState) -> Command:
         chunk_ids = state.get("chunk_ids", [])
