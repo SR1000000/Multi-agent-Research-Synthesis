@@ -8,3 +8,4 @@ artifacts/
 extracted_viewer/
 data/
 output/
+validation_errors/

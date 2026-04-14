@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import json
 import re
 from dataclasses import dataclass, field
@@ -9,8 +10,12 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel
 import litellm
+import logging as _logging
+_logging.getLogger("LiteLLM").setLevel(_logging.ERROR)
+_logging.getLogger("LiteLLM Router").setLevel(_logging.ERROR)
 from litellm.router import Router
 from litellm.types.router import DeploymentTypedDict
+from litellm.integrations.custom_logger import CustomLogger
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -18,8 +23,36 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
 load_dotenv(dotenv_path=str(_PROJECT_ROOT / ".env"))
 
-litellm.success_callback = ["langfuse"]
-litellm.failure_callback = ["langfuse"]
+_agent_logger = _logging.getLogger("agentic_ai")
+current_agent_label: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "current_agent_label", default="LLM",
+)
+
+
+class _FailureLogger(CustomLogger):
+    """Logs every individual LiteLLM deployment failure as a clean one-liner."""
+
+    def _format(self, kwargs: dict) -> str:
+        agent = current_agent_label.get()
+        model = kwargs.get("model") or "unknown"
+        exc = kwargs.get("exception")
+        exc_type = type(exc).__name__ if exc else "Error"
+        status = getattr(exc, "status_code", None)
+        status_part = f" [{status}]" if status else ""
+        msg = str(exc) if exc else ""
+        # Trim the message to the first sentence / newline to keep it short
+        msg = msg.split("\n")[0][:120]
+        return f"[{agent}] Deployment failed: {model} — {exc_type}{status_part}: {msg}"
+
+    def log_failure_event(self, kwargs, response_obj, start_time, end_time):  # noqa: ANN001
+        _agent_logger.warning(self._format(kwargs))
+
+    async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):  # noqa: ANN001
+        _agent_logger.warning(self._format(kwargs))
+
+
+_failure_logger = _FailureLogger()
+litellm.callbacks = [_failure_logger, "langfuse"]
 
 ROUTER: Router | None = None
 DEFAULT_MODEL_NAME: str = "app"
@@ -35,6 +68,18 @@ class LLMConfig:
     litellm_params: dict | None = field(default_factory=dict)
 
 GLOBAL_CONFIG = LLMConfig()
+
+
+class LLMCallError(RuntimeError):
+    """Raised when the LiteLLM router exhausts all retries/fallbacks."""
+    def __init__(self, model: str, cause: Exception) -> None:
+        self.model = model                                               # router alias, e.g. "slides"
+        self.actual_model: str | None = getattr(cause, "model", None)  # e.g. "gemini/gemini-3.1-flash-lite-preview"
+        self.status_code: int | None = getattr(cause, "status_code", None)
+        exc_type = type(cause).__name__
+        status_part = f" [{self.status_code}]" if self.status_code else ""
+        super().__init__(f"{exc_type}{status_part}")
+
 
 def build_litellm_model_list(
     config: dict[str, Any],
@@ -204,7 +249,10 @@ class LiteLLMProvider:
         if schema is not None:
             kw["response_format"] = {"type": "json_object"}
 
-        resp = self._router.completion(**kw)
+        try:
+            resp = self._router.completion(**kw)
+        except Exception as exc:
+            raise LLMCallError(kw["model"], exc) from None
         self.last_model_used = getattr(resp, "model", None) or kw["model"]
         return resp.choices[0].message.content or ""
 

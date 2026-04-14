@@ -14,6 +14,7 @@ router:
   fallback_model_name: "fallback"
   fallbacks:
     - app: ["fallback"]
+    - slides: ["fallback"]
     # - writer: ["fallback"]
     # - fast: ["fallback"]
 
@@ -23,23 +24,38 @@ router:
       models:
         - model: "gemini/gemini-3.1-flash-lite-preview"
           model_name: "slides"
-        - model: "gemini/gemini-2.5-pro"
         - model: "gemini/gemini-2.5-flash"
+          model_name: "slides"
         - model: "gemini/gemini-2.5-flash-lite"
+          model_name: "slides"
+        - model: "gemini/gemini-2.5-pro"
 
+  # Note: splitting fallback_providers into *_high and *_rest allows us to control the 
+  # exact model-level fallback order across different providers (e.g. OpenRouter -> Ollama -> OpenRouter)
+  # since the Router follows the order entries appear in this YAML.
   fallback_providers:
-    openrouter:
+    openrouter_high:
       api_key: "os.environ/OPENROUTER_API_KEY"
       api_base: "os.environ/OPENROUTER_BASE_URL"
       models:
         - model: "openrouter/openai/gpt-oss-120b:free"
-        - model: "openrouter/openai/gpt-oss-20b:free"
 
-    ollama:
+    ollama_high:
       api_key: "os.environ/OLLAMA_API_KEY"
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
         - model: "ollama/qwen3.5:397b-cloud"
+
+    openrouter_rest:
+      api_key: "os.environ/OPENROUTER_API_KEY"
+      api_base: "os.environ/OPENROUTER_BASE_URL"
+      models:
+        - model: "openrouter/openai/gpt-oss-20b:free"
+
+    ollama_rest:
+      api_key: "os.environ/OLLAMA_API_KEY"
+      api_base: "os.environ/OLLAMA_BASE_URL"
+      models:
         - model: "ollama/gemma3:27b-cloud"
 
   settings:

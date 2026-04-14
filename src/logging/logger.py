@@ -1,11 +1,13 @@
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from langfuse import Langfuse
 from langfuse.callback import CallbackHandler
+
+VALIDATION_ERRORS_DIR = Path(__file__).parent.parent.parent / "validation_errors"
 
 class AgentLogger:
     """
@@ -76,6 +78,40 @@ class AgentLogger:
             with output_path.open("w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
             return str(output_path)
+        except Exception:
+            return None
+
+    def dump_validation_error(
+        self,
+        agent_display_name: str,
+        attempt: int,
+        max_attempts: int,
+        validation_error: Exception,
+        offending_json: str,
+        model: str | None = None,
+    ) -> Path | None:
+        """Write a structured validation-error dump to VALIDATION_ERRORS_DIR.
+
+        Returns the Path of the written file, or None on failure.
+        """
+        try:
+            VALIDATION_ERRORS_DIR.mkdir(parents=True, exist_ok=True)
+            safe_agent = self._sanitize_file_part(agent_display_name) or "agent"
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+            filename = f"{safe_agent}_{attempt + 1}of{max_attempts}_{ts}.json"
+            out_path = VALIDATION_ERRORS_DIR / filename
+            payload = {
+                "agent": agent_display_name,
+                "model": model,
+                "attempt": attempt + 1,
+                "max_attempts": max_attempts,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error_summary": str(validation_error),
+                "offending_json": offending_json,
+            }
+            with out_path.open("w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            return out_path
         except Exception:
             return None
 

@@ -136,3 +136,15 @@ The system implements a dual-layer observability strategy to maintain clean agen
 
 - **Workflow Tracing**: Captures the high-level orchestration, state transitions, and routing overhead as the research document flows between the specialized agents.
 - **Cognitive Tracing**: Instruments the underlying LLM calls to capture precise generation metrics (latency, token usage) and raw prompt details completely independently of the graph execution.
+
+### Validation Error Dumps
+
+When an LLM response fails Pydantic schema validation, the full error detail and offending JSON are written to a structured dump file under `validation_errors/` rather than flooding the terminal. The terminal log shows only a succinct one-liner with a path to the relevant file.
+
+The `validation_errors/` folder is cleared automatically at the start of every `main.py` run, so it always reflects the most recent execution. The folder is gitignored and will not appear in version control. If any validation errors occurred during a run, a summary line is printed at the end of the run:
+
+```
+[validation] 3 error dump(s) written to validation_errors/
+```
+
+Each dump file is a JSON object containing the agent name, attempt number, timestamp, error summary, and the raw offending JSON for inspection.
