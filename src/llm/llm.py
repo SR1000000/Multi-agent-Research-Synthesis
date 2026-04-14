@@ -49,7 +49,7 @@ class _FailureLogger(CustomLogger):
         _agent_logger.log(self._format(kwargs), level="warning")
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):  # noqa: ANN001
-        _agent_logger.warning(self._format(kwargs))
+        _agent_logger.log(self._format(kwargs), level="warning")
 
 
 _failure_logger = _FailureLogger()
