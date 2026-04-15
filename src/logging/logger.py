@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,27 @@ class AgentLogger:
         self._logger.setLevel(logging.INFO)
         self._logger.propagate = False
         self._handlers = []
+        self._log_langfuse_auth_status()
+
+    def _log_langfuse_auth_status(self) -> None:
+        """Log whether Langfuse credentials work (``auth_check``), or why the check was skipped."""
+        client = self.client
+        if os.environ.get("LANGFUSE_ENABLED", "").lower() == "false":
+            self.log("Langfuse: auth check skipped (LANGFUSE_ENABLED=false)", level="info")
+            return
+        if not getattr(client, "enabled", True):
+            self.log("Langfuse: auth check skipped (client disabled or missing keys)", level="info")
+            return
+        try:
+            ok = client.auth_check()
+        except Exception as exc:
+            msg = str(exc).split("\n")[0][:200]
+            self.log(f"Langfuse: auth check failed — {type(exc).__name__}: {msg}", level="warning")
+            return
+        if ok:
+            self.log("Langfuse: auth check passed", level="info")
+        else:
+            self.log("Langfuse: auth check returned False (credentials not accepted)", level="warning")
 
     def get_langgraph_handler(self, **kwargs) -> CallbackHandler:
         """
