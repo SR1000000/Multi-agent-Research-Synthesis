@@ -101,6 +101,32 @@ class R2ObjectStore(ObjectStoreProvider):
             self._logger.log(f"R2 upload failed: missing credentials for key '{key}'", level="error")
             raise
 
+    def generate_presigned_url(self, key: str, expiration: int = 3600) -> str:
+        """
+        Generate a presigned URL to share an R2 object.
+
+        Args:
+            key: Object key.
+            expiration: Time in seconds for the presigned URL to remain valid. Default is 1 hour.
+
+        Returns:
+            Presigned URL as a string.
+        """
+        try:
+            url = self._client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self._bucket_name, "Key": key},
+                ExpiresIn=expiration,
+            )
+            self._logger.log(f"Generated presigned URL for {key}", level="info")
+            return url
+        except ClientError as e:
+            self._logger.log(f"Failed to generate presigned URL for {key}: {e}", level="error")
+            raise
+        except NoCredentialsError:
+            self._logger.log(f"Presigned URL generation failed: missing credentials for key '{key}'", level="error")
+            raise
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
@@ -126,7 +152,11 @@ class R2ObjectStore(ObjectStoreProvider):
         if key.startswith("http"):
             parsed = urlparse(key)
             # R2 public URL format: https://pub-{bucket}.r2.dev/{key}
-            object_key = parsed.path.lstrip("/")
+            # We need to handle both public and presigned URLs potentially
+            if "r2.cloudflarestorage.com" in parsed.netloc: # For non-public R2 URLs
+                object_key = "/".join(parsed.path.split("/")[2:]) # This will depend on the exact URL structure
+            else: # For pub-bucket.r2.dev URLs
+                object_key = parsed.path.lstrip("/")
 
         try:
             response = self._client.get_object(
