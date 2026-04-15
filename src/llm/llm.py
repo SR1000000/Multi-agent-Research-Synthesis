@@ -23,12 +23,12 @@ T = TypeVar("T", bound=BaseModel)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
-load_dotenv(dotenv_path=str(_PROJECT_ROOT / ".env"), override=True)
+load_dotenv(dotenv_path=str(_PROJECT_ROOT / ".env"))
 
 # Langfuse Python SDK v2 reads LANGFUSE_HOST for the API URL, not LANGFUSE_BASE_URL.
 # Mirror so a .env that only sets LANGFUSE_BASE_URL (e.g. regional cloud URL) still works.
 _langfuse_base_url = os.environ.get("LANGFUSE_BASE_URL")
-if _langfuse_base_url:
+if _langfuse_base_url and "LANGFUSE_HOST" not in os.environ:
     os.environ["LANGFUSE_HOST"] = _langfuse_base_url.strip()
 
 
