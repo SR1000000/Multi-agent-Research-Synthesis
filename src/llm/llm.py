@@ -43,7 +43,9 @@ class _FailureLogger(CustomLogger):
 
     def _format(self, kwargs: dict) -> str:
         agent = current_agent_label.get()
-        model = kwargs.get("model") or "unknown"
+        alias = kwargs.get("model") or "unknown"
+        actual = (kwargs.get("litellm_params") or {}).get("model")
+        model = f"{alias} ({actual})" if actual and actual != alias else alias
         exc = kwargs.get("exception")
         exc_type = type(exc).__name__ if exc else "Error"
         status = getattr(exc, "status_code", None)
