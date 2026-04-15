@@ -185,6 +185,24 @@ def _strip_code_fence(text: str) -> str:
     return text
 
 
+# Matches backslashes NOT followed by a valid JSON escape character.
+# Valid: \", \\, \/, \b, \f, \n, \r, \t, \uXXXX
+# Everything else (e.g. \l, \e, \c, \_) is illegal in JSON and commonly
+# produced by LLMs writing raw LaTeX inside JSON string values.
+_INVALID_JSON_ESCAPE = re.compile(r'\\(?!["\\/bfnrtu])')
+
+
+def _fix_latex_escapes(text: str) -> str:
+    """Double-escape backslashes that form invalid JSON escape sequences.
+
+    LLMs writing LaTeX math (e.g. \\epsilon, \\log, \\cdot) inside JSON
+    string values often emit a single backslash, which is illegal JSON.
+    This pass converts every such bare backslash to \\\\ so the JSON is
+    parseable before it reaches Pydantic validation.
+    """
+    return _INVALID_JSON_ESCAPE.sub(r'\\\\', text)
+
+
 def _heal_json(raw: str, schema: type[BaseModel]) -> str:
 
     list_fields = [
@@ -196,7 +214,7 @@ def _heal_json(raw: str, schema: type[BaseModel]) -> str:
     if not key:
         return raw
 
-    stripped = raw.strip()
+    stripped = _fix_latex_escapes(raw.strip())
     try:
         candidate = json.loads(stripped)
         if isinstance(candidate, dict) and key in candidate:

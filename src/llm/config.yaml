@@ -60,4 +60,4 @@ router:
     retry_after: 2
     cooldown_time: 30
     enable_pre_call_checks: true
-    timeout: 120
+    timeout: 60
