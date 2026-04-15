@@ -15,7 +15,6 @@ from src.processing.embedder.provider import get_text_embedder
 import uuid
 from datetime import datetime, timezone
 from src.logging.logger import AgentLogger, VALIDATION_ERRORS_DIR
-from src.memory.wip.database import WIPDatabase
 from src.memory.objectstore import LocalObjectStore, R2ObjectStore, DEFAULT_OBJECT_STORE_CONFIG
 
 OUTPUT_DIR = Path(__file__).parent / "output"  # PowerPoint files land here
@@ -116,7 +115,7 @@ def _get_callbacks(args, logger: AgentLogger, session_id: str):
 def _configure_llm(args: argparse.Namespace) -> None:
     init_from_config(config_path=args.llm_config)
 
-def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[Any, str]:
+def _process_document(args: argparse.Namespace, logger: AgentLogger, db: Any) -> tuple[Any, str]:
     pdf_path = Path(args.pdf)
     if not pdf_path.exists():
         sys.exit(f"error: PDF not found: {pdf_path}")
@@ -142,7 +141,6 @@ def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[An
             logger.log(f"R2ObjectStore initialization failed: {str(e)}. Falling back to LocalObjectStore.", level="warning")
             object_store = LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
 
-    db = get_database()
     embedder = get_text_embedder()
     processor_backend = _PROCESSOR_BACKEND_ALIASES[args.processor]
     chunker_name = _TEXT_SPLITTER_ALIASES[args.text_splitter]
@@ -235,63 +233,61 @@ def main() -> None:
         shutil.rmtree(VALIDATION_ERRORS_DIR)
     VALIDATION_ERRORS_DIR.mkdir(exist_ok=True)
 
-    # Reset WIP database for the new run
-    with WIPDatabase() as db:
-        db.reset()
-
     _configure_llm(args)
     callbacks, logger = _get_callbacks(args, logger, session_id)
+    with get_database() as db:
+        if args.slides:
+            # In unified DB mode, clear only generated proto slides for a fresh deck.
+            db.clear_proto_slides()
 
-    artifacts, preprocessing_message = _process_document(args, logger)
-    initial_state = _build_initial_state(args, preprocessing_message, artifacts, session_id)
+        artifacts, preprocessing_message = _process_document(args, logger, db)
+        initial_state = _build_initial_state(args, preprocessing_message, artifacts, session_id)
 
-    graph = build_graph(slides_mode=args.slides)
-    
-    final_state = initial_state
-    try:
-        # Use streaming to capture the state at each step, allowing us to recover logs if a crash occurs
-        for event in graph.stream(
-            initial_state, 
-            config={"callbacks": callbacks},
-            stream_mode="values"
-        ):
-            final_state = event
-    except Exception as e:
-        print(f"\n[!] Research Graph encountered an error mid-flight: {e}")
-        print("    Attempting to recover partial logs...")
-
-    ve_files = list(VALIDATION_ERRORS_DIR.glob("*.json"))
-    if ve_files:
-        print(f"\n[validation] {len(ve_files)} error dump(s) written to {VALIDATION_ERRORS_DIR}/")
-
-    print("\n--- Agent Log ---")
-    for msg in final_state.get("messages", []):
-        print(msg)
-
-
-    if args.slides:
-        from src.processing.export.pandoc_builder import PandocBuilder
-
-        # Use paper title if available, fallback to doc_id or session_id
-        raw_name = final_state.get('paper_title') or final_state.get('doc_id') or final_state['session_id']
-        safe_name = _sanitize_filename(raw_name)
-        if not safe_name:
-            safe_name = final_state['session_id']
-
-        pptx_path = OUTPUT_DIR / f"{safe_name}.pptx"
+        graph = build_graph(slides_mode=args.slides)
+        
+        final_state = initial_state
         try:
-            with WIPDatabase() as wip_db:
-                out = PandocBuilder(output_path=pptx_path, db=wip_db).build()
-            print(f"\n[export] Presentation saved → {out}")
-        except ValueError as exc:
-            print(f"\n[export] Could not generate PPTX: {exc}")
-    else:
-        print("\n--- Final Draft (Last Known State) ---")
-        final_draft = final_state.get('draft')
-        if final_draft:
-            print(final_draft['document'])
+            # Use streaming to capture the state at each step, allowing us to recover logs if a crash occurs
+            for event in graph.stream(
+                initial_state, 
+                config={"callbacks": callbacks},
+                stream_mode="values"
+            ):
+                final_state = event
+        except Exception as e:
+            print(f"\n[!] Research Graph encountered an error mid-flight: {e}")
+            print("    Attempting to recover partial logs...")
+
+        ve_files = list(VALIDATION_ERRORS_DIR.glob("*.json"))
+        if ve_files:
+            print(f"\n[validation] {len(ve_files)} error dump(s) written to {VALIDATION_ERRORS_DIR}/")
+
+        print("\n--- Agent Log ---")
+        for msg in final_state.get("messages", []):
+            print(msg)
+
+        if args.slides:
+            from src.processing.export.pandoc_builder import PandocBuilder
+
+            # Use paper title if available, fallback to doc_id or session_id
+            raw_name = final_state.get('paper_title') or final_state.get('doc_id') or final_state['session_id']
+            safe_name = _sanitize_filename(raw_name)
+            if not safe_name:
+                safe_name = final_state['session_id']
+
+            pptx_path = OUTPUT_DIR / f"{safe_name}.pptx"
+            try:
+                out = PandocBuilder(output_path=pptx_path, db=db).build()
+                print(f"\n[export] Presentation saved → {out}")
+            except ValueError as exc:
+                print(f"\n[export] Could not generate PPTX: {exc}")
         else:
-            print('(no draft produced)')
+            print("\n--- Final Draft (Last Known State) ---")
+            final_draft = final_state.get('draft')
+            if final_draft:
+                print(final_draft['document'])
+            else:
+                print('(no draft produced)')
 
     if logger:
         logger.flush()
