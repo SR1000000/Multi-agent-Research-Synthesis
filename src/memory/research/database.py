@@ -159,6 +159,9 @@ class ResearchDatabase(DatabaseProvider):
     def list_slide_numbers(self) -> list[int]:
         return slide.list_slide_numbers(self)
 
+    def clear_proto_slides(self) -> None:
+        return slide.clear_proto_slides(self)
+
     @property
     def connection(self) -> sqlite3.Connection:
         if self._conn is None:
