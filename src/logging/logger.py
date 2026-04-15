@@ -30,6 +30,7 @@ class AgentLogger:
         self._initialized = True
         # Langfuse automatically grabs LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY, 
         # and LANGFUSE_BASE_URL from environment variables.
+        # Langfuse Python SDK v2 reads LANGFUSE_HOST for the API URL, not LANGFUSE_BASE_URL.
         self.client = Langfuse()
         self._logger = logging.getLogger("agentic_ai")
         if not self._logger.handlers:
