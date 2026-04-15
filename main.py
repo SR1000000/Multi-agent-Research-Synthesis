@@ -15,7 +15,6 @@ from src.processing.embedder.provider import get_text_embedder
 import uuid
 from datetime import datetime, timezone
 from src.logging.logger import AgentLogger, VALIDATION_ERRORS_DIR
-from src.memory.wip.database import WIPDatabase
 from src.memory.objectstore import LocalObjectStore, R2ObjectStore, DEFAULT_OBJECT_STORE_CONFIG
 
 OUTPUT_DIR = Path(__file__).parent / "output"  # PowerPoint files land here
@@ -125,34 +124,8 @@ def _get_callbacks(args, logger: AgentLogger, session_id: str):
 def _configure_llm(args: argparse.Namespace) -> None:
     init_from_config(config_path=args.llm_config)
 
-
-def _make_object_store(args: argparse.Namespace, logger: AgentLogger):
-    if args.object_store == "local":
-        logger.log("Using LocalObjectStore for image storage (explicitly selected)", level="info")
-        return LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
-    if args.object_store == "r2":
-        logger.log("Using R2ObjectStore for image storage (explicitly selected)", level="info")
-        return R2ObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
-    # Default: R2 with local fallback
-    try:
-        store = R2ObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
-        logger.log("Using R2ObjectStore for image storage (default)", level="info")
-        return store
-    except Exception as e:
-        logger.log(
-            f"R2ObjectStore init failed: {e}. Falling back to LocalObjectStore.",
-            level="warning",
-        )
-        return LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
-
-
-def _process_document(
-    pdf_path_str: str,
-    args: argparse.Namespace,
-    logger: AgentLogger,
-    object_store,
-) -> tuple[Any, str]:
-    pdf_path = Path(pdf_path_str)
+def _process_document(args: argparse.Namespace, logger: AgentLogger, db: Any) -> tuple[Any, str]:
+    pdf_path = Path(args.pdf)
     if not pdf_path.exists():
         sys.exit(f"error: PDF not found: {pdf_path}")
     if pdf_path.suffix.lower() != ".pdf":
@@ -160,7 +133,23 @@ def _process_document(
 
     _t0 = time.perf_counter()
 
-    db       = get_database()
+    # Initialize object store based on CLI argument
+    if args.object_store == "local":
+        object_store = LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
+        logger.log("Using LocalObjectStore for image storage (explicitly selected)", level="info")
+    elif args.object_store == "r2":
+        r2_config = DEFAULT_OBJECT_STORE_CONFIG
+        object_store = R2ObjectStore(config=r2_config)
+        logger.log("Using R2ObjectStore for image storage (explicitly selected)", level="info")
+    else:  # Default behavior
+        try:
+            r2_config = DEFAULT_OBJECT_STORE_CONFIG
+            object_store = R2ObjectStore(config=r2_config)
+            logger.log("Using R2ObjectStore for image storage (default behavior)", level="info")
+        except Exception as e:
+            logger.log(f"R2ObjectStore initialization failed: {str(e)}. Falling back to LocalObjectStore.", level="warning")
+            object_store = LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
+
     embedder = get_text_embedder()
     processor_backend = _PROCESSOR_BACKEND_ALIASES[args.processor]
     chunker_name      = _TEXT_SPLITTER_ALIASES[args.text_splitter]
@@ -266,43 +255,17 @@ def main() -> None:
         shutil.rmtree(VALIDATION_ERRORS_DIR)
     VALIDATION_ERRORS_DIR.mkdir(exist_ok=True)
 
-    # Reset WIP database for the new run
-    with WIPDatabase() as wip_db:
-        wip_db.reset()
-
     _configure_llm(args)
     callbacks, logger = _get_callbacks(args, logger, session_id)
+    db = get_database()
 
-    object_store = _make_object_store(args, logger)
+    if args.slides:
+        # In unified DB mode, clear only generated proto slides for a fresh deck.
+        with db.connection:
+            db.connection.execute("DELETE FROM proto_slides")
 
-    # ------------------------------------------------------------------
-    # Ingest each PDF into research.db
-    # ------------------------------------------------------------------
-    doc_ids:              list[str] = []
-    paper_titles:         list[str] = []
-    preprocessing_messages: list[str] = []
-
-    for pdf_path_str in args.pdf:
-        artifacts, msg = _process_document(pdf_path_str, args, logger, object_store)
-        preprocessing_messages.append(msg)
-        if artifacts:
-            doc_ids.append(artifacts.doc_id)
-            title = (
-                artifacts.paper_metadata.title
-                if artifacts.paper_metadata and artifacts.paper_metadata.title
-                else Path(pdf_path_str).stem
-            )
-            paper_titles.append(title)
-
-    if not doc_ids:
-        sys.exit("error: No documents were successfully processed. Exiting.")
-
-    # ------------------------------------------------------------------
-    # Build and stream the graph
-    # ------------------------------------------------------------------
-    initial_state = _build_initial_state(
-        args, preprocessing_messages, doc_ids, paper_titles, session_id
-    )
+    artifacts, preprocessing_message = _process_document(args, logger, db)
+    initial_state = _build_initial_state(args, preprocessing_message, artifacts, session_id)
 
     graph = build_graph()
 
@@ -338,21 +301,30 @@ def main() -> None:
     # ------------------------------------------------------------------
     from src.processing.export.pandoc_builder import PandocBuilder
 
-    # Use first paper title, or fall back to session_id
-    raw_name  = paper_titles[0] if paper_titles else session_id
-    safe_name = _sanitize_filename(raw_name) or session_id
+        # Use paper title if available, fallback to doc_id or session_id
+        raw_name = final_state.get('paper_title') or final_state.get('doc_id') or final_state['session_id']
+        safe_name = _sanitize_filename(raw_name)
+        if not safe_name:
+            safe_name = final_state['session_id']
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    pptx_path = OUTPUT_DIR / f"{safe_name}.pptx"
-    try:
-        with WIPDatabase() as wip_db:
-            out = PandocBuilder(output_path=pptx_path, db=wip_db).build()
-        print(f"\n[export] Presentation saved → {out}")
-    except ValueError as exc:
-        print(f"\n[export] Could not generate PPTX: {exc}")
+        pptx_path = OUTPUT_DIR / f"{safe_name}.pptx"
+        try:
+            out = PandocBuilder(output_path=pptx_path, db=db).build()
+            print(f"\n[export] Presentation saved → {out}")
+        except ValueError as exc:
+            print(f"\n[export] Could not generate PPTX: {exc}")
+    else:
+        print("\n--- Final Draft (Last Known State) ---")
+        final_draft = final_state.get('draft')
+        if final_draft:
+            print(final_draft['document'])
+        else:
+            print('(no draft produced)')
 
     if logger:
         logger.flush()
+    if hasattr(db, "disconnect"):
+        db.disconnect()
 
 
 if __name__ == "__main__":

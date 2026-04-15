@@ -3,8 +3,8 @@ from typing import List
 
 import pypandoc
 
-from src.memory.wip.database import WIPDatabase
-from src.memory.wip.schema import BulletPoint, ProtoSlide, SlideContent
+from src.memory.research.database import ResearchDatabase
+from src.memory.research.schema import BulletPoint, ProtoSlide, SlideContent
 
 
 def _render_bullet(bullet: BulletPoint) -> List[str]:
@@ -37,7 +37,7 @@ def _render_slide(proto: ProtoSlide) -> str:
 
 class PandocBuilder:
     """
-    Reads all ProtoSlide rows from a WIPDatabase, renders them as Pandoc
+    Reads all ProtoSlide rows from a ResearchDatabase, renders them as Pandoc
     Markdown (with LaTeX math support via the tex_math_dollars extension),
     and converts the result to a .pptx file using pypandoc.
 
@@ -49,19 +49,19 @@ class PandocBuilder:
 
     Usage::
 
-        with WIPDatabase() as db:
+        with ResearchDatabase() as db:
             PandocBuilder(output_path=Path("output.pptx"), db=db).build()
     """
 
     _PANDOC_FORMAT = "markdown+tex_math_dollars"
 
-    def __init__(self, output_path: Path, db: WIPDatabase) -> None:
+    def __init__(self, output_path: Path, db: ResearchDatabase) -> None:
         self.output_path = Path(output_path)
         self._db = db
 
     def build(self) -> Path:
         """
-        Loads all proto-slides from wip.db in slide-number order, renders them
+        Loads all proto-slides from research.db in slide-number order, renders them
         to Pandoc Markdown, and writes the presentation to self.output_path.
         Returns the resolved path.
 
@@ -71,7 +71,7 @@ class PandocBuilder:
         slide_numbers = self._db.list_slide_numbers()
         if not slide_numbers:
             raise ValueError(
-                "PandocBuilder: no proto-slides found in wip.db. "
+                "PandocBuilder: no proto-slides found in research.db. "
                 "Run the slide-generation graph first."
             )
 
