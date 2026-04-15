@@ -24,8 +24,6 @@ router:
       models:
         - model: "gemini/gemini-3.1-flash-lite-preview"
           model_name: "slides"
-        - model: "gemini/gemma-4-31b-it"
-          model_name: "slides"
 
   # Note: splitting fallback_providers into *_high and *_rest allows us to control the 
   # exact model-level fallback order across different providers (e.g. OpenRouter -> Ollama -> OpenRouter)
@@ -42,6 +40,11 @@ router:
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
         - model: "ollama/qwen3.5:397b-cloud"
+
+    gemini_rest:
+      api_key: "os.environ/GEMINI_API_KEY"
+      models:
+        - model: "gemini/gemma-4-31b-it"
 
     ollama_rest:
       api_key: "os.environ/OLLAMA_API_KEY"
