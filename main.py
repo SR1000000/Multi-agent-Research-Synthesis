@@ -257,38 +257,36 @@ def main() -> None:
 
     _configure_llm(args)
     callbacks, logger = _get_callbacks(args, logger, session_id)
-    db = get_database()
+    with get_database() as db:
+        if args.slides:
+            # In unified DB mode, clear only generated proto slides for a fresh deck.
+            db.clear_proto_slides()
 
-    if args.slides:
-        # In unified DB mode, clear only generated proto slides for a fresh deck.
-        with db.connection:
-            db.connection.execute("DELETE FROM proto_slides")
+        artifacts, preprocessing_message = _process_document(args, logger, db)
+        initial_state = _build_initial_state(args, preprocessing_message, artifacts, session_id)
 
-    artifacts, preprocessing_message = _process_document(args, logger, db)
-    initial_state = _build_initial_state(args, preprocessing_message, artifacts, session_id)
+        graph = build_graph(slides_mode=args.slides)
+        
+        final_state = initial_state
+        try:
+            # Use streaming to capture the state at each step, allowing us to recover logs if a crash occurs
+            for event in graph.stream(
+                initial_state, 
+                config={"callbacks": callbacks},
+                stream_mode="values"
+            ):
+                final_state = event
+        except Exception as e:
+            print(f"\n[!] Research Graph encountered an error mid-flight: {e}")
+            print("    Attempting to recover partial logs...")
 
-    graph = build_graph()
+        ve_files = list(VALIDATION_ERRORS_DIR.glob("*.json"))
+        if ve_files:
+            print(f"\n[validation] {len(ve_files)} error dump(s) written to {VALIDATION_ERRORS_DIR}/")
 
-    final_state = initial_state
-    try:
-        # Use streaming to capture the state at each step, allowing us to recover logs if a crash occurs
-        for event in graph.stream(
-            initial_state,
-            config={"callbacks": callbacks},
-            stream_mode="values",
-        ):
-            final_state = event
-    except Exception as e:
-        print(f"\n[!] Graph encountered an error mid-flight: {e}")
-        print("    Attempting to recover partial logs...")
-
-    ve_files = list(VALIDATION_ERRORS_DIR.glob("*.json"))
-    if ve_files:
-        print(f"\n[validation] {len(ve_files)} error dump(s) written to {VALIDATION_ERRORS_DIR}/")
-
-    print("\n--- Agent Log ---")
-    for msg in final_state.get("messages", []):
-        print(msg)
+        print("\n--- Agent Log ---")
+        for msg in final_state.get("messages", []):
+            print(msg)
 
     partial_warnings = _partial_deck_warnings(final_state.get("messages", []))
     if partial_warnings:
@@ -301,30 +299,28 @@ def main() -> None:
     # ------------------------------------------------------------------
     from src.processing.export.pandoc_builder import PandocBuilder
 
-        # Use paper title if available, fallback to doc_id or session_id
-        raw_name = final_state.get('paper_title') or final_state.get('doc_id') or final_state['session_id']
-        safe_name = _sanitize_filename(raw_name)
-        if not safe_name:
-            safe_name = final_state['session_id']
+            # Use paper title if available, fallback to doc_id or session_id
+            raw_name = final_state.get('paper_title') or final_state.get('doc_id') or final_state['session_id']
+            safe_name = _sanitize_filename(raw_name)
+            if not safe_name:
+                safe_name = final_state['session_id']
 
-        pptx_path = OUTPUT_DIR / f"{safe_name}.pptx"
-        try:
-            out = PandocBuilder(output_path=pptx_path, db=db).build()
-            print(f"\n[export] Presentation saved → {out}")
-        except ValueError as exc:
-            print(f"\n[export] Could not generate PPTX: {exc}")
-    else:
-        print("\n--- Final Draft (Last Known State) ---")
-        final_draft = final_state.get('draft')
-        if final_draft:
-            print(final_draft['document'])
+            pptx_path = OUTPUT_DIR / f"{safe_name}.pptx"
+            try:
+                out = PandocBuilder(output_path=pptx_path, db=db).build()
+                print(f"\n[export] Presentation saved → {out}")
+            except ValueError as exc:
+                print(f"\n[export] Could not generate PPTX: {exc}")
         else:
-            print('(no draft produced)')
+            print("\n--- Final Draft (Last Known State) ---")
+            final_draft = final_state.get('draft')
+            if final_draft:
+                print(final_draft['document'])
+            else:
+                print('(no draft produced)')
 
     if logger:
         logger.flush()
-    if hasattr(db, "disconnect"):
-        db.disconnect()
 
 
 if __name__ == "__main__":

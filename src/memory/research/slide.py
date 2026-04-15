@@ -49,3 +49,9 @@ def list_slide_numbers(db) -> list[int]:
     """Returns a list of all existing slide numbers ordered ascending."""
     rows = db._conn.execute("SELECT slide_number FROM proto_slides ORDER BY slide_number ASC").fetchall()
     return [row["slide_number"] for row in rows]
+
+
+def clear_proto_slides(db) -> None:
+    """Deletes all proto-slides from the research database."""
+    with db._conn:
+        db._conn.execute("DELETE FROM proto_slides")
