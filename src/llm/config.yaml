@@ -41,6 +41,7 @@ router:
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
         - model: "ollama/qwen3.5:397b-cloud"
+          timeout: 180
 
     gemini_rest:
       api_key: "os.environ/GEMINI_API_KEY"
@@ -53,7 +54,7 @@ router:
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
         - model: "ollama/gemma4:31b-cloud"
-          timeout: 180
+          timeout: 240
 
     openrouter_rest:
       api_key: "os.environ/OPENROUTER_API_KEY"

@@ -1,10 +1,10 @@
 """
-ParseSupervisorAgent
-====================
+SlidePlannerAgent
+=================
 Reads all chunks for a document from research.db, detects section boundaries
 (LlamaParse path: regex scan for leading Markdown headings), builds a compact
 section outline, and calls the LLM to decide how to group those sections into
-parallel research_to_slide agent assignments.
+parallel slide_writer agent assignments.
 
 The agent then fans the assignments out via LangGraph's Send API.
 """
@@ -92,27 +92,27 @@ class _Section:
 # Agent
 # ---------------------------------------------------------------------------
 
-class ParseSupervisorAgent(BaseLLMAgent):
+class SlidePlannerAgent(BaseLLMAgent):
     """
     Analyses the section structure of a research paper and fans out chunk
-    ranges to parallel research_to_slide agents via LangGraph's Send API.
+    ranges to parallel slide_writer agents via LangGraph's Send API.
     """
 
     def __init__(self) -> None:
-        super().__init__("parse_supervisor")
+        super().__init__("slide_planner")
 
     # ------------------------------------------------------------------
     # Public entry point — called by the graph node
     # ------------------------------------------------------------------
 
-    def run(self, state: ResearchState) -> Command[Literal["research_to_slide"]]:
+    def run(self, state: ResearchState) -> Command[Literal["slide_writer"]]:
         self._set_session_id(state)
         doc_id     = state["doc_id"]
         max_slides = state.get("max_slides", 12)
         session_id = state.get("session_id", "")
 
         self._logger.log(
-            f"[ParseSupervisor] Starting — doc_id={doc_id} max_slides={max_slides}"
+            f"[SlidePlanner] Starting — doc_id={doc_id} max_slides={max_slides}"
         )
 
         # 1. Load ordered chunks cheaply (no images/tables/embeddings)
@@ -121,7 +121,7 @@ class ParseSupervisorAgent(BaseLLMAgent):
 
         if not raw_chunks:
             self._logger.log(
-                "[ParseSupervisor] No chunks found in research.db — nothing to dispatch"
+                "[SlidePlanner] No chunks found in research.db — nothing to dispatch"
             )
             return Command(goto=[])
 
@@ -129,7 +129,7 @@ class ParseSupervisorAgent(BaseLLMAgent):
         sections = self._detect_sections(raw_chunks)
 
         self._logger.log(
-            f"[ParseSupervisor] Detected {len(sections)} sections "
+            f"[SlidePlanner] Detected {len(sections)} sections "
             f"from {len(raw_chunks)} total chunks"
         )
 
@@ -140,7 +140,7 @@ class ParseSupervisorAgent(BaseLLMAgent):
         plan = self._call_llm(outline_text, len(sections), max_slides)
 
         self._logger.log(
-            f"[ParseSupervisor] LLM plan: {len(plan.assignments)} agents — "
+            f"[SlidePlanner] LLM plan: {len(plan.assignments)} agents — "
             f"{plan.overall_reasoning}"
         )
 
@@ -153,7 +153,7 @@ class ParseSupervisorAgent(BaseLLMAgent):
         sends = self._build_sends(plan, sections, session_id)
 
         self._logger.log(
-            f"[ParseSupervisor] Dispatching {len(sends)} research_to_slide agents"
+            f"[SlidePlanner] Dispatching {len(sends)} slide_writer agents"
         )
         return Command(goto=sends)
 
@@ -286,7 +286,7 @@ class ParseSupervisorAgent(BaseLLMAgent):
         missed = sorted(all_indices - covered)
         if missed:
             self._logger.log(
-                f"[ParseSupervisor] Repair: re-adding {len(missed)} missed sections"
+                f"[SlidePlanner] Repair: re-adding {len(missed)} missed sections"
             )
             repaired_assignments.append(AgentAssignment(
                 section_indices=missed,
@@ -358,7 +358,7 @@ class ParseSupervisorAgent(BaseLLMAgent):
             slide_cursor = end_slide + 1
 
             sends.append(Send(
-                "research_to_slide",
+                "slide_writer",
                 {
                     "chunk_ids":          chunk_ids,
                     "slide_number_range": [start_slide, end_slide],
@@ -373,5 +373,5 @@ class ParseSupervisorAgent(BaseLLMAgent):
 # LangGraph node function
 # ---------------------------------------------------------------------------
 
-def parse_supervisor_node(state: ResearchState) -> Command[Literal["research_to_slide"]]:
-    return ParseSupervisorAgent().run(state)
+def slide_planner_node(state: ResearchState) -> Command[Literal["slide_writer"]]:
+    return SlidePlannerAgent().run(state)

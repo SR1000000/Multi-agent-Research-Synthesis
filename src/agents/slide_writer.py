@@ -20,12 +20,12 @@ class DispatchState(TypedDict):
 def _slide_range_log_label(state: DispatchState) -> str:
     r = state.get("slide_number_range", [1, 1])
     a, b = r[0], r[-1]
-    return f"Research_to_slide[slides {a}-{b}]"
+    return f"SlideWriter[slides {a}-{b}]"
 
 
-class ResearchToSlideAgent(BaseLLMAgent):
+class SlideWriterAgent(BaseLLMAgent):
     def __init__(self, *, log_display: str | None = None):
-        super().__init__("research_to_slide", log_display=log_display)
+        super().__init__("slide_writer", log_display=log_display)
 
     def run(self, state: DispatchState) -> Command:
         self._set_session_id(state)
@@ -111,5 +111,5 @@ class ResearchToSlideAgent(BaseLLMAgent):
         
         return Command(update={"messages": [msg]})
 
-def research_to_slide_node(state: DispatchState) -> Command:
-    return ResearchToSlideAgent(log_display=_slide_range_log_label(state)).run(state)
+def slide_writer_node(state: DispatchState) -> Command:
+    return SlideWriterAgent(log_display=_slide_range_log_label(state)).run(state)

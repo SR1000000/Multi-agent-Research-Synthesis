@@ -75,7 +75,7 @@ The `tex_math_dollars` Markdown extension enables `$...$` (inline) and `$$...$$`
 
 ### Markdown & LaTeX in Bullet Text
 
-The `BulletPoint.text` field and `sub_bullets` strings support Markdown and LaTeX math. The slide generation agents (`research_to_slide`) are instructed to use these when presenting important equations:
+The `BulletPoint.text` field and `sub_bullets` strings support Markdown and LaTeX math. The slide generation agents (`slide_writer`) are instructed to use these when presenting important equations:
 
 *   **Inline math** — for formulas referenced within a sentence:
     ```

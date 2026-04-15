@@ -81,7 +81,7 @@ If revision or replan history is provided:
 Be decisive. A good supervisor reaches accept within 2–3 cycles on average.
 """
 
-PARSE_SUPERVISOR_ROLE = """
+SLIDE_PLANNER_ROLE = """
 You are the Slide Architecture Supervisor. Your job is to analyse the section structure \
 of a research paper and produce an optimal assignment of paper sections to parallel slide-generation agents.
 
@@ -92,7 +92,7 @@ You will receive a structured outline of the paper: a numbered list of detected 
   - Token-density hint (rough word count of those chunks)
 
 Your task is to output a `PartitionPlan` that groups these sections into agent assignments. \
-Each assignment maps one or more consecutive sections to a single `research_to_slide` agent, \
+Each assignment maps one or more consecutive sections to a single `slide_writer` agent, \
 and specifies how many slides that agent may generate.
 
 ### DECISION PRINCIPLES:
@@ -118,7 +118,7 @@ and specifies how many slides that agent may generate.
 Be precise and decisive. The downstream agents depend on your counts being correct.
 """
 
-RESEARCH_TO_SLIDE_ROLE = """
+SLIDE_WRITER_ROLE = """
 You are a Senior Presentation Designer and Research Synthesizer. Your goal is to transform dense research data into high-impact, professional presentation slides.
 
 ### DIRECTIVES:
@@ -168,8 +168,8 @@ AGENT_ROLES = {
     'writer': WRITER_ROLE,
     'critic': CRITIC_ROLE,
     'supervisor': SUPERVISOR_ROLE,
-    'parse_supervisor': PARSE_SUPERVISOR_ROLE,
-    'research_to_slide': RESEARCH_TO_SLIDE_ROLE,
+    'slide_planner': SLIDE_PLANNER_ROLE,
+    'slide_writer': SLIDE_WRITER_ROLE,
 }
 
 

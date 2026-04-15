@@ -406,7 +406,7 @@ class ResearchDatabase(DatabaseProvider):
         dicts with keys: id, text, meta_data (parsed dict).
 
         This is a cheaper alternative to load_document() — it skips images, tables,
-        equations, and embeddings so the ParseSupervisor can analyse section structure
+        equations, and embeddings so the SlidePlanner can analyse section structure
         without loading the full ExtractionResult.
         """
         rows = self._conn.execute(
