@@ -123,7 +123,12 @@ def build_litellm_model_list(
                 effective_alias = alias_raw.strip()
             else:
                 effective_alias = default_alias
-            out.append({"model_name": effective_alias, "litellm_params": merged})
+            
+            out_row = {"model_name": effective_alias, "litellm_params": merged}
+            for key in ["rpm", "tpm"]:
+                if key in merged:
+                    out_row[key] = merged.pop(key)
+            out.append(out_row)
     return out
 
 
