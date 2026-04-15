@@ -3,9 +3,8 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from src.agents.base import BaseLLMAgent
-from src.memory.wip.schema import ProtoSlide, SlideContent
+from src.memory.research.schema import ProtoSlide, SlideContent
 from src.memory.research.database import ResearchDatabase
-from src.memory.wip.database import WIPDatabase
 
 class SlideGenerationOutput(BaseModel):
     slides: List[SlideContent] = Field(description="The parsed slides synthesized from the text chunks")
@@ -88,8 +87,8 @@ class ResearchToSlideAgent(BaseLLMAgent):
         output_schema = SlideGenerationOutput
         result: SlideGenerationOutput = self._call(turns, schema=output_schema, model="slides")
 
-        # 3. Save to wip.db
-        wip_db = WIPDatabase()
+        # 3. Save to research.db
+        research_db = ResearchDatabase()
         
         saved_count = 0
         current_slide_num = start_idx
@@ -102,7 +101,7 @@ class ResearchToSlideAgent(BaseLLMAgent):
                 content=slide_content,
                 chunk_references=chunk_ids
             )
-            wip_db.save_slide(proto_slide)
+            research_db.save_slide(proto_slide)
             saved_count += 1
             current_slide_num += 1
             

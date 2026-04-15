@@ -15,7 +15,6 @@ from src.processing.embedder.provider import get_text_embedder
 import uuid
 from datetime import datetime, timezone
 from src.logging.logger import AgentLogger, VALIDATION_ERRORS_DIR
-from src.memory.wip.database import WIPDatabase
 from src.memory.objectstore import LocalObjectStore, R2ObjectStore, DEFAULT_OBJECT_STORE_CONFIG
 
 OUTPUT_DIR = Path(__file__).parent / "output"  # PowerPoint files land here
@@ -116,7 +115,7 @@ def _get_callbacks(args, logger: AgentLogger, session_id: str):
 def _configure_llm(args: argparse.Namespace) -> None:
     init_from_config(config_path=args.llm_config)
 
-def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[Any, str]:
+def _process_document(args: argparse.Namespace, logger: AgentLogger, db: Any) -> tuple[Any, str]:
     pdf_path = Path(args.pdf)
     if not pdf_path.exists():
         sys.exit(f"error: PDF not found: {pdf_path}")
@@ -142,7 +141,6 @@ def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[An
             logger.log(f"R2ObjectStore initialization failed: {str(e)}. Falling back to LocalObjectStore.", level="warning")
             object_store = LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
 
-    db = get_database()
     embedder = get_text_embedder()
     processor_backend = _PROCESSOR_BACKEND_ALIASES[args.processor]
     chunker_name = _TEXT_SPLITTER_ALIASES[args.text_splitter]
@@ -235,14 +233,16 @@ def main() -> None:
         shutil.rmtree(VALIDATION_ERRORS_DIR)
     VALIDATION_ERRORS_DIR.mkdir(exist_ok=True)
 
-    # Reset WIP database for the new run
-    with WIPDatabase() as db:
-        db.reset()
-
     _configure_llm(args)
     callbacks, logger = _get_callbacks(args, logger, session_id)
+    db = get_database()
 
-    artifacts, preprocessing_message = _process_document(args, logger)
+    if args.slides:
+        # In unified DB mode, clear only generated proto slides for a fresh deck.
+        with db.connection:
+            db.connection.execute("DELETE FROM proto_slides")
+
+    artifacts, preprocessing_message = _process_document(args, logger, db)
     initial_state = _build_initial_state(args, preprocessing_message, artifacts, session_id)
 
     graph = build_graph(slides_mode=args.slides)
@@ -280,8 +280,7 @@ def main() -> None:
 
         pptx_path = OUTPUT_DIR / f"{safe_name}.pptx"
         try:
-            with WIPDatabase() as wip_db:
-                out = PandocBuilder(output_path=pptx_path, db=wip_db).build()
+            out = PandocBuilder(output_path=pptx_path, db=db).build()
             print(f"\n[export] Presentation saved → {out}")
         except ValueError as exc:
             print(f"\n[export] Could not generate PPTX: {exc}")
@@ -295,6 +294,8 @@ def main() -> None:
 
     if logger:
         logger.flush()
+    if hasattr(db, "disconnect"):
+        db.disconnect()
 
 
 if __name__ == "__main__":

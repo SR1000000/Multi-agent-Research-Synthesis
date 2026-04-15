@@ -4,8 +4,8 @@ from typing import List
 from pptx import Presentation
 from pptx.util import Pt
 
-from src.memory.wip.database import WIPDatabase
-from src.memory.wip.schema import BulletPoint, ProtoSlide, SlideContent
+from src.memory.research.database import ResearchDatabase
+from src.memory.research.schema import BulletPoint, ProtoSlide, SlideContent
 
 # ── Layout name constants ─────────────────────────────────────────────────────
 # These match the built-in layout names in the default python-pptx blank
@@ -67,12 +67,12 @@ def _split_bold_runs(text: str, bold_phrases: List[str]) -> List[tuple[str, bool
 
 class PptxBuilder:
     """
-    Reads all ProtoSlide rows from a WIPDatabase and renders them into a
+    Reads all ProtoSlide rows from a ResearchDatabase and renders them into a
     .pptx file at the given output path.
 
     Usage::
 
-        with WIPDatabase() as db:
+        with ResearchDatabase() as db:
             PptxBuilder(output_path=Path("output.pptx"), db=db).build()
     """
 
@@ -87,7 +87,7 @@ class PptxBuilder:
         "media_right":    (_LAYOUT_TWO_CONTENT,       "media_placeholder"),
     }
 
-    def __init__(self, output_path: Path, db: WIPDatabase) -> None:
+    def __init__(self, output_path: Path, db: ResearchDatabase) -> None:
         self.output_path = Path(output_path)
         self._db = db
 
@@ -95,7 +95,7 @@ class PptxBuilder:
 
     def build(self) -> Path:
         """
-        Loads all proto-slides from wip.db in slide-number order and writes
+        Loads all proto-slides from research.db in slide-number order and writes
         the presentation to self.output_path.  Returns the resolved path.
 
         Raises:
@@ -104,7 +104,7 @@ class PptxBuilder:
         slide_numbers = self._db.list_slide_numbers()
         if not slide_numbers:
             raise ValueError(
-                "PptxBuilder: no proto-slides found in wip.db. "
+                "PptxBuilder: no proto-slides found in research.db. "
                 "Run the slide-generation graph first."
             )
 
