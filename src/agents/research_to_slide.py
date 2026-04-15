@@ -28,6 +28,7 @@ class ResearchToSlideAgent(BaseLLMAgent):
         super().__init__("research_to_slide", log_display=log_display)
 
     def run(self, state: DispatchState) -> Command:
+        self._set_session_id(state)
         chunk_ids = state.get("chunk_ids", [])
         slide_range = state.get("slide_number_range", [1, 1])
         

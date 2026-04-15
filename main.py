@@ -8,7 +8,7 @@ import os
 import re
 from src.memory import get_database
 from src.graph import build_graph
-from src.llm.llm import init_from_config
+from src.llm.llm import init_from_config, current_session_id
 from src.processing.chunker import get_text_chunker
 from src.processing.document import DocProcessor
 from src.processing.embedder.provider import get_text_embedder
@@ -105,9 +105,10 @@ def _get_callbacks(args, logger: AgentLogger, session_id: str):
         from langfuse.decorators import langfuse_context
         langfuse_context.configure(enabled=False)
     else:
-        # Set session_id on the env so the LiteLLM "langfuse" callback
-        # (registered in llm.py) also tags its traces to this session.
-        os.environ["LANGFUSE_SESSION_ID"] = session_id
+        # Set the ContextVar so every router.completion() call in llm.py
+        # injects session_id into its metadata, which the LiteLLM Langfuse
+        # callback reads to tag litellm-completion traces to this session.
+        current_session_id.set(session_id)
         langfuse_handler = logger.get_langgraph_handler(session_id=session_id)
         callbacks.append(langfuse_handler)
     return callbacks, logger

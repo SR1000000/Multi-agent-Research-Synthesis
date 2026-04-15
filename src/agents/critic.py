@@ -6,6 +6,7 @@ class CriticAgent(BaseLLMAgent):
     def __init__(self): super().__init__('critic')
 
     def run(self, state: ResearchState) -> Command:
+        self._set_session_id(state)
         plan_str  = _plan_to_text(state['plan'])
         draft_str = state['draft']['document']
         rev_count = state.get('revision_count', 0)

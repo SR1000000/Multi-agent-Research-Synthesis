@@ -17,6 +17,7 @@ class PlannerAgent(BaseLLMAgent):
         return context
 
     def run(self, state: ResearchState) -> Command:
+        self._set_session_id(state)
         # TODO: we will improve this later in the future by adding tools that the planner can use.
         # document context will include:
         # overview of all documents

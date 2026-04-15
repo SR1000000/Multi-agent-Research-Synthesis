@@ -36,6 +36,9 @@ _agent_logger = AgentLogger()
 current_agent_label: contextvars.ContextVar[str] = contextvars.ContextVar(
     "current_agent_label", default="LLM",
 )
+current_session_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "current_session_id", default=None,
+)
 
 
 class _FailureLogger(CustomLogger):
@@ -277,6 +280,13 @@ class LiteLLMProvider:
             kw["max_tokens"] = mt
         if schema is not None:
             kw["response_format"] = {"type": "json_object"}
+
+        # Inject session_id into LiteLLM metadata so the built-in Langfuse
+        # callback tags every litellm-completion trace with the current session.
+        session_id = current_session_id.get()
+        if session_id:
+            existing_meta = kw.get("metadata") or {}
+            kw["metadata"] = {"session_id": session_id, **existing_meta}
 
         try:
             resp = self._router.completion(**kw)

@@ -7,6 +7,7 @@ class WriterAgent(BaseLLMAgent):
     def __init__(self): super().__init__('writer')
 
     def run(self, state: ResearchState) -> Command:
+        self._set_session_id(state)
         plan_str   = _plan_to_text(state['plan'])
         doc_ctx    = state.get('document_context', '')
         is_revision = len(state.get('revision_history', [])) > 0

@@ -106,6 +106,7 @@ class ParseSupervisorAgent(BaseLLMAgent):
     # ------------------------------------------------------------------
 
     def run(self, state: ResearchState) -> Command[Literal["research_to_slide"]]:
+        self._set_session_id(state)
         doc_id     = state["doc_id"]
         max_slides = state.get("max_slides", 12)
         session_id = state.get("session_id", "")

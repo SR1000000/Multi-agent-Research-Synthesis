@@ -1,7 +1,7 @@
 import json
 from typing import TypeVar
 from pydantic import BaseModel, ValidationError
-from src.llm.llm import get_llm, _strip_think_block, _strip_code_fence, _heal_json, DEFAULT_MODEL_NAME, LLMCallError, current_agent_label
+from src.llm.llm import get_llm, _strip_think_block, _strip_code_fence, _heal_json, DEFAULT_MODEL_NAME, LLMCallError, current_agent_label, current_session_id
 from src.state import DeliveryPlan
 from src.logging.logger import AgentLogger
 
@@ -179,6 +179,17 @@ class BaseLLMAgent:
         self._log_display = log_display if log_display is not None else role
         self._logger = AgentLogger()
         self._last_model_used: str | None = None  # Used for logging validation errors
+
+    def _set_session_id(self, state: dict) -> None:
+        """Propagate session_id from the node's state into the module-level ContextVar.
+
+        Called at the start of every agent run() so that the LiteLLM Langfuse callback
+        always tags traces with the correct session, regardless of whether this node
+        runs in the main thread or a parallel worker thread.
+        """
+        sid = state.get("session_id") if isinstance(state, dict) else None
+        if sid:
+            current_session_id.set(sid)
 
     def _build_messages(self, turns: list[dict]) -> list[dict]:
         """Build the full message list by prepending the system prompt.

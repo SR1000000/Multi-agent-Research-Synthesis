@@ -7,6 +7,7 @@ class SupervisorAgent(BaseLLMAgent):
     def __init__(self): super().__init__('supervisor')
 
     def run(self, state: ResearchState) -> Command:
+        self._set_session_id(state)
         plan      = state['plan']
         draft     = state['draft']
         critique  = state['critique']
