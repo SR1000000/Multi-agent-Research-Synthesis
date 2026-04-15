@@ -1,8 +1,11 @@
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import contextlib
+import io
 
 from langfuse import Langfuse
 from langfuse.callback import CallbackHandler
@@ -30,6 +33,7 @@ class AgentLogger:
         self._initialized = True
         # Langfuse automatically grabs LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY, 
         # and LANGFUSE_BASE_URL from environment variables.
+        # Langfuse Python SDK v2 reads LANGFUSE_HOST for the API URL, not LANGFUSE_BASE_URL.
         self.client = Langfuse()
         self._logger = logging.getLogger("agentic_ai")
         if not self._logger.handlers:
@@ -39,6 +43,31 @@ class AgentLogger:
         self._logger.setLevel(logging.INFO)
         self._logger.propagate = False
         self._handlers = []
+        self._log_langfuse_auth_status()
+
+    def _log_langfuse_auth_status(self) -> None:
+        """Log whether Langfuse credentials work (``auth_check``), or why the check was skipped."""
+        client = self.client
+        if os.environ.get("LANGFUSE_ENABLED", "").lower() == "false":
+            self.log("Langfuse: auth check skipped (LANGFUSE_ENABLED=false)", level="info")
+            return
+        if not getattr(client, "enabled", True):
+            self.log("Langfuse: auth check skipped (client disabled or missing keys)", level="info")
+            return
+        try:
+            # The Langfuse SDK may print an "Unauthorized..." line directly to stdout/stderr
+            # on auth failures. Suppress that so we only emit our structured log line.
+            sink = io.StringIO()
+            with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                ok = client.auth_check()
+        except Exception as exc:
+            msg = str(exc).split("\n")[0][:200]
+            self.log(f"Langfuse: auth check failed — {type(exc).__name__}: {msg}", level="warning")
+            return
+        if ok:
+            self.log("Langfuse: auth check passed", level="info")
+        else:
+            self.log("Langfuse: auth check returned False (credentials not accepted)", level="warning")
 
     def get_langgraph_handler(self, **kwargs) -> CallbackHandler:
         """

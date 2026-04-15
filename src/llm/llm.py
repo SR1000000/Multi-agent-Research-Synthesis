@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,9 +25,19 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
 load_dotenv(dotenv_path=str(_PROJECT_ROOT / ".env"))
 
+# Langfuse Python SDK v2 reads LANGFUSE_HOST for the API URL, not LANGFUSE_BASE_URL.
+# Mirror so a .env that only sets LANGFUSE_BASE_URL (e.g. regional cloud URL) still works.
+_langfuse_base_url = os.environ.get("LANGFUSE_BASE_URL")
+if _langfuse_base_url and "LANGFUSE_HOST" not in os.environ:
+    os.environ["LANGFUSE_HOST"] = _langfuse_base_url.strip()
+
+
 _agent_logger = AgentLogger()
 current_agent_label: contextvars.ContextVar[str] = contextvars.ContextVar(
     "current_agent_label", default="LLM",
+)
+current_session_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "current_session_id", default=None,
 )
 
 
@@ -35,7 +46,9 @@ class _FailureLogger(CustomLogger):
 
     def _format(self, kwargs: dict) -> str:
         agent = current_agent_label.get()
-        model = kwargs.get("model") or "unknown"
+        alias = kwargs.get("model") or "unknown"
+        actual = (kwargs.get("litellm_params") or {}).get("model")
+        model = f"{alias} ({actual})" if actual and actual != alias else alias
         exc = kwargs.get("exception")
         exc_type = type(exc).__name__ if exc else "Error"
         status = getattr(exc, "status_code", None)
@@ -110,7 +123,12 @@ def build_litellm_model_list(
                 effective_alias = alias_raw.strip()
             else:
                 effective_alias = default_alias
-            out.append({"model_name": effective_alias, "litellm_params": merged})
+            
+            out_row = {"model_name": effective_alias, "litellm_params": merged}
+            for key in ["rpm", "tpm"]:
+                if key in merged:
+                    out_row[key] = merged.pop(key)
+            out.append(out_row)
     return out
 
 
@@ -267,6 +285,13 @@ class LiteLLMProvider:
             kw["max_tokens"] = mt
         if schema is not None:
             kw["response_format"] = {"type": "json_object"}
+
+        # Inject session_id into LiteLLM metadata so the built-in Langfuse
+        # callback tags every litellm-completion trace with the current session.
+        session_id = current_session_id.get()
+        if session_id:
+            existing_meta = kw.get("metadata") or {}
+            kw["metadata"] = {"session_id": session_id, **existing_meta}
 
         try:
             resp = self._router.completion(**kw)
