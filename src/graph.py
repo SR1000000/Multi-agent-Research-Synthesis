@@ -6,7 +6,7 @@ from src.agents import (
     writer_node,
     critic_node,
     supervisor_node,
-    slide_planner_node,
+    plan_executor_node,
     slide_writer_node,
 )
 from src.util import MAX_REVISIONS, MAX_REPLANS
@@ -31,14 +31,14 @@ class ResearchGraph:
         # supervisor routes via Command — no conditional_edges needed
 
         # ── Slide-generation pipeline ─────────────────────────────────────
-        # slide_planner returns a list[Send] which LangGraph fans out to
+        # plan_executor returns a list[Send] which LangGraph fans out to
         # as many slide_writer instances as the plan requires.  Each
         # slide_writer instance then runs independently in parallel.
-        g.add_node('slide_planner', slide_planner_node)
+        g.add_node('plan_executor', plan_executor_node)
         g.add_node('slide_writer',  slide_writer_node)
 
         if slides_mode:
-            g.set_entry_point('slide_planner')
+            g.set_entry_point('plan_executor')
         else:
             g.set_entry_point('planner')
 
@@ -80,7 +80,7 @@ class ResearchGraph:
 
     def invoke_slides(self, initial_state: dict, config: dict = None):
         """
-        Run only the slide-generation pipeline (slide_planner → slide_writer).
+        Run only the slide-generation pipeline (plan_executor → slide_writer).
         Requires the state to contain: doc_id, max_slides, session_id.
         """
         return self._graph.invoke(

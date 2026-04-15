@@ -2,7 +2,7 @@ from .planner import planner_node
 from .writer import writer_node
 from .critic import critic_node
 from .supervisor import supervisor_node
-from .slide_planner import slide_planner_node
+from .plan_executor import plan_executor_node
 from .slide_writer import slide_writer_node
 
 __all__ = [
@@ -10,6 +10,6 @@ __all__ = [
     "writer_node",
     "critic_node",
     "supervisor_node",
-    "slide_planner_node",
+    "plan_executor_node",
     "slide_writer_node",
 ]

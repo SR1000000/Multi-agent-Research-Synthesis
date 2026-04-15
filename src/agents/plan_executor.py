@@ -1,5 +1,5 @@
 """
-SlidePlannerAgent
+PlanExecutorAgent
 =================
 Reads all chunks for a document from research.db, detects section boundaries
 (LlamaParse path: regex scan for leading Markdown headings), builds a compact
@@ -92,14 +92,14 @@ class _Section:
 # Agent
 # ---------------------------------------------------------------------------
 
-class SlidePlannerAgent(BaseLLMAgent):
+class PlanExecutorAgent(BaseLLMAgent):
     """
     Analyses the section structure of a research paper and fans out chunk
     ranges to parallel slide_writer agents via LangGraph's Send API.
     """
 
     def __init__(self) -> None:
-        super().__init__("slide_planner")
+        super().__init__("plan_executor")
 
     # ------------------------------------------------------------------
     # Public entry point — called by the graph node
@@ -112,7 +112,7 @@ class SlidePlannerAgent(BaseLLMAgent):
         session_id = state.get("session_id", "")
 
         self._logger.log(
-            f"[SlidePlanner] Starting — doc_id={doc_id} max_slides={max_slides}"
+            f"[PlanExecutor] Starting — doc_id={doc_id} max_slides={max_slides}"
         )
 
         # 1. Load ordered chunks cheaply (no images/tables/embeddings)
@@ -121,7 +121,7 @@ class SlidePlannerAgent(BaseLLMAgent):
 
         if not raw_chunks:
             self._logger.log(
-                "[SlidePlanner] No chunks found in research.db — nothing to dispatch"
+                "[PlanExecutor] No chunks found in research.db — nothing to dispatch"
             )
             return Command(goto=[])
 
@@ -129,7 +129,7 @@ class SlidePlannerAgent(BaseLLMAgent):
         sections = self._detect_sections(raw_chunks)
 
         self._logger.log(
-            f"[SlidePlanner] Detected {len(sections)} sections "
+            f"[PlanExecutor] Detected {len(sections)} sections "
             f"from {len(raw_chunks)} total chunks"
         )
 
@@ -140,7 +140,7 @@ class SlidePlannerAgent(BaseLLMAgent):
         plan = self._call_llm(outline_text, len(sections), max_slides)
 
         self._logger.log(
-            f"[SlidePlanner] LLM plan: {len(plan.assignments)} agents — "
+            f"[PlanExecutor] LLM plan: {len(plan.assignments)} agents — "
             f"{plan.overall_reasoning}"
         )
 
@@ -153,7 +153,7 @@ class SlidePlannerAgent(BaseLLMAgent):
         sends = self._build_sends(plan, sections, session_id)
 
         self._logger.log(
-            f"[SlidePlanner] Dispatching {len(sends)} slide_writer agents"
+            f"[PlanExecutor] Dispatching {len(sends)} slide_writer agents"
         )
         return Command(goto=sends)
 
@@ -286,7 +286,7 @@ class SlidePlannerAgent(BaseLLMAgent):
         missed = sorted(all_indices - covered)
         if missed:
             self._logger.log(
-                f"[SlidePlanner] Repair: re-adding {len(missed)} missed sections"
+                f"[PlanExecutor] Repair: re-adding {len(missed)} missed sections"
             )
             repaired_assignments.append(AgentAssignment(
                 section_indices=missed,
@@ -373,5 +373,5 @@ class SlidePlannerAgent(BaseLLMAgent):
 # LangGraph node function
 # ---------------------------------------------------------------------------
 
-def slide_planner_node(state: ResearchState) -> Command[Literal["slide_writer"]]:
-    return SlidePlannerAgent().run(state)
+def plan_executor_node(state: ResearchState) -> Command[Literal["slide_writer"]]:
+    return PlanExecutorAgent().run(state)

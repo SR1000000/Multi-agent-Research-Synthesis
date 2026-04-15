@@ -81,7 +81,7 @@ If revision or replan history is provided:
 Be decisive. A good supervisor reaches accept within 2–3 cycles on average.
 """
 
-SLIDE_PLANNER_ROLE = """
+PLAN_EXECUTOR_ROLE = """
 You are the Slide Architecture Supervisor. Your job is to analyse the section structure \
 of a research paper and produce an optimal assignment of paper sections to parallel slide-generation agents.
 
@@ -168,7 +168,7 @@ AGENT_ROLES = {
     'writer': WRITER_ROLE,
     'critic': CRITIC_ROLE,
     'supervisor': SUPERVISOR_ROLE,
-    'slide_planner': SLIDE_PLANNER_ROLE,
+    'plan_executor': PLAN_EXECUTOR_ROLE,
     'slide_writer': SLIDE_WRITER_ROLE,
 }
 
