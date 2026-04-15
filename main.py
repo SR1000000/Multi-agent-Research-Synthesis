@@ -97,7 +97,7 @@ def _parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
-def _get_callbacks(args, logger: AgentLogger):
+def _get_callbacks(args, logger: AgentLogger, session_id: str):
     callbacks = []
 
     if args.logging is False:
@@ -105,7 +105,10 @@ def _get_callbacks(args, logger: AgentLogger):
         from langfuse.decorators import langfuse_context
         langfuse_context.configure(enabled=False)
     else:
-        langfuse_handler = logger.get_langgraph_handler()
+        # Set session_id on the env so the LiteLLM "langfuse" callback
+        # (registered in llm.py) also tags its traces to this session.
+        os.environ["LANGFUSE_SESSION_ID"] = session_id
+        langfuse_handler = logger.get_langgraph_handler(session_id=session_id)
         callbacks.append(langfuse_handler)
     return callbacks, logger
 
@@ -184,10 +187,10 @@ def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[An
 
     return artifacts, preprocessing_message
 
-def _build_initial_state(args: argparse.Namespace, preprocessing_message: str, artifacts: Any) -> dict:
+def _build_initial_state(args: argparse.Namespace, preprocessing_message: str, artifacts: Any, session_id: str) -> dict:
     return {
         'query':            args.query or DEFAULT_QUERY,
-        'session_id':       str(uuid.uuid4()),
+        'session_id':       session_id,
         'created_at':       datetime.now(timezone.utc).isoformat(),
         'revision_count':   0,
         'replan_count':     0,
@@ -220,6 +223,12 @@ def main() -> None:
     args = _parse_args()
     logger = AgentLogger()
 
+    # Generate a unique session ID for this run.  It is shared between the
+    # LangGraph CallbackHandler and the LiteLLM "langfuse" callback so that
+    # every trace produced during this invocation is grouped under a single
+    # Langfuse session.
+    session_id = str(uuid.uuid4())
+
     # Clear validation error dumps from the previous run
     if VALIDATION_ERRORS_DIR.exists():
         shutil.rmtree(VALIDATION_ERRORS_DIR)
@@ -230,10 +239,10 @@ def main() -> None:
         db.reset()
 
     _configure_llm(args)
-    callbacks, logger = _get_callbacks(args, logger)
+    callbacks, logger = _get_callbacks(args, logger, session_id)
 
     artifacts, preprocessing_message = _process_document(args, logger)
-    initial_state = _build_initial_state(args, preprocessing_message, artifacts)
+    initial_state = _build_initial_state(args, preprocessing_message, artifacts, session_id)
 
     graph = build_graph(slides_mode=args.slides)
     
