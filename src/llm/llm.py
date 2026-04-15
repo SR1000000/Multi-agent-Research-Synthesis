@@ -218,7 +218,7 @@ def _heal_json(raw: str, schema: type[BaseModel]) -> str:
     try:
         candidate = json.loads(stripped)
         if isinstance(candidate, dict) and key in candidate:
-            return raw
+            return stripped
         if isinstance(candidate, dict):
             return json.dumps({key: [candidate]})
         if isinstance(candidate, list):
