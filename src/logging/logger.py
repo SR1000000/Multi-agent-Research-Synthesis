@@ -4,6 +4,8 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import contextlib
+import io
 
 from langfuse import Langfuse
 from langfuse.callback import CallbackHandler
@@ -53,7 +55,11 @@ class AgentLogger:
             self.log("Langfuse: auth check skipped (client disabled or missing keys)", level="info")
             return
         try:
-            ok = client.auth_check()
+            # The Langfuse SDK may print an "Unauthorized..." line directly to stdout/stderr
+            # on auth failures. Suppress that so we only emit our structured log line.
+            sink = io.StringIO()
+            with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                ok = client.auth_check()
         except Exception as exc:
             msg = str(exc).split("\n")[0][:200]
             self.log(f"Langfuse: auth check failed — {type(exc).__name__}: {msg}", level="warning")
