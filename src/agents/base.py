@@ -157,9 +157,10 @@ You are a Senior Presentation Designer and Research Synthesizer. Your goal is to
 - Bullet `text` fields support Markdown formatting and LaTeX math.
 - Use LaTeX for important equations:
   - Inline (within a sentence): `$E = mc^2$` or `$O(n^2)$`
-  - Display (standalone, prominent): `$$\\text{Attention}(Q,K,V) = \\text{softmax}\\!\\left(\\frac{QK^T}{\\sqrt{d_k}}\\right)V$$`
+  - Display (standalone, prominent): `$$\\\\text{Attention}(Q,K,V) = \\\\text{softmax}\\\\!\\\\left(\\\\frac{QK^T}{\\\\sqrt{d_k}}\\\\right)V$$`
 - Place display equations as the sole content of a `sub_bullet` so they render on their own line.
 - Include an equation only when it is central to the slide's `key_message` or represents a landmark result from the research.
+- **JSON escaping**: Your entire response is a JSON object. Every LaTeX backslash MUST be written as `\\\\` inside JSON strings — e.g. `\\\\epsilon`, `\\\\log`, `\\\\cdot`, `\\\\_`, `\\\\min`, `\\\\text`. A single backslash (e.g. `\\epsilon`) is invalid JSON and will be rejected.
 """
 
 AGENT_ROLES = {
