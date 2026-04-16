@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import struct
-from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
-
-from rank_bm25 import BM25Okapi
 
 from src.processing.embedder.base import TextEmbedder
 
-from .bm25 import chunk_display_text, tokenize
+from .retrieval_text import preferred_text
 from .types import RetrievedItem
 
 if TYPE_CHECKING:
@@ -38,7 +35,7 @@ class Retriever:
         rows = self._db.knn_text_chunks_by_embedding(blob, k)
         out: list[RetrievedItem] = []
         for row in rows:
-            body = chunk_display_text(row.get("text") or "", row.get("contextualized_text"))
+            body = preferred_text(row.get("text") or "", row.get("contextualized_text"))
             dist = row.get("dist")
             out.append(
                 RetrievedItem(
@@ -57,78 +54,7 @@ class Retriever:
         q = (query or "").strip()
         if not q:
             return []
-
-        chunk_rows = self._db.fetch_all_text_chunks_for_retrieval()
-        table_rows = self._db.fetch_all_tables_for_retrieval()
-        equation_rows = self._db.fetch_all_equations_for_retrieval()
-        image_rows = self._db.fetch_all_images_for_retrieval()
-
-        corpus: list[list[str]] = []
-        meta: list[tuple[str, str, str, str]] = []
-
-        def _preferred_text(row: dict, *fallback_keys: str) -> str:
-            contextualized = (row.get("contextualized_text") or "").strip()
-            if contextualized:
-                return contextualized
-            for key in fallback_keys:
-                value = row.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value
-            return ""
-
-        for row in chunk_rows:
-            chosen_text = _preferred_text(row, "text")
-            meta.append(
-                (
-                    "chunk",
-                    row["id"],
-                    row["document_id"],
-                    chunk_display_text(row.get("text") or "", row.get("contextualized_text")),
-                )
-            )
-            corpus.append(
-                tokenize(chosen_text)
-            )
-
-        for row in table_rows:
-            chosen_text = _preferred_text(row, "content")
-            meta.append(("table", row["id"], row["document_id"], chosen_text))
-            corpus.append(tokenize(chosen_text))
-
-        for row in equation_rows:
-            chosen_text = _preferred_text(row, "text")
-            meta.append(("equation", row["id"], row["document_id"], chosen_text))
-            corpus.append(tokenize(chosen_text))
-
-        for row in image_rows:
-            chosen_text = _preferred_text(row, "caption", "storage_path")
-            meta.append(("image", row["id"], row["document_id"], chosen_text))
-            # For images, we'll use the caption or storage path for keyword retrieval. Actual image fetching will be handled separately.
-            corpus.append(tokenize(chosen_text))
-
-        if not corpus:
-            return []
-
-        q_tokens = tokenize(q)
-        if not q_tokens:
-            return []
-
-        bm25 = BM25Okapi(corpus)
-        scores = bm25.get_scores(q_tokens)
-        ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
-
-        out: list[RetrievedItem] = []
-        for i in ranked:
-            kind, doc_id, document_id, text = meta[i]
-            item = RetrievedItem(
-                kind=kind,  # This will now be "chunk", "table", "equation", or "image"
-                id=doc_id,
-                document_id=document_id,
-                text=text,
-                score=float(scores[i]),
-            )
-            out.append(item)
-        return out
+        return self._db.query_artifact_search(q, k)
 
     def rank(self, items: list[RetrievedItem]) -> list[RetrievedItem]:
         return items
@@ -140,11 +66,8 @@ class Retriever:
         if not q:
             return []
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            f_sem = pool.submit(self.semantic_retrieve, q, k)
-            f_kw = pool.submit(self.keywords_retrieve, q, k)
-            semantic = f_sem.result()
-            keyword = f_kw.result()
+        semantic = self.semantic_retrieve(q, k)
+        keyword = self.keywords_retrieve(q, k)
 
         merged: list[RetrievedItem] = []
         seen: set[tuple[str, str]] = set()

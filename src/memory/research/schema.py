@@ -198,6 +198,253 @@ CREATE VIRTUAL TABLE IF NOT EXISTS text_chunks_vec USING vec0(
 );
 """
 
+# Physical full-text index used by keyword retrieval.
+# FTS tokenizes and indexes only `search_text`. UNINDEXED fields are metadata payload.
+# Rows are synchronized by DML triggers on source artifact tables.
+CREATE_ARTIFACT_SEARCH_FTS_TABLE = """
+CREATE VIRTUAL TABLE IF NOT EXISTS artifact_search_fts USING fts5(
+    item_id UNINDEXED,
+    document_id UNINDEXED,
+    kind UNINDEXED,
+    search_text
+);
+"""
+
+# This is not an actual row store but just a view to normalize all searchable artifacts into one shape.
+# Retrieval text policy: concatenate contextualized + raw content when both exist.
+CREATE_ARTIFACT_SEARCH_SOURCE_VIEW = """
+CREATE VIEW IF NOT EXISTS artifact_search_source AS
+SELECT
+    id AS item_id,
+    document_id,
+    'chunk' AS kind,
+    CASE
+        WHEN NULLIF(contextualized_text, '') IS NOT NULL
+             AND NULLIF(text, '') IS NOT NULL
+            THEN contextualized_text || char(10) || char(10) || text
+        ELSE COALESCE(NULLIF(contextualized_text, ''), text)
+    END AS search_text
+FROM text_chunks
+UNION ALL
+SELECT
+    id AS item_id,
+    document_id,
+    'table' AS kind,
+    CASE
+        WHEN NULLIF(contextualized_text, '') IS NOT NULL
+             AND NULLIF(content, '') IS NOT NULL
+            THEN contextualized_text || char(10) || char(10) || content
+        ELSE COALESCE(NULLIF(contextualized_text, ''), content)
+    END AS search_text
+FROM tables
+UNION ALL
+SELECT
+    id AS item_id,
+    document_id,
+    'equation' AS kind,
+    CASE
+        WHEN NULLIF(contextualized_text, '') IS NOT NULL
+             AND NULLIF(text, '') IS NOT NULL
+            THEN contextualized_text || char(10) || char(10) || text
+        ELSE COALESCE(NULLIF(contextualized_text, ''), text)
+    END AS search_text
+FROM equations
+UNION ALL
+SELECT
+    id AS item_id,
+    document_id,
+    'image' AS kind,
+    CASE
+        WHEN NULLIF(contextualized_text, '') IS NOT NULL
+             AND NULLIF(COALESCE(caption, storage_path), '') IS NOT NULL
+            THEN contextualized_text || char(10) || char(10) || COALESCE(caption, storage_path)
+        ELSE COALESCE(NULLIF(contextualized_text, ''), caption, storage_path)
+    END AS search_text
+FROM images;
+"""
+
+# This transactionally aligned with base tables after updates  to specific tables.
+# INSERT adds index row, UPDATE performs delete+insert, DELETE removes index row.
+# Maintenance applies per artifact table; delete key is `(item_id, kind)` since IDs are table-local.
+CREATE_ARTIFACT_SEARCH_TRIGGERS = [
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_artifact_search_text_chunks_ai
+    AFTER INSERT ON text_chunks
+    BEGIN
+        INSERT INTO artifact_search_fts(item_id, document_id, kind, search_text)
+        VALUES (
+            NEW.id,
+            NEW.document_id,
+            'chunk',
+            CASE
+                WHEN NULLIF(NEW.contextualized_text, '') IS NOT NULL
+                     AND NULLIF(NEW.text, '') IS NOT NULL
+                    THEN NEW.contextualized_text || char(10) || char(10) || NEW.text
+                ELSE COALESCE(NULLIF(NEW.contextualized_text, ''), NEW.text)
+            END
+        );
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_artifact_search_text_chunks_au
+    AFTER UPDATE ON text_chunks
+    BEGIN
+        DELETE FROM artifact_search_fts WHERE item_id = OLD.id AND kind = 'chunk';
+        INSERT INTO artifact_search_fts(item_id, document_id, kind, search_text)
+        VALUES (
+            NEW.id,
+            NEW.document_id,
+            'chunk',
+            CASE
+                WHEN NULLIF(NEW.contextualized_text, '') IS NOT NULL
+                     AND NULLIF(NEW.text, '') IS NOT NULL
+                    THEN NEW.contextualized_text || char(10) || char(10) || NEW.text
+                ELSE COALESCE(NULLIF(NEW.contextualized_text, ''), NEW.text)
+            END
+        );
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_artifact_search_text_chunks_ad
+    AFTER DELETE ON text_chunks
+    BEGIN
+        DELETE FROM artifact_search_fts WHERE item_id = OLD.id AND kind = 'chunk';
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_artifact_search_tables_ai
+    AFTER INSERT ON tables
+    BEGIN
+        INSERT INTO artifact_search_fts(item_id, document_id, kind, search_text)
+        VALUES (
+            NEW.id,
+            NEW.document_id,
+            'table',
+            CASE
+                WHEN NULLIF(NEW.contextualized_text, '') IS NOT NULL
+                     AND NULLIF(NEW.content, '') IS NOT NULL
+                    THEN NEW.contextualized_text || char(10) || char(10) || NEW.content
+                ELSE COALESCE(NULLIF(NEW.contextualized_text, ''), NEW.content)
+            END
+        );
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_artifact_search_tables_au
+    AFTER UPDATE ON tables
+    BEGIN
+        DELETE FROM artifact_search_fts WHERE item_id = OLD.id AND kind = 'table';
+        INSERT INTO artifact_search_fts(item_id, document_id, kind, search_text)
+        VALUES (
+            NEW.id,
+            NEW.document_id,
+            'table',
+            CASE
+                WHEN NULLIF(NEW.contextualized_text, '') IS NOT NULL
+                     AND NULLIF(NEW.content, '') IS NOT NULL
+                    THEN NEW.contextualized_text || char(10) || char(10) || NEW.content
+                ELSE COALESCE(NULLIF(NEW.contextualized_text, ''), NEW.content)
+            END
+        );
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_artifact_search_tables_ad
+    AFTER DELETE ON tables
+    BEGIN
+        DELETE FROM artifact_search_fts WHERE item_id = OLD.id AND kind = 'table';
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_artifact_search_equations_ai
+    AFTER INSERT ON equations
+    BEGIN
+        INSERT INTO artifact_search_fts(item_id, document_id, kind, search_text)
+        VALUES (
+            NEW.id,
+            NEW.document_id,
+            'equation',
+            CASE
+                WHEN NULLIF(NEW.contextualized_text, '') IS NOT NULL
+                     AND NULLIF(NEW.text, '') IS NOT NULL
+                    THEN NEW.contextualized_text || char(10) || char(10) || NEW.text
+                ELSE COALESCE(NULLIF(NEW.contextualized_text, ''), NEW.text)
+            END
+        );
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_artifact_search_equations_au
+    AFTER UPDATE ON equations
+    BEGIN
+        DELETE FROM artifact_search_fts WHERE item_id = OLD.id AND kind = 'equation';
+        INSERT INTO artifact_search_fts(item_id, document_id, kind, search_text)
+        VALUES (
+            NEW.id,
+            NEW.document_id,
+            'equation',
+            CASE
+                WHEN NULLIF(NEW.contextualized_text, '') IS NOT NULL
+                     AND NULLIF(NEW.text, '') IS NOT NULL
+                    THEN NEW.contextualized_text || char(10) || char(10) || NEW.text
+                ELSE COALESCE(NULLIF(NEW.contextualized_text, ''), NEW.text)
+            END
+        );
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_artifact_search_equations_ad
+    AFTER DELETE ON equations
+    BEGIN
+        DELETE FROM artifact_search_fts WHERE item_id = OLD.id AND kind = 'equation';
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_artifact_search_images_ai
+    AFTER INSERT ON images
+    BEGIN
+        INSERT INTO artifact_search_fts(item_id, document_id, kind, search_text)
+        VALUES (
+            NEW.id,
+            NEW.document_id,
+            'image',
+            CASE
+                WHEN NULLIF(NEW.contextualized_text, '') IS NOT NULL
+                     AND NULLIF(COALESCE(NEW.caption, NEW.storage_path), '') IS NOT NULL
+                    THEN NEW.contextualized_text || char(10) || char(10) || COALESCE(NEW.caption, NEW.storage_path)
+                ELSE COALESCE(NULLIF(NEW.contextualized_text, ''), NEW.caption, NEW.storage_path)
+            END
+        );
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_artifact_search_images_au
+    AFTER UPDATE ON images
+    BEGIN
+        DELETE FROM artifact_search_fts WHERE item_id = OLD.id AND kind = 'image';
+        INSERT INTO artifact_search_fts(item_id, document_id, kind, search_text)
+        VALUES (
+            NEW.id,
+            NEW.document_id,
+            'image',
+            CASE
+                WHEN NULLIF(NEW.contextualized_text, '') IS NOT NULL
+                     AND NULLIF(COALESCE(NEW.caption, NEW.storage_path), '') IS NOT NULL
+                    THEN NEW.contextualized_text || char(10) || char(10) || COALESCE(NEW.caption, NEW.storage_path)
+                ELSE COALESCE(NULLIF(NEW.contextualized_text, ''), NEW.caption, NEW.storage_path)
+            END
+        );
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_artifact_search_images_ad
+    AFTER DELETE ON images
+    BEGIN
+        DELETE FROM artifact_search_fts WHERE item_id = OLD.id AND kind = 'image';
+    END;
+    """,
+]
+
 CREATE_PROTO_SLIDES_TABLE = """
 CREATE TABLE IF NOT EXISTS proto_slides (
     slide_number INTEGER PRIMARY KEY,

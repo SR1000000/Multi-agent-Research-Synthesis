@@ -88,6 +88,11 @@ def save_document(db, result: ExtractionResult) -> None:
             "DELETE FROM text_chunks_vec WHERE chunk_id IN (SELECT id FROM text_chunks WHERE document_id = ?)",
             (doc_id,),
         )
+        # make sure save_document is idempotent full-rewrite and triggers re-index for FTS
+        db._conn.execute("DELETE FROM text_chunks WHERE document_id = ?", (doc_id,))
+        db._conn.execute("DELETE FROM images WHERE document_id = ?", (doc_id,))
+        db._conn.execute("DELETE FROM tables WHERE document_id = ?", (doc_id,))
+        db._conn.execute("DELETE FROM equations WHERE document_id = ?", (doc_id,))
 
         db._conn.execute(
             """
@@ -217,7 +222,6 @@ def save_document(db, result: ExtractionResult) -> None:
                 f"chunk_embeddings={'set' if result.chunk_embeddings is not None else 'None'} "
                 f"chunk_embedding_sources={'set' if result.chunk_embedding_sources is not None else 'None'}"
             )
-
 
 def load_document(db, doc_id: str) -> ExtractionResult | None:
     """Loads an ExtractionResult from the database."""

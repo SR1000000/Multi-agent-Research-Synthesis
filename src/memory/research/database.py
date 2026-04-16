@@ -13,6 +13,9 @@ from src.memory.research.config import DEFAULT_CONFIG, StorageConfig, TABLE_NAME
 from src.memory.research import document
 from src.memory.research import slide
 from src.memory.research.schema import (
+    CREATE_ARTIFACT_SEARCH_FTS_TABLE,
+    CREATE_ARTIFACT_SEARCH_SOURCE_VIEW,
+    CREATE_ARTIFACT_SEARCH_TRIGGERS,
     CREATE_DOCUMENTS_TABLE,
     CREATE_EQUATIONS_TABLE,
     CREATE_IMAGES_TABLE,
@@ -25,12 +28,15 @@ from src.memory.research.schema import (
     CREATE_TEXT_CHUNKS_VEC_TABLE,
 )
 from src.memory.research.retrieval import (
+    ensure_artifact_search_index as retrieval_ensure_artifact_search_index,
     fetch_all_equations_for_retrieval as retrieval_fetch_all_equations_for_retrieval,
     fetch_all_images_for_retrieval as retrieval_fetch_all_images_for_retrieval,
     fetch_all_tables_for_retrieval as retrieval_fetch_all_tables_for_retrieval,
     fetch_all_text_chunks_for_retrieval as retrieval_fetch_all_text_chunks_for_retrieval,
     knn_text_chunks_by_embedding as retrieval_knn_text_chunks_by_embedding,
     load_retrieved_chunks as retrieval_load_retrieved_chunks,
+    query_artifact_search as retrieval_query_artifact_search,
+    rebuild_artifact_search_index as retrieval_rebuild_artifact_search_index,
     save_retrieved_chunk as retrieval_save_retrieved_chunk,
 )
 
@@ -114,10 +120,13 @@ class ResearchDatabase(DatabaseProvider):
             CREATE_EQUATIONS_TABLE,
             CREATE_TEXT_CHUNKS_TABLE,
             CREATE_TEXT_CHUNKS_VEC_TABLE.format(vec_dimensions=self.config.vec_dimensions),
+            CREATE_ARTIFACT_SEARCH_SOURCE_VIEW,
+            CREATE_ARTIFACT_SEARCH_FTS_TABLE,
             CREATE_PROTO_SLIDES_TABLE,
             CREATE_RETRIEVED_CHUNKS_TABLE,
             CREATE_SLIDE_REVIEW_EVENTS_TABLE,
         ]
+        statements.extend(CREATE_ARTIFACT_SEARCH_TRIGGERS)
         statements.extend(CREATE_INDEXES)
 
         with self._conn:
@@ -184,6 +193,7 @@ class ResearchDatabase(DatabaseProvider):
                     )
             except Exception as e:
                 self._logger.log(f"[ResearchDatabase] Schema migration error: {e}")
+        retrieval_ensure_artifact_search_index(self)
 
     def reset(self) -> None:
         """Drops all tables and recreates them."""
@@ -266,3 +276,12 @@ class ResearchDatabase(DatabaseProvider):
 
     def load_retrieved_chunks(self, session_id: str | None = None) -> list[RetrievedItem]:
         return retrieval_load_retrieved_chunks(self, session_id)
+
+    def rebuild_artifact_search_index(self) -> None:
+        return retrieval_rebuild_artifact_search_index(self)
+
+    def ensure_artifact_search_index(self) -> None:
+        return retrieval_ensure_artifact_search_index(self)
+
+    def query_artifact_search(self, query: str, k: int) -> list[RetrievedItem]:
+        return retrieval_query_artifact_search(self, query, k)

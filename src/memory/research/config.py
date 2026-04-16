@@ -27,6 +27,7 @@ TABLE_NAMES = [
     "equations",
     "text_chunks",
     "text_chunks_vec",
+    "artifact_search_fts",
     "documents",
     "proto_slides",
     "retrieved_chunks",
