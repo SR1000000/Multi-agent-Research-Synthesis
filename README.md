@@ -45,23 +45,30 @@ The codebase uses `langfuse` which will automatically pick up these environment 
 
 ### 5. LLM providers and routing
 
-Runtime LLM comes from a **LiteLLM Router** built from YAML. The app reads **`src/llm/config.yaml`** at startup (see `init_from_config` in `src/llm/llm.py`).
+Runtime LLM comes from a **LiteLLM Router** built from YAML. The app reads **`src/llm/config.dev.yaml`** at startup (see `init_from_config` in `src/llm/llm.py`).
 
-#### Create your `config.yaml`
+#### Create your local `config.dev.yaml`
 
-1. Copy the template: **`src/llm/config.sample.yaml`** or use the current **`src/llm/config.yaml`**
-2. Fill in **API keys and base URLs** via `.env` using the `os.environ/VAR_NAME` placeholders from the sample (LiteLLM resolves those strings when the Router starts). You can also add whatever API providers you have.
-3. Adjust **`router.providers`** and **`router.fallback_providers`** to match the models and backends you actually use.
+`src/llm/config.dev.yaml` is local-only and ignored by git so each developer can keep personal provider/model settings per environment.
+
+1. Copy the sample into your local config:
+
+```bash
+copy src\llm\config.sample.yaml src\llm\config.dev.yaml
+```
+
+2. Open `src/llm/config.dev.yaml` and change the provider/model values to your own setup.
+3. Keep API keys and base URLs in `.env` and reference them in YAML via `os.environ/VAR_NAME`.
 
 You can keep multiple experimental YAML files elsewhere and point the app at one for a single run:
 
 ```bash
-python main.py --llm-config path/to/your/config.yaml
+python main.py --llm-config path/to/your/config.dev.yaml
 ```
 
 #### Provider entries (LiteLLM format)
 
-You are not limited to the providers in the sample: **any provider and model string LiteLLM supports** can be added by following the same config structure in `config.yaml`.
+You are not limited to the providers in the sample: **any provider and model string LiteLLM supports** can be added by following the same config structure in `config.dev.yaml`.
 
 - The config file follows a provider-first approach. Under **`router.providers`**, each key (e.g. `gemini`, `openrouter`) is a **named block**, and API Keys and API base URLs **shared** for every row in that block.
 - Each item under **`models`** is one **deployment**: a `model:` string in LiteLLM form `<provider>/<model-string>` (e.g. `gemini/gemini-2.5-pro`, `openrouter/...`) plus any extra per-model fields merged into `litellm_params`.
