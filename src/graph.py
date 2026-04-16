@@ -7,16 +7,27 @@ from src.agents import (
     critic_node,
     supervisor_node,
 )
+from src.tools.registry import resolve_agent_tools
 
 
 class ResearchGraph:
-    def __init__(self):
+    def __init__(
+        self,
+        tool_registry: dict | None = None,
+        agent_tool_allowlist: dict[str, list[str]] | None = None,
+    ):
+        self._tool_registry = tool_registry or {}
+        self._agent_tool_allowlist = agent_tool_allowlist or {}
+        self._agent_tools = {
+            agent_name: resolve_agent_tools(self._tool_registry, allowed_tools)
+            for agent_name, allowed_tools in self._agent_tool_allowlist.items()
+        }
         self._graph = self._build()
 
     def _build(self):
         g = StateGraph(ResearchState)
 
-        g.add_node("planner",      planner_node)
+        g.add_node("planner",      self._planner_node)
         g.add_node("plan_executor", plan_executor_node)
         g.add_node("slide_writer",  slide_writer_node)
         g.add_node("critic",        critic_node)
@@ -38,6 +49,18 @@ class ResearchGraph:
     def invoke(self, initial_state: dict, config: dict = None):
         return self._graph.invoke(initial_state, config=config)
 
+    def _planner_node(self, state: ResearchState):
+        return planner_node(
+            state,
+            tools_for_agent=self._agent_tools.get("planner", {}),
+        )
 
-def build_graph() -> ResearchGraph:
-    return ResearchGraph()
+
+def build_graph(
+    tool_registry: dict | None = None,
+    agent_tool_allowlist: dict[str, list[str]] | None = None,
+) -> ResearchGraph:
+    return ResearchGraph(
+        tool_registry=tool_registry,
+        agent_tool_allowlist=agent_tool_allowlist,
+    )

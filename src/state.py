@@ -1,5 +1,5 @@
 import operator
-from typing import Annotated, TypedDict, List, Optional, Literal
+from typing import Annotated, TypedDict, List, Optional, Literal, Dict, Any
 from pydantic import BaseModel, Field
 
 # Persisted / planned content slides are numbered 1..N. The opening title slide is
@@ -10,6 +10,47 @@ FIRST_CONTENT_SLIDE_NUMBER = 1
 class ErrorRecord(TypedDict):
     node: str
     error: str
+
+
+# ---------------------------------------------------------------------------
+# Dormant synthesis-pipeline schemas
+# Preserved for older agent modules that still import them during the rebase.
+# ---------------------------------------------------------------------------
+
+class SectionBlock(BaseModel):
+    title: str
+    queries: List[str]
+    notes: str
+
+
+class DeliveryPlan(BaseModel):
+    title: str
+    guidelines: Dict[str, Any]
+    success_criteria: List[str]
+    introduction: str
+    sections: List[SectionBlock]
+    conclusion: str
+
+
+class IssueItem(BaseModel):
+    id: str = Field(description="e.g. ISS_001")
+    location: str
+    type: str
+    severity: str
+    description: str
+
+
+class CritiqueOutput(BaseModel):
+    summary: str
+    issues: List[IssueItem]
+
+
+class Draft(TypedDict):
+    version: int
+    document: str
+    word_count: int
+    action: str
+    created_at: str
 
 
 ReviewScopeType = Literal["deck", "group", "slide"]
@@ -264,14 +305,17 @@ class ResearchState(TypedDict):
     created_at:   str
     doc_ids:      List[str]
     paper_titles: List[str]
+    doc_id:       str
+    paper_title:  str
 
     # -- slide coordination --
     max_slides:    int
     slide_numbers: List[int]
 
+
     # -- presentation plan (set by Planner, read by Plan Executor + Slide Writers) --
     presentation_plan: Optional[PresentationPlan]
-
+    
     # -- review coordination --
     review: ReviewState
 
@@ -279,7 +323,12 @@ class ResearchState(TypedDict):
     slides_written: Annotated[List[SlideWriteRecord], operator.add]
     critic_results: Annotated[List[CriticResultRecord], operator.add]
     review_summaries: Annotated[List[ReviewCycleSummary], operator.add]
-    retrieval_queries: List[str]
+    
+    
+    source_chunks: List[Any]
+    retrieval_queries: Annotated[List[str], operator.add]
+    tool_calls: Annotated[List[Dict[str, Any]], operator.add]
+    tool_results: Annotated[List[Dict[str, Any]], operator.add]
 
     # -- observability --
     messages: Annotated[List[str], operator.add]

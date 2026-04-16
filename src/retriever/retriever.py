@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import struct
 from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING
 
 from rank_bm25 import BM25Okapi
 
-from src.memory.research.database import ResearchDatabase
 from src.processing.embedder.base import TextEmbedder
 
 from .bm25 import chunk_bm25_text, chunk_display_text, table_bm25_text, tokenize
 from .types import RetrievedItem
+
+if TYPE_CHECKING:
+    from src.memory.research.database import ResearchDatabase
 
 
 class Retriever:

@@ -26,7 +26,7 @@ from src.state import make_initial_review_state
 
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "output"
 from src.retriever import Retriever
-from src.tools import RetrievalContextTool
+from src.tools.registry import build_tool_registry
 
 DEFAULT_QUERY      = "Explain this paper to an audience of laypeople"
 DEFAULT_SOURCE_PDF = "./.samples/Transformers.pdf"
@@ -249,6 +249,8 @@ def _build_initial_state(
         "presentation_plan": None,
         "review":            make_initial_review_state(),
         "retrieval_queries": [],
+        'tool_calls':       [],
+        'tool_results':     [],
         "slides_written":    [],
         "critic_results":    [],
         "review_summaries":  [],
@@ -313,7 +315,16 @@ def main() -> None:
 
         embedder = get_text_embedder()
         retriever = Retriever(db, embedder)
-        _retrieval_context_tool = RetrievalContextTool(retriever, db)
+        
+        tool_registry = build_tool_registry(retriever=retriever, research_db=db)
+        agent_tool_allowlist = {
+            "writer": ["retrieve_artifacts"],
+            "planner": ["retrieve_artifacts"],
+            "critic": [],
+            "supervisor": [],
+            "parse_supervisor": [],
+            "research_to_slide": [],
+        }
 
         for pdf_path_str in args.pdf:
             artifacts, msg = _process_document(
@@ -351,7 +362,12 @@ def main() -> None:
             args, preprocessing_messages, doc_ids, paper_titles, session_id
         )
 
-        graph = build_graph()
+        graph = build_graph(
+            slides_mode=args.slides,
+            tool_registry=tool_registry,
+            agent_tool_allowlist=agent_tool_allowlist,
+        )
+        
         final_state = initial_state
         try:
             # Use streaming to capture the state at each step, allowing us to recover logs if a crash occurs.
