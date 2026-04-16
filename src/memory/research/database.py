@@ -25,11 +25,13 @@ from src.memory.research.schema import (
     CREATE_TEXT_CHUNKS_VEC_TABLE,
 )
 from src.memory.research.retrieval import (
-    FETCH_ALL_EQUATIONS_SQL,
-    FETCH_ALL_IMAGES_SQL,
-    FETCH_ALL_TABLES_SQL,
-    FETCH_ALL_TEXT_CHUNKS_SQL,
-    KNN_TEXT_CHUNKS_SQL,
+    fetch_all_equations_for_retrieval as retrieval_fetch_all_equations_for_retrieval,
+    fetch_all_images_for_retrieval as retrieval_fetch_all_images_for_retrieval,
+    fetch_all_tables_for_retrieval as retrieval_fetch_all_tables_for_retrieval,
+    fetch_all_text_chunks_for_retrieval as retrieval_fetch_all_text_chunks_for_retrieval,
+    knn_text_chunks_by_embedding as retrieval_knn_text_chunks_by_embedding,
+    load_retrieved_chunks as retrieval_load_retrieved_chunks,
+    save_retrieved_chunk as retrieval_save_retrieved_chunk,
 )
 
 
@@ -239,25 +241,19 @@ class ResearchDatabase(DatabaseProvider):
         return self._conn
 
     def knn_text_chunks_by_embedding(self, embedding_blob: bytes, k: int) -> list[dict[str, Any]]:
-        """SQLite-vec KNN over `text_chunks_vec`, joined to `text_chunks`."""
-        rows = self._conn.execute(KNN_TEXT_CHUNKS_SQL, (embedding_blob, k)).fetchall()
-        return [dict(r) for r in rows]
+        return retrieval_knn_text_chunks_by_embedding(self, embedding_blob, k)
 
     def fetch_all_text_chunks_for_retrieval(self) -> list[dict[str, Any]]:
-        rows = self._conn.execute(FETCH_ALL_TEXT_CHUNKS_SQL).fetchall()
-        return [dict(r) for r in rows]
+        return retrieval_fetch_all_text_chunks_for_retrieval(self)
 
     def fetch_all_tables_for_retrieval(self) -> list[dict[str, Any]]:
-        rows = self._conn.execute(FETCH_ALL_TABLES_SQL).fetchall()
-        return [dict(r) for r in rows]
+        return retrieval_fetch_all_tables_for_retrieval(self)
 
     def fetch_all_equations_for_retrieval(self) -> list[dict[str, Any]]:
-        rows = self._conn.execute(FETCH_ALL_EQUATIONS_SQL).fetchall()
-        return [dict(r) for r in rows]
+        return retrieval_fetch_all_equations_for_retrieval(self)
 
     def fetch_all_images_for_retrieval(self) -> list[dict[str, Any]]:
-        rows = self._conn.execute(FETCH_ALL_IMAGES_SQL).fetchall()
-        return [dict(r) for r in rows]
+        return retrieval_fetch_all_images_for_retrieval(self)
 
     def save_retrieved_chunk(
         self,
@@ -266,40 +262,7 @@ class ResearchDatabase(DatabaseProvider):
         agent_type: str,
         query: str,
     ) -> None:
-        with self._conn:
-            self._conn.execute(
-                """
-                INSERT OR REPLACE INTO retrieved_chunks
-                (id, kind, document_id, text_content, score, session_id, agent_type, query, retrieved_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """,
-                (
-                    item.id,
-                    item.kind,
-                    item.document_id,
-                    item.text,
-                    item.score,
-                    session_id,
-                    agent_type,
-                    query,
-                ),
-            )
-        self._logger.log(f"[ResearchDatabase] Saved retrieved chunk {item.id}")
+        return retrieval_save_retrieved_chunk(self, item, session_id, agent_type, query)
 
     def load_retrieved_chunks(self, session_id: str | None = None) -> list[RetrievedItem]:
-        sql = "SELECT id, kind, document_id, text_content, score FROM retrieved_chunks"
-        params: tuple[Any, ...] = ()
-        if session_id:
-            sql += " WHERE session_id = ?"
-            params = (session_id,)
-        rows = self._conn.execute(sql, params).fetchall()
-        return [
-            RetrievedItem(
-                id=row["id"],
-                kind=row["kind"],
-                document_id=row["document_id"],
-                text=row["text_content"],
-                score=row["score"],
-            )
-            for row in rows
-        ]
+        return retrieval_load_retrieved_chunks(self, session_id)

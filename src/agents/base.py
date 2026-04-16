@@ -696,8 +696,9 @@ class BaseLLMAgent:
                         "error": result.get("error"),
                     }
                 )
-                if name == "retrieve_artifacts" and result.get("query"):
-                    retrieval_queries.append(result["query"])
+                result_query = result.get("query")
+                if isinstance(result_query, str) and result_query.strip():
+                    retrieval_queries.append(result_query)
 
                 messages.append(
                     {

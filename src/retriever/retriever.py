@@ -8,7 +8,7 @@ from rank_bm25 import BM25Okapi
 
 from src.processing.embedder.base import TextEmbedder
 
-from .bm25 import chunk_bm25_text, chunk_display_text, table_bm25_text, tokenize
+from .bm25 import chunk_display_text, tokenize
 from .types import RetrievedItem
 
 if TYPE_CHECKING:
@@ -65,7 +65,19 @@ class Retriever:
 
         corpus: list[list[str]] = []
         meta: list[tuple[str, str, str, str]] = []
+
+        def _preferred_text(row: dict, *fallback_keys: str) -> str:
+            contextualized = (row.get("contextualized_text") or "").strip()
+            if contextualized:
+                return contextualized
+            for key in fallback_keys:
+                value = row.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+            return ""
+
         for row in chunk_rows:
+            chosen_text = _preferred_text(row, "text")
             meta.append(
                 (
                     "chunk",
@@ -75,17 +87,24 @@ class Retriever:
                 )
             )
             corpus.append(
-                tokenize(chunk_bm25_text(row.get("text") or "", row.get("contextualized_text")))
+                tokenize(chosen_text)
             )
 
+        for row in table_rows:
+            chosen_text = _preferred_text(row, "content")
+            meta.append(("table", row["id"], row["document_id"], chosen_text))
+            corpus.append(tokenize(chosen_text))
+
         for row in equation_rows:
-            meta.append(("equation", row["id"], row["document_id"], row.get("text") or ""))
-            corpus.append(tokenize(row.get("text") or ""))
+            chosen_text = _preferred_text(row, "text")
+            meta.append(("equation", row["id"], row["document_id"], chosen_text))
+            corpus.append(tokenize(chosen_text))
 
         for row in image_rows:
-            meta.append(("image", row["id"], row["document_id"], row.get("caption") or row.get("storage_path") or ""))
+            chosen_text = _preferred_text(row, "caption", "storage_path")
+            meta.append(("image", row["id"], row["document_id"], chosen_text))
             # For images, we'll use the caption or storage path for keyword retrieval. Actual image fetching will be handled separately.
-            corpus.append(tokenize(row.get("caption") or row.get("storage_path") or ""))
+            corpus.append(tokenize(chosen_text))
 
         if not corpus:
             return []
@@ -129,7 +148,17 @@ class Retriever:
 
         merged: list[RetrievedItem] = []
         seen: set[tuple[str, str]] = set()
-        for item in semantic + keyword:
+        # Interleave both retrieval streams so keyword-only artifact kinds
+        # are not dropped when semantic results already fill top-k.
+        combined: list[RetrievedItem] = []
+        max_len = max(len(semantic), len(keyword))
+        for idx in range(max_len):
+            if idx < len(semantic):
+                combined.append(semantic[idx])
+            if idx < len(keyword):
+                combined.append(keyword[idx])
+
+        for item in combined:
             key = (item.kind, item.id)
             if key in seen:
                 continue
