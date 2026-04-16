@@ -1,5 +1,6 @@
 .venv
 .env
+src/llm/config.dev.yaml
 __pycache__/
 *.pyc
 .vscode
