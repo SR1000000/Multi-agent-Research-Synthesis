@@ -42,22 +42,30 @@ Disable with `--no-logging` at runtime.
 
 ### 5. LLM providers and routing
 
-Runtime LLM routing comes from a **LiteLLM Router** built from YAML. The app reads **`src/llm/config.yaml`** at startup.
+Runtime LLM comes from a **LiteLLM Router** built from YAML. The app reads **`src/llm/config.dev.yaml`** at startup (see `init_from_config` in `src/llm/llm.py`).
 
-#### Create your `config.yaml`
+#### Create your local `config.dev.yaml`
 
-1. Copy the template: `src/llm/config.sample.yaml`
-2. Fill in API keys and base URLs via `.env` using the `os.environ/VAR_NAME` placeholders
-3. Adjust `router.providers` and `router.fallback_providers` to match your models
+`src/llm/config.dev.yaml` is local-only and ignored by git so each developer can keep personal provider/model settings per environment.
+
+1. Copy the sample into your local config:
 
 ```bash
-python main.py --llm-config path/to/your/config.yaml
+copy src\llm\config.sample.yaml src\llm\config.dev.yaml
+```
+
+2. Open `src/llm/config.dev.yaml` and change the provider/model values to your own setup.
+3. Keep API keys and base URLs in `.env` and reference them in YAML via `os.environ/VAR_NAME`.
+
+You can keep multiple experimental YAML files elsewhere and point the app at one for a single run:
+
+```bash
+python main.py --llm-config path/to/your/config.dev.yaml
 ```
 
 The pipeline uses two router group aliases:
 
-- **`slides`** — the primary model group, used by the Planner and Slide Writers
-- **`fallback`** — fallback group used automatically when the primary group fails
+You are not limited to the providers in the sample: **any provider and model string LiteLLM supports** can be added by following the same config structure in `config.dev.yaml`.
 
 Any provider and model string LiteLLM supports can be added to `config.yaml` following the same structure. See the [LiteLLM provider docs](https://docs.litellm.ai/docs/providers) for parameter names and provider-specific options.
 

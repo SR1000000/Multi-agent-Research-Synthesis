@@ -22,7 +22,7 @@ from src.logging.logger import AgentLogger
 T = TypeVar("T", bound=BaseModel)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
+_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.dev.yaml"
 load_dotenv(dotenv_path=str(_PROJECT_ROOT / ".env"))
 
 # Langfuse Python SDK v2 reads LANGFUSE_HOST for the API URL, not LANGFUSE_BASE_URL.
@@ -143,7 +143,7 @@ def build_litellm_model_list(
 def build_router_from_config_data(config_data: dict[str, Any]) -> Router:
     rb = config_data.get("router") or {}
     if not rb:
-        raise ValueError("config.yaml: missing top-level key ``router``")
+        raise ValueError("Invalid configuration: missing top-level key ``router``")
 
     primary = str(rb.get("default_model_name") or "app")
     fb_alias = rb.get("fallback_model_name")
@@ -156,7 +156,7 @@ def build_router_from_config_data(config_data: dict[str, Any]) -> Router:
         )
 
     if not model_list:
-        raise ValueError("config.yaml: add at least one entry under router.providers.*.models")
+        raise ValueError("Invalid configuration: add at least one entry under router.providers.*.models")
 
     settings = dict(rb.get("settings") or {})
 
@@ -169,7 +169,7 @@ def build_router_from_config_data(config_data: dict[str, Any]) -> Router:
 
 def init_from_config(config_path: str | None = None) -> None:
     """
-    Load ``config.yaml`` and build a LiteLLM ``Router``.
+    Load ``config.dev.yaml`` and build a LiteLLM ``Router``.
 
     **Deployments** — Each ``model_list`` entry is one backend (``litellm_params``) plus a Router **alias**
     (``model_name`` in LiteLLM terms). YAML rows use the block default (``default_model_name`` or
