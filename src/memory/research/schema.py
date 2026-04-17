@@ -1,3 +1,4 @@
+from __future__ import annotations
 import json
 from typing import List, Literal, Optional
 from pydantic import AliasChoices, BaseModel, Field, create_model, field_validator

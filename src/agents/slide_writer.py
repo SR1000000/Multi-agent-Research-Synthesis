@@ -27,7 +27,7 @@ from src.memory.research.database import ResearchDatabase
 
 class SlideWriterDispatch(TypedDict):
     """State payload delivered to each slide_writer node via Send()."""
-    chunk_ids:             List[str]   # union of source_chunk_ids across all blueprints
+    chunk_ids:             List[str]   # group-wide union passed to the writer as shared working context
     slide_blueprints:      List[dict]  # serialized SlideBlueprint dicts
     group_idx:             int         # index into PresentationPlan.slide_groups
     session_id:            str
@@ -44,6 +44,19 @@ def _group_log_label(state: SlideWriterDispatch) -> str:
         return "SlideWriter[empty]"
     nums = [bp.get("slide_number", "?") for bp in blueprints]
     return f"SlideWriter[slides {nums[0]}-{nums[-1]}, group {state.get('group_idx', '?')}]"
+
+
+def _ordered_chunk_texts(rows: list, chunk_ids: list[str]) -> list[str]:
+    """Return chunk text blocks in the caller-provided chunk order."""
+    rows_by_id = {row["id"]: row for row in rows}
+    ordered: list[str] = []
+    for chunk_id in chunk_ids:
+        row = rows_by_id.get(chunk_id)
+        if row is None:
+            continue
+        text = row["contextualized_text"] if row["contextualized_text"] else row["text"]
+        ordered.append(f"--- Chunk ID: {row['id']} ---\n{text}")
+    return ordered
 
 
 # ---------------------------------------------------------------------------
@@ -100,11 +113,7 @@ class SlideWriterAgent(BaseLLMAgent):
                     chunk_ids,
                 ).fetchall()
 
-            chunk_texts: list[str] = []
-            for row in rows:
-                text = row["contextualized_text"] if row["contextualized_text"] else row["text"]
-                chunk_texts.append(f"--- Chunk ID: {row['id']} ---\n{text}")
-
+            chunk_texts = _ordered_chunk_texts(rows, chunk_ids)
             combined_text = "\n\n".join(chunk_texts)
 
             # ------------------------------------------------------------------
@@ -179,10 +188,11 @@ class SlideWriterAgent(BaseLLMAgent):
                 for idx, bp_dict in enumerate(slide_blueprints):
                     slide_content = slides[idx]
                     slide_num = bp_dict.get("slide_number", saved_count + 1)
+                    slide_chunk_ids = bp_dict.get("source_chunk_ids", [])
                     proto = ProtoSlide(
                         slide_number=slide_num,
                         content=slide_content,
-                        chunk_references=chunk_ids,
+                        chunk_references=slide_chunk_ids,
                     )
                     wip_db.save_slide(proto)
                     saved_count += 1
