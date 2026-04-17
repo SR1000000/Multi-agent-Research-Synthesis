@@ -1,115 +1,198 @@
-from typing import TypedDict, List
+"""
+SlideWriterAgent
+================
+Receives a batch of slide blueprints (with chunk IDs and per-slide intents
+from the PresentationPlan) and writes the initial set of proto-slides.
+
+The same agent is used for Critic-driven rewrites in the future: callers
+populate `rewrite_instructions` instead of leaving it empty.
+
+Error contract: NEVER raise an unhandled exception. Catch everything, log it
+loudly, and return count=0 so the PlanExecutor can retry the group.
+"""
+from __future__ import annotations
+
+from typing import List, TypedDict
+
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from src.agents.base import BaseLLMAgent
-from src.memory.wip.schema import ProtoSlide, SlideContent
+from src.agents.base import BaseLLMAgent, SLIDE_OUTPUT_FORMAT
 from src.memory.research.database import ResearchDatabase
 from src.memory.wip.database import WIPDatabase
+from src.memory.wip.schema import ProtoSlide, SlideContent
+
+
+# ---------------------------------------------------------------------------
+# LLM output schema
+# ---------------------------------------------------------------------------
 
 class SlideGenerationOutput(BaseModel):
-    slides: List[SlideContent] = Field(description="The parsed slides synthesized from the text chunks")
-
-class DispatchState(TypedDict):
-    """The state sent over LangGraph's Send API."""
-    chunk_ids: List[str]
-    slide_number_range: List[int] # [start, end] inclusive
-    session_id: str
+    slides: List[SlideContent] = Field(
+        description="The synthesized slides for this batch"
+    )
 
 
-def _slide_range_log_label(state: DispatchState) -> str:
-    r = state.get("slide_number_range", [1, 1])
-    a, b = r[0], r[-1]
-    return f"SlideWriter[slides {a}-{b}]"
+# ---------------------------------------------------------------------------
+# Dispatch state (sent via LangGraph Send API)
+# ---------------------------------------------------------------------------
 
+class SlideWriterDispatch(TypedDict):
+    """State payload delivered to each slide_writer node via Send()."""
+    chunk_ids:             List[str]   # union of source_chunk_ids across all blueprints
+    slide_blueprints:      List[dict]  # serialized SlideBlueprint dicts
+    group_idx:             int         # index into PresentationPlan.slide_groups
+    session_id:            str
+    rewrite_instructions:  str         # empty for initial gen; Critic populates for rewrites
+
+
+# ---------------------------------------------------------------------------
+# Label helper
+# ---------------------------------------------------------------------------
+
+def _group_log_label(state: SlideWriterDispatch) -> str:
+    blueprints = state.get("slide_blueprints", [])
+    if not blueprints:
+        return "SlideWriter[empty]"
+    nums = [bp.get("slide_number", "?") for bp in blueprints]
+    return f"SlideWriter[slides {nums[0]}-{nums[-1]}, group {state.get('group_idx', '?')}]"
+
+
+# ---------------------------------------------------------------------------
+# Agent
+# ---------------------------------------------------------------------------
 
 class SlideWriterAgent(BaseLLMAgent):
     def __init__(self, *, log_display: str | None = None):
         super().__init__("slide_writer", log_display=log_display)
 
-    def run(self, state: DispatchState) -> Command:
+    def run(self, state: SlideWriterDispatch) -> Command:
         self._set_session_id(state)
-        chunk_ids = state.get("chunk_ids", [])
-        slide_range = state.get("slide_number_range", [1, 1])
-        
-        start_idx, end_idx = slide_range[0], slide_range[-1]
-        max_slides_allowed = max(end_idx - start_idx + 1, 1)
-        tag = self._log_display
 
-        if not chunk_ids:
-            self._logger.log(f"[{tag}] No chunks to process")
-            return Command(update={"messages": [f"[{tag}] Skipped (no chunks)"]})
+        chunk_ids            = state.get("chunk_ids", [])
+        slide_blueprints     = state.get("slide_blueprints", [])
+        group_idx            = state.get("group_idx", 0)
+        rewrite_instructions = state.get("rewrite_instructions", "")
+        tag                  = self._log_display
 
-        # 1. Fetch chunks from research.db
-        with ResearchDatabase() as research_db:
-            placeholders = ','.join(['?'] * len(chunk_ids))
-            query = f"SELECT id, text, contextualized_text FROM text_chunks WHERE id IN ({placeholders})"
-            rows = research_db.connection.execute(query, chunk_ids).fetchall()
-        
-        chunk_texts = []
-        for row in rows:
-            text = row["contextualized_text"] if row["contextualized_text"] else row["text"]
-            chunk_texts.append(f"--- Chunk ID: {row['id']} ---\n{text}")
-            
-        combined_text = "\n\n".join(chunk_texts)
+        # Result payload — always returned, even on error
+        def _failure(error: Exception) -> Command:
+            err_str = f"{type(error).__name__}: {error}"
+            self._logger.log(f"[{tag}] ERROR: {err_str}", level="error")
+            err_msg = f"[{tag}] FAILED: {err_str}"
+            return Command(update={
+                "slides_written": [{"group_idx": group_idx, "count": 0}],
+                "messages":       [err_msg],
+                "errors":         [{"node": tag, "error": err_str}],
+            })
 
-        is_first_range = start_idx == 1
-        is_last_range = end_idx == start_idx + max_slides_allowed - 1
+        try:
+            if not chunk_ids:
+                self._logger.log(f"[{tag}] No chunk_ids — skipping", level="warning")
+                return Command(update={
+                    "slides_written": [{"group_idx": group_idx, "count": 0}],
+                    "messages":       [f"[{tag}] Skipped (no chunks)"],
+                })
 
-        narrative_hint = ""
-        if is_first_range:
-            narrative_hint = (
-                "This is the OPENING range of the deck. "
-                "Assign 'hook' or 'context' as the narrative_role for your first slide.\n"
+            if not slide_blueprints:
+                self._logger.log(f"[{tag}] No blueprints — skipping", level="warning")
+                return Command(update={
+                    "slides_written": [{"group_idx": group_idx, "count": 0}],
+                    "messages":       [f"[{tag}] Skipped (no blueprints)"],
+                })
+
+            # ------------------------------------------------------------------
+            # 1. Fetch chunk text from research.db
+            # ------------------------------------------------------------------
+            with ResearchDatabase() as research_db:
+                placeholders = ",".join(["?"] * len(chunk_ids))
+                rows = research_db.connection.execute(
+                    f"SELECT id, text, contextualized_text FROM text_chunks "
+                    f"WHERE id IN ({placeholders})",
+                    chunk_ids,
+                ).fetchall()
+
+            chunk_texts: list[str] = []
+            for row in rows:
+                text = row["contextualized_text"] if row["contextualized_text"] else row["text"]
+                chunk_texts.append(f"--- Chunk ID: {row['id']} ---\n{text}")
+
+            combined_text = "\n\n".join(chunk_texts)
+
+            # ------------------------------------------------------------------
+            # 2. Build the user prompt from blueprints
+            # ------------------------------------------------------------------
+            slide_count = len(slide_blueprints)
+            blueprint_block = "\n".join(
+                f"Slide {bp.get('slide_number', i + 1)}: "
+                f"[{bp.get('narrative_role', 'evidence')}] "
+                f'"{bp.get("working_title", "")}" — {bp.get("intent", "")}'
+                for i, bp in enumerate(slide_blueprints)
             )
-        elif is_last_range:
-            narrative_hint = (
-                "This is the CLOSING range of the deck. "
-                "Assign 'conclusion' as the narrative_role for your final slide.\n"
+
+            user_prompt_parts = [
+                f"Write exactly {slide_count} slide(s) for this batch.\n",
+                "SLIDE ASSIGNMENTS:",
+                blueprint_block,
+                "",
+                "For each slide, follow the intent directive precisely. "
+                "Do not add extra slides or skip any.",
+            ]
+
+            if rewrite_instructions:
+                user_prompt_parts += [
+                    "",
+                    "REWRITE INSTRUCTIONS (from reviewer):",
+                    rewrite_instructions,
+                ]
+
+            user_prompt_parts += [
+                "",
+                SLIDE_OUTPUT_FORMAT,
+                "",
+                "SOURCE MATERIAL (research chunks):",
+                combined_text,
+            ]
+
+            user_prompt = "\n".join(user_prompt_parts)
+            turns = [{"role": "user", "content": user_prompt}]
+
+            # ------------------------------------------------------------------
+            # 3. Call LLM
+            # ------------------------------------------------------------------
+            result: SlideGenerationOutput = self._call(
+                turns, schema=SlideGenerationOutput, model="slides"
             )
 
-        user_prompt = (
-            f"Please create up to {max_slides_allowed} slides (slide numbers {start_idx}–{end_idx}) "
-            f"based on the following text chunks.\n"
-            f"{narrative_hint}\n"
-            f"For each slide:\n"
-            f"- Write a `key_message`: one sentence capturing what the audience should understand.\n"
-            f"- Assign a `narrative_role` that reflects the slide's function in the argument "
-            f"(hook | context | evidence | insight | transition | conclusion).\n"
-            f"- Choose the `layout` that best serves the content "
-            f"(title_and_body | big_number | quote | two_column | media_left | media_right | title_slide).\n\n"
-            f"SOURCE MATERIAL:\n{combined_text}\n\n"
-            f"Remember, you can generate AT MOST {max_slides_allowed} slides."
-        )
+            # ------------------------------------------------------------------
+            # 4. Save proto-slides to wip.db
+            # ------------------------------------------------------------------
+            saved_count = 0
+            with WIPDatabase() as wip_db:
+                for slide_content, bp_dict in zip(result.slides, slide_blueprints):
+                    slide_num = bp_dict.get("slide_number", saved_count + 1)
+                    proto = ProtoSlide(
+                        slide_number=slide_num,
+                        content=slide_content,
+                        chunk_references=chunk_ids,
+                    )
+                    wip_db.save_slide(proto)
+                    saved_count += 1
 
-        turns = [{"role": "user", "content": user_prompt}]
-        
-        # 2. Invoke LLM
-        output_schema = SlideGenerationOutput
-        result: SlideGenerationOutput = self._call(turns, schema=output_schema, model="slides")
+            if saved_count == 0:
+                self._logger.log(f"[{tag}] LLM returned 0 slides", level="warning")
 
-        # 3. Save to wip.db
-        wip_db = WIPDatabase()
-        
-        saved_count = 0
-        current_slide_num = start_idx
-        for slide_content in result.slides:
-            if current_slide_num > end_idx:
-                break # enforce strict bounds
-                
-            proto_slide = ProtoSlide(
-                slide_number=current_slide_num,
-                content=slide_content,
-                chunk_references=chunk_ids
-            )
-            wip_db.save_slide(proto_slide)
-            saved_count += 1
-            current_slide_num += 1
-            
-        msg = f"[{tag}] Generated {saved_count} slide(s)"
-        self._logger.log(msg)
-        
-        return Command(update={"messages": [msg]})
+            msg = f"[{tag}] Wrote {saved_count}/{slide_count} slide(s)"
+            self._logger.log(msg)
 
-def slide_writer_node(state: DispatchState) -> Command:
-    return SlideWriterAgent(log_display=_slide_range_log_label(state)).run(state)
+            return Command(update={
+                "slides_written": [{"group_idx": group_idx, "count": saved_count}],
+                "messages":       [msg],
+            })
+
+        except Exception as e:
+            return _failure(e)
+
+
+def slide_writer_node(state: SlideWriterDispatch) -> Command:
+    return SlideWriterAgent(log_display=_group_log_label(state)).run(state)

@@ -20,24 +20,32 @@ from src.memory.objectstore import LocalObjectStore, R2ObjectStore, DEFAULT_OBJE
 
 OUTPUT_DIR = Path(__file__).parent / "output"  # PowerPoint files land here
 
-DEFAULT_QUERY = "Explain what Transformers are and how they are so important to AI"
+DEFAULT_QUERY      = "Explain this paper to an audience of laypeople"
 DEFAULT_SOURCE_PDF = "./.samples/Transformers.pdf"
 
 _PROCESSOR_BACKEND_ALIASES = {
-    "llama": "llama_parse",
+    "llama":      "llama_parse",
     "llama_parse": "llama_parse",
-    "docling": "docling",
-    "lighton": "lighton",
+    "docling":    "docling",
+    "lighton":    "lighton",
 }
 
 _TEXT_SPLITTER_ALIASES = {
-    "none": None,
+    "none":     None,
     "semantic": "semantic",
 }
 
+
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Multi-agent research synthesis")
-    parser.add_argument("--query", type=str, default=DEFAULT_QUERY, help="Research query")
+    parser = argparse.ArgumentParser(
+        description="Multi-agent research presentation synthesizer"
+    )
+    parser.add_argument(
+        "--query",
+        type=str,
+        default=DEFAULT_QUERY,
+        help="Presentation query / audience description (default: %(default)s)",
+    )
     parser.add_argument(
         "--llm-config",
         type=str,
@@ -48,9 +56,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pdf",
         type=str,
+        nargs="+",
         metavar="PATH",
-        default=DEFAULT_SOURCE_PDF,
-        help="Path to the PDF to analyse (default: %(default)s)"
+        default=[DEFAULT_SOURCE_PDF],
+        help="One or more PDF paths to analyse (default: %(default)s)",
     )
     parser.add_argument(
         "--processor",
@@ -64,38 +73,37 @@ def _parse_args() -> argparse.Namespace:
         type=str,
         choices=sorted(_TEXT_SPLITTER_ALIASES.keys()),
         default="none",
-        help="Text splitter backend for document chunking (defaults to 'semantic' for llama_parse) (default: %(default)s)",
+        help=(
+            "Text splitter backend for document chunking "
+            "(defaults to 'semantic' for llama_parse) (default: %(default)s)"
+        ),
     )
     parser.add_argument(
         "-i", "--interactive",
         action="store_true",
-        help="Pause after document extraction and require user confirmation to continue",
+        help="Pause after each document extraction and require user confirmation to continue",
     )
     parser.add_argument(
         "--logging",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Enable/disable Langfuse logging"
-    )
-    parser.add_argument(
-        "--slides",
-        action="store_true",
-        help="Run the slide synthesis pipeline instead of research synthesis"
+        help="Enable/disable Langfuse logging",
     )
     parser.add_argument(
         "--max-slides",
         type=int,
-        default=12,
-        help="Maximum number of slides to generate (default: %(default)s)",
+        default=15,
+        help="Soft target for number of slides (Planner may adjust based on content density; default: %(default)s)",
     )
     parser.add_argument(
         "--object-store",
         type=str,
         choices=["local", "r2"],
-        default=None,  # Default behavior remains as before (R2 with fallback to local)
-        help="Object store type: 'local' for local filesystem, 'r2' for Cloudflare R2 (default: R2 with local fallback)"
+        default=None,
+        help="Object store type: 'local' for local filesystem, 'r2' for Cloudflare R2 (default: R2 with local fallback)",
     )
     return parser.parse_args()
+
 
 def _get_callbacks(args, logger: AgentLogger, session_id: str):
     callbacks = []
@@ -113,11 +121,38 @@ def _get_callbacks(args, logger: AgentLogger, session_id: str):
         callbacks.append(langfuse_handler)
     return callbacks, logger
 
+
 def _configure_llm(args: argparse.Namespace) -> None:
     init_from_config(config_path=args.llm_config)
 
-def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[Any, str]:
-    pdf_path = Path(args.pdf)
+
+def _make_object_store(args: argparse.Namespace, logger: AgentLogger):
+    if args.object_store == "local":
+        logger.log("Using LocalObjectStore for image storage (explicitly selected)", level="info")
+        return LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
+    if args.object_store == "r2":
+        logger.log("Using R2ObjectStore for image storage (explicitly selected)", level="info")
+        return R2ObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
+    # Default: R2 with local fallback
+    try:
+        store = R2ObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
+        logger.log("Using R2ObjectStore for image storage (default)", level="info")
+        return store
+    except Exception as e:
+        logger.log(
+            f"R2ObjectStore init failed: {e}. Falling back to LocalObjectStore.",
+            level="warning",
+        )
+        return LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
+
+
+def _process_document(
+    pdf_path_str: str,
+    args: argparse.Namespace,
+    logger: AgentLogger,
+    object_store,
+) -> tuple[Any, str]:
+    pdf_path = Path(pdf_path_str)
     if not pdf_path.exists():
         sys.exit(f"error: PDF not found: {pdf_path}")
     if pdf_path.suffix.lower() != ".pdf":
@@ -125,27 +160,10 @@ def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[An
 
     _t0 = time.perf_counter()
 
-    # Initialize object store based on CLI argument
-    if args.object_store == "local":
-        object_store = LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
-        logger.log("Using LocalObjectStore for image storage (explicitly selected)", level="info")
-    elif args.object_store == "r2":
-        r2_config = DEFAULT_OBJECT_STORE_CONFIG
-        object_store = R2ObjectStore(config=r2_config)
-        logger.log("Using R2ObjectStore for image storage (explicitly selected)", level="info")
-    else:  # Default behavior
-        try:
-            r2_config = DEFAULT_OBJECT_STORE_CONFIG
-            object_store = R2ObjectStore(config=r2_config)
-            logger.log("Using R2ObjectStore for image storage (default behavior)", level="info")
-        except Exception as e:
-            logger.log(f"R2ObjectStore initialization failed: {str(e)}. Falling back to LocalObjectStore.", level="warning")
-            object_store = LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
-
-    db = get_database()
+    db       = get_database()
     embedder = get_text_embedder()
     processor_backend = _PROCESSOR_BACKEND_ALIASES[args.processor]
-    chunker_name = _TEXT_SPLITTER_ALIASES[args.text_splitter]
+    chunker_name      = _TEXT_SPLITTER_ALIASES[args.text_splitter]
 
     # default to 'semantic' chunking if using LlamaParser and no specific splitter chosen
     if not chunker_name and processor_backend == "llama_parse":
@@ -165,49 +183,58 @@ def _process_document(args: argparse.Namespace, logger: AgentLogger) -> tuple[An
     _pdf_elapsed = time.perf_counter() - _t0
 
     if artifacts and artifacts.chunk_count > 0:
-        print(f"[preprocessing] PDF extraction/pipeline completed in {_pdf_elapsed:.2f}s", flush=True)
+        print(
+            f"[preprocessing] {pdf_path.name} completed in {_pdf_elapsed:.2f}s",
+            flush=True,
+        )
 
     if args.interactive:
         try:
-            response = input("Press Enter to continue, or type 'q' to quit: ").strip().lower()
+            response = input(
+                f"Finished processing {pdf_path.name}. Press Enter to continue, or 'q' to quit: "
+            ).strip().lower()
         except (EOFError, KeyboardInterrupt):
             sys.exit("\nAborted.")
         if response == "q":
             sys.exit("Execution stopped by user.")
 
-    status = "Processed" if artifacts and artifacts.chunk_count > 0 else "FAILED TO PROCESS (running without documents)"
+    status = (
+        "Processed"
+        if artifacts and artifacts.chunk_count > 0
+        else "FAILED TO PROCESS (running without this document)"
+    )
 
     if artifacts:
-        preprocessing_message = (
-            f"[preprocessing] {status} multimodal artifacts "
+        msg = (
+            f"[preprocessing] {pdf_path.name}: {status} "
             f"(images={artifacts.image_count}, tables={artifacts.table_count}, "
             f"equations={artifacts.equation_count}, chunks={artifacts.chunk_count})"
         )
     else:
-        preprocessing_message = f"[preprocessing] {status}"
+        msg = f"[preprocessing] {pdf_path.name}: {status}"
 
-    return artifacts, preprocessing_message
+    return artifacts, msg
 
-def _build_initial_state(args: argparse.Namespace, preprocessing_message: str, artifacts: Any, session_id: str) -> dict:
+
+def _build_initial_state(
+    args: argparse.Namespace,
+    preprocessing_messages: list[str],
+    doc_ids: list[str],
+    paper_titles: list[str],
+    session_id: str,
+) -> dict:
     return {
-        'query':            args.query or DEFAULT_QUERY,
-        'session_id':       session_id,
-        'created_at':       datetime.now(timezone.utc).isoformat(),
-        'revision_count':   0,
-        'replan_count':     0,
-        'plan':             None,
-        'draft':            None,
-        'critique':         None,
-        'max_slides':       args.max_slides,
-        'slide_numbers':    [],
-        'document_context': "",
-        'source_chunks':    artifacts.source_chunks if artifacts else [],
-        'doc_id':           artifacts.doc_id if artifacts else "unknown",
-        'paper_title':      (artifacts.paper_metadata.title if artifacts and artifacts.paper_metadata else "") or "",
-        'revision_history': [],
-        'replan_history':   [],
-        'messages':         [preprocessing_message],
-        'errors':           [],
+        "query":             args.query or DEFAULT_QUERY,
+        "session_id":        session_id,
+        "created_at":        datetime.now(timezone.utc).isoformat(),
+        "doc_ids":           doc_ids,
+        "paper_titles":      paper_titles,
+        "max_slides":        args.max_slides,
+        "slide_numbers":     [],
+        "presentation_plan": None,
+        "slides_written":    [],
+        "messages":          preprocessing_messages,
+        "errors":            [],
     }
 
 def _sanitize_filename(name: str) -> str:
@@ -220,44 +247,68 @@ def _sanitize_filename(name: str) -> str:
     safe = re.sub(r"[ _]+", "_", safe).strip("_")
     return safe[:150]
 
-def main() -> None:
-    args = _parse_args()
-    logger = AgentLogger()
 
-    # Generate a unique session ID for this run.  It is shared between the
-    # LangGraph CallbackHandler and the LiteLLM "langfuse" callback so that
-    # every trace produced during this invocation is grouped under a single
-    # Langfuse session.
+def main() -> None:
+    args       = _parse_args()
+    logger     = AgentLogger()
     session_id = str(uuid.uuid4())
 
-    # Clear validation error dumps from the previous run
+    # Clear validation error dumps from previous run
     if VALIDATION_ERRORS_DIR.exists():
         shutil.rmtree(VALIDATION_ERRORS_DIR)
     VALIDATION_ERRORS_DIR.mkdir(exist_ok=True)
 
     # Reset WIP database for the new run
-    with WIPDatabase() as db:
-        db.reset()
+    with WIPDatabase() as wip_db:
+        wip_db.reset()
 
     _configure_llm(args)
     callbacks, logger = _get_callbacks(args, logger, session_id)
 
-    artifacts, preprocessing_message = _process_document(args, logger)
-    initial_state = _build_initial_state(args, preprocessing_message, artifacts, session_id)
+    object_store = _make_object_store(args, logger)
 
-    graph = build_graph(slides_mode=args.slides)
-    
+    # ------------------------------------------------------------------
+    # Ingest each PDF into research.db
+    # ------------------------------------------------------------------
+    doc_ids:              list[str] = []
+    paper_titles:         list[str] = []
+    preprocessing_messages: list[str] = []
+
+    for pdf_path_str in args.pdf:
+        artifacts, msg = _process_document(pdf_path_str, args, logger, object_store)
+        preprocessing_messages.append(msg)
+        if artifacts:
+            doc_ids.append(artifacts.doc_id)
+            title = (
+                artifacts.paper_metadata.title
+                if artifacts.paper_metadata and artifacts.paper_metadata.title
+                else Path(pdf_path_str).stem
+            )
+            paper_titles.append(title)
+
+    if not doc_ids:
+        sys.exit("error: No documents were successfully processed. Exiting.")
+
+    # ------------------------------------------------------------------
+    # Build and stream the graph
+    # ------------------------------------------------------------------
+    initial_state = _build_initial_state(
+        args, preprocessing_messages, doc_ids, paper_titles, session_id
+    )
+
+    graph = build_graph()
+
     final_state = initial_state
     try:
         # Use streaming to capture the state at each step, allowing us to recover logs if a crash occurs
         for event in graph.stream(
-            initial_state, 
+            initial_state,
             config={"callbacks": callbacks},
-            stream_mode="values"
+            stream_mode="values",
         ):
             final_state = event
     except Exception as e:
-        print(f"\n[!] Research Graph encountered an error mid-flight: {e}")
+        print(f"\n[!] Graph encountered an error mid-flight: {e}")
         print("    Attempting to recover partial logs...")
 
     ve_files = list(VALIDATION_ERRORS_DIR.glob("*.json"))
@@ -268,30 +319,23 @@ def main() -> None:
     for msg in final_state.get("messages", []):
         print(msg)
 
+    # ------------------------------------------------------------------
+    # Export PPTX
+    # ------------------------------------------------------------------
+    from src.processing.export.pandoc_builder import PandocBuilder
 
-    if args.slides:
-        from src.processing.export.pandoc_builder import PandocBuilder
+    # Use first paper title, or fall back to session_id
+    raw_name  = paper_titles[0] if paper_titles else session_id
+    safe_name = _sanitize_filename(raw_name) or session_id
 
-        # Use paper title if available, fallback to doc_id or session_id
-        raw_name = final_state.get('paper_title') or final_state.get('doc_id') or final_state['session_id']
-        safe_name = _sanitize_filename(raw_name)
-        if not safe_name:
-            safe_name = final_state['session_id']
-
-        pptx_path = OUTPUT_DIR / f"{safe_name}.pptx"
-        try:
-            with WIPDatabase() as wip_db:
-                out = PandocBuilder(output_path=pptx_path, db=wip_db).build()
-            print(f"\n[export] Presentation saved → {out}")
-        except ValueError as exc:
-            print(f"\n[export] Could not generate PPTX: {exc}")
-    else:
-        print("\n--- Final Draft (Last Known State) ---")
-        final_draft = final_state.get('draft')
-        if final_draft:
-            print(final_draft['document'])
-        else:
-            print('(no draft produced)')
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    pptx_path = OUTPUT_DIR / f"{safe_name}.pptx"
+    try:
+        with WIPDatabase() as wip_db:
+            out = PandocBuilder(output_path=pptx_path, db=wip_db).build()
+        print(f"\n[export] Presentation saved → {out}")
+    except ValueError as exc:
+        print(f"\n[export] Could not generate PPTX: {exc}")
 
     if logger:
         logger.flush()
@@ -299,4 +343,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

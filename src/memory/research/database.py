@@ -400,6 +400,16 @@ class ResearchDatabase(DatabaseProvider):
             row_count=row["row_count"]
         )
 
+    def get_chunks_for_dispatch_multi(self, doc_ids: list[str]) -> dict[str, list[dict]]:
+        """
+        Return ordered chunks for multiple documents in one call.
+
+        Returns a dict keyed by doc_id, each value being the same list[dict]
+        that get_chunks_for_dispatch() returns for that doc_id.  Documents with
+        no chunks are included as empty lists so callers can detect missing docs.
+        """
+        return {doc_id: self.get_chunks_for_dispatch(doc_id) for doc_id in doc_ids}
+
     def get_chunks_for_dispatch(self, doc_id: str) -> list[dict]:
         """
         Return all text chunks for a document ordered by chunk_index, as lightweight

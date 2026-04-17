@@ -1,377 +1,177 @@
 """
 PlanExecutorAgent
 =================
-Reads all chunks for a document from research.db, detects section boundaries
-(LlamaParse path: regex scan for leading Markdown headings), builds a compact
-section outline, and calls the LLM to decide how to group those sections into
-parallel slide_writer agent assignments.
+Pure dispatcher + retry loop. No LLM calls, no section detection.
 
-The agent then fans the assignments out via LangGraph's Send API.
+First call (slides_written is empty in state):
+  - Reads slide_groups from the PresentationPlan
+  - Fans out one Send("slide_writer") per group
+  - Records which group indices were dispatched
+
+Subsequent calls (after Slide Writers complete and loop back):
+  - Reads slides_written counts from state
+  - Re-dispatches any group that produced 0 slides (up to MAX_RETRIES_PER_GROUP)
+  - Proceeds to END when all groups have produced slides or retry cap is reached
 """
 from __future__ import annotations
 
-import re
-from typing import List, Literal
+from typing import Literal
 
+from langgraph.graph import END
 from langgraph.types import Command, Send
-from pydantic import BaseModel, Field
 
-from src.state import ResearchState
-from src.agents.base import BaseLLMAgent
-from src.memory.research.database import ResearchDatabase
+from src.state import PresentationPlan, ResearchState, SlideGroup
 
-# ---------------------------------------------------------------------------
-# Heading detection (LlamaParse produces standard ATX markdown headings)
-# ---------------------------------------------------------------------------
-# Matches lines that start a new ATX heading: # / ## / ### / ####
-# We only look at the first non-empty line of each chunk so that mid-chunk
-# headings (e.g. sub-bullets with hashes) don't falsely trigger a split.
-_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+\S")
-
-
-def _detect_heading(chunk_text: str) -> str | None:
-    """
-    Return the heading text if the chunk's first meaningful line is a Markdown
-    ATX heading, otherwise return None.
-    """
-    for line in chunk_text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if _HEADING_RE.match(line):
-            # Strip leading hashes and whitespace to get the bare heading text
-            return re.sub(r"^#{1,4}\s+", "", stripped).strip()
-        # First non-empty line is not a heading → not a section boundary
-        return None
-    return None
+MAX_RETRIES_PER_GROUP = 2
 
 
 # ---------------------------------------------------------------------------
-# Pydantic schemas for LLM output
+# Helpers
 # ---------------------------------------------------------------------------
 
-class AgentAssignment(BaseModel):
-    """One parallel agent's assignment."""
-    section_indices: List[int] = Field(
-        description="0-based indices of consecutive sections assigned to this agent"
+def _group_chunk_ids(group: SlideGroup) -> list[str]:
+    """Collect the union of source_chunk_ids across all blueprints in a group, preserving order."""
+    seen:   set[str]  = set()
+    result: list[str] = []
+    for bp in group.slide_blueprints:
+        for cid in bp.source_chunk_ids:
+            if cid not in seen:
+                seen.add(cid)
+                result.append(cid)
+    return result
+
+
+def _blueprints_as_dicts(group: SlideGroup) -> list[dict]:
+    return [bp.model_dump() for bp in group.slide_blueprints]
+
+
+def _build_send(group: SlideGroup, group_idx: int, session_id: str) -> Send:
+    return Send(
+        "slide_writer",
+        {
+            "chunk_ids":          _group_chunk_ids(group),
+            "slide_blueprints":   _blueprints_as_dicts(group),
+            "group_idx":          group_idx,
+            "session_id":         session_id,
+            "rewrite_instructions": "",
+        },
     )
-    slide_count: int = Field(
-        description="Exact number of slides this agent may produce (>= 1)"
-    )
-    rationale: str = Field(
-        description="One sentence explaining why these sections were grouped together"
-    )
-
-
-class PartitionPlan(BaseModel):
-    """Full partition plan returned by the LLM."""
-    assignments: List[AgentAssignment] = Field(
-        description="Ordered list of agent assignments covering all sections"
-    )
-    overall_reasoning: str = Field(
-        description="2-4 sentences summarising the partitioning strategy"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Section data (local, not sent to LLM directly)
-# ---------------------------------------------------------------------------
-
-class _Section:
-    """Internal representation of one detected section."""
-    __slots__ = ("index", "heading", "chunk_ids", "word_count")
-
-    def __init__(self, index: int, heading: str, chunk_ids: list[str], word_count: int):
-        self.index = index
-        self.heading = heading
-        self.chunk_ids = chunk_ids
-        self.word_count = word_count
 
 
 # ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
 
-class PlanExecutorAgent(BaseLLMAgent):
-    """
-    Analyses the section structure of a research paper and fans out chunk
-    ranges to parallel slide_writer agents via LangGraph's Send API.
-    """
+class PlanExecutorAgent:
+    """Stateless dispatcher — all state lives in ResearchState."""
 
     def __init__(self) -> None:
-        super().__init__("plan_executor")
+        from src.logging.logger import AgentLogger
+        self._logger = AgentLogger()
 
-    # ------------------------------------------------------------------
-    # Public entry point — called by the graph node
-    # ------------------------------------------------------------------
+    def _set_session_id(self, state: dict) -> None:
+        from src.llm.llm import current_session_id
+        sid = state.get("session_id") if isinstance(state, dict) else None
+        if sid:
+            current_session_id.set(sid)
 
-    def run(self, state: ResearchState) -> Command[Literal["slide_writer"]]:
+    def run(self, state: ResearchState) -> Command:
         self._set_session_id(state)
-        doc_id     = state["doc_id"]
-        max_slides = state.get("max_slides", 12)
-        session_id = state.get("session_id", "")
 
-        self._logger.log(
-            f"[PlanExecutor] Starting — doc_id={doc_id} max_slides={max_slides}"
-        )
+        session_id        = state.get("session_id", "")
+        presentation_plan: PresentationPlan | None = state.get("presentation_plan")
+        slides_written:    list[dict]               = state.get("slides_written", [])
 
-        # 1. Load ordered chunks cheaply (no images/tables/embeddings)
-        with ResearchDatabase() as db:
-            raw_chunks = db.get_chunks_for_dispatch(doc_id)
+        if presentation_plan is None:
+            raise ValueError("[PlanExecutor] No presentation_plan in state.")
 
-        if not raw_chunks:
+        groups = presentation_plan.slide_groups
+
+        # ------------------------------------------------------------------
+        # First call: initial dispatch of all groups
+        # ------------------------------------------------------------------
+        if not slides_written:
             self._logger.log(
-                "[PlanExecutor] No chunks found in research.db — nothing to dispatch"
+                f"[PlanExecutor] Initial dispatch — {len(groups)} group(s)"
             )
-            return Command(goto=[])
+            sends: list[Send] = []
+            for idx, group in enumerate(groups):
+                chunk_ids = _group_chunk_ids(group)
+                if not chunk_ids:
+                    self._logger.log(
+                        f"[PlanExecutor] Warning: group {idx} has 0 chunk_ids "
+                        f"(blueprints: {[bp.working_title for bp in group.slide_blueprints]})",
+                        level="warning",
+                    )
+                sends.append(_build_send(group, idx, session_id))
 
-        # 2. Detect section boundaries and group chunks into sections
-        sections = self._detect_sections(raw_chunks)
+            return Command(goto=sends)
 
-        self._logger.log(
-            f"[PlanExecutor] Detected {len(sections)} sections "
-            f"from {len(raw_chunks)} total chunks"
-        )
+        # ------------------------------------------------------------------
+        # Subsequent calls: verify counts, retry failures
+        # ------------------------------------------------------------------
 
-        # 3. Build compact outline for the LLM
-        outline_text = self._build_outline(sections, max_slides)
+        # Build a map: group_idx → list of counts seen so far (one per attempt)
+        counts_by_group: dict[int, list[int]] = {}
+        for entry in slides_written:
+            gidx  = entry["group_idx"]
+            count = entry["count"]
+            counts_by_group.setdefault(gidx, []).append(count)
 
-        # 4. Ask the LLM for a partition plan
-        plan = self._call_llm(outline_text, len(sections), max_slides)
+        # A group is "done" if any attempt produced > 0 slides
+        failed_groups: list[int] = []
+        for idx in range(len(groups)):
+            attempts = counts_by_group.get(idx, [])
+            succeeded = any(c > 0 for c in attempts)
+            if not succeeded:
+                failed_groups.append(idx)
 
-        self._logger.log(
-            f"[PlanExecutor] LLM plan: {len(plan.assignments)} agents — "
-            f"{plan.overall_reasoning}"
-        )
-
-        # 5. Validate & repair the plan (ensure slide counts sum to max_slides)
-        plan = self._repair_plan(plan, sections, max_slides)
-
-        # 6. Convert assignments → Send objects and fan out.
-        # Command(goto=[Send(...)]) is the idiomatic LangGraph pattern for
-        # dynamic parallel dispatch — no conditional edge or state key needed.
-        sends = self._build_sends(plan, sections, session_id)
-
-        self._logger.log(
-            f"[PlanExecutor] Dispatching {len(sends)} slide_writer agents"
-        )
-        return Command(goto=sends)
-
-    # ------------------------------------------------------------------
-    # Step 2 — Section detection
-    # ------------------------------------------------------------------
-
-    def _detect_sections(self, raw_chunks: list[dict]) -> list[_Section]:
-        """
-        Group consecutive chunks into sections.  A new section begins when
-        the first non-empty line of a chunk is an ATX Markdown heading.
-        The very first chunk always starts a section regardless.
-        """
-        sections: list[_Section] = []
-        current_ids: list[str] = []
-        current_heading = "(no heading)"
-        current_words = 0
-
-        for i, chunk in enumerate(raw_chunks):
-            text = chunk["text"] or ""
-            heading = _detect_heading(text)
-
-            is_boundary = (i == 0) or (heading is not None)
-
-            if is_boundary and current_ids:
-                sections.append(_Section(
-                    index=len(sections),
-                    heading=current_heading,
-                    chunk_ids=current_ids,
-                    word_count=current_words,
-                ))
-                current_ids = []
-                current_words = 0
-
-            if is_boundary and heading:
-                current_heading = heading
-            elif is_boundary and i == 0:
-                current_heading = heading or "(no heading)"
-
-            current_ids.append(chunk["id"])
-            current_words += len(text.split())
-
-        # Flush the last section
-        if current_ids:
-            sections.append(_Section(
-                index=len(sections),
-                heading=current_heading,
-                chunk_ids=current_ids,
-                word_count=current_words,
-            ))
-
-        return sections
-
-    # ------------------------------------------------------------------
-    # Step 3 — Outline formatting
-    # ------------------------------------------------------------------
-
-    def _build_outline(self, sections: list[_Section], max_slides: int) -> str:
-        total_chunks = sum(len(s.chunk_ids) for s in sections)
-        total_words  = sum(s.word_count for s in sections)
-
-        lines = [
-            f"Paper outline ({len(sections)} sections, "
-            f"{total_chunks} total chunks, ~{total_words} words):",
-            f"Target slide budget: {max_slides} slides total",
-            "",
-            "Index | Heading                              | Chunks | ~Words",
-            "------|--------------------------------------|--------|-------",
-        ]
-        for s in sections:
-            heading_col = s.heading[:36].ljust(36)
-            lines.append(
-                f"  {s.index:3d} | {heading_col} |   {len(s.chunk_ids):3d} | {s.word_count:6d}"
+        if not failed_groups:
+            total_slides = sum(
+                max(counts_by_group.get(idx, [0])) for idx in range(len(groups))
             )
+            msg = f"[PlanExecutor] All {len(groups)} group(s) completed. Total slides written: {total_slides}"
+            self._logger.log(msg)
+            return Command(update={"messages": [msg]}, goto=END)
 
-        lines += [
-            "",
-            "Assign ALL sections to agents. Section indices must be consecutive "
-            "within each assignment and cover every section exactly once.",
-            f"The sum of all slide_count values must equal exactly {max_slides}.",
-        ]
-        return "\n".join(lines)
+        # Retry failed groups that haven't exhausted their retry budget
+        retries: list[Send]   = []
+        exhausted: list[int]  = []
 
-    # ------------------------------------------------------------------
-    # Step 4 — LLM call
-    # ------------------------------------------------------------------
-
-    def _call_llm(
-        self, outline_text: str, num_sections: int, max_slides: int
-    ) -> PartitionPlan:
-        user_msg = (
-            f"{outline_text}\n\n"
-            f"Produce a PartitionPlan that groups these {num_sections} sections "
-            f"into parallel agent assignments with a total slide budget of {max_slides}."
-        )
-        turns = [{"role": "user", "content": user_msg}]
-        return self._call(turns, schema=PartitionPlan, model="slides")
-
-    # ------------------------------------------------------------------
-    # Step 5 — Plan repair
-    # ------------------------------------------------------------------
-
-    def _repair_plan(
-        self, plan: PartitionPlan, sections: list[_Section], max_slides: int
-    ) -> PartitionPlan:
-        """
-        Guard against LLM mistakes:
-        1. Ensure every section index appears in exactly one assignment.
-        2. Ensure slide_count >= 1 for every assignment.
-        3. Normalise slide_counts so they sum to exactly max_slides.
-        """
-        all_indices = set(range(len(sections)))
-        covered: set[int] = set()
-        repaired_assignments: list[AgentAssignment] = []
-
-        for asgn in plan.assignments:
-            # Remove duplicates, keep valid indices
-            valid = sorted(set(asgn.section_indices) - covered)
-            valid = [i for i in valid if i in all_indices]
-            if not valid:
-                continue
-            covered.update(valid)
-            repaired_assignments.append(AgentAssignment(
-                section_indices=valid,
-                slide_count=max(1, asgn.slide_count),
-                rationale=asgn.rationale,
-            ))
-
-        # Any sections the LLM forgot → append as a catch-all bucket
-        missed = sorted(all_indices - covered)
-        if missed:
-            self._logger.log(
-                f"[PlanExecutor] Repair: re-adding {len(missed)} missed sections"
-            )
-            repaired_assignments.append(AgentAssignment(
-                section_indices=missed,
-                slide_count=1,
-                rationale="Catch-all for sections not assigned by the LLM.",
-            ))
-
-        if not repaired_assignments:
-            # Fallback: one agent gets everything
-            repaired_assignments = [AgentAssignment(
-                section_indices=list(all_indices),
-                slide_count=max_slides,
-                rationale="Single-agent fallback.",
-            )]
-
-        # Normalise slide counts to sum exactly to max_slides
-        total = sum(a.slide_count for a in repaired_assignments)
-        if total != max_slides:
-            # Scale proportionally then fix rounding error on the largest bucket
-            scaled = [
-                max(1, round(a.slide_count * max_slides / total))
-                for a in repaired_assignments
-            ]
-            diff = max_slides - sum(scaled)
-            if diff != 0:
-                # Add/subtract the rounding error from the assignment with the
-                # most slides (least impact on proportion)
-                largest_idx = scaled.index(max(scaled))
-                scaled[largest_idx] = max(1, scaled[largest_idx] + diff)
-            # Reconstruct as new objects — Pydantic v2 models are immutable
-            repaired_assignments = [
-                AgentAssignment(
-                    section_indices=a.section_indices,
-                    slide_count=s,
-                    rationale=a.rationale,
+        for idx in failed_groups:
+            attempts_so_far = len(counts_by_group.get(idx, []))
+            if attempts_so_far <= MAX_RETRIES_PER_GROUP:
+                self._logger.log(
+                    f"[PlanExecutor] Retrying group {idx} "
+                    f"(attempt {attempts_so_far + 1}/{MAX_RETRIES_PER_GROUP + 1})",
+                    level="warning",
                 )
-                for a, s in zip(repaired_assignments, scaled)
-            ]
+                retries.append(_build_send(groups[idx], idx, session_id))
+            else:
+                exhausted.append(idx)
 
-        return PartitionPlan(
-            assignments=repaired_assignments,
-            overall_reasoning=plan.overall_reasoning,
+        for idx in exhausted:
+            slide_titles = [bp.working_title for bp in groups[idx].slide_blueprints]
+            err_msg = (
+                f"[PlanExecutor] Group {idx} exhausted {MAX_RETRIES_PER_GROUP + 1} "
+                f"attempts with 0 slides. Slides skipped: {slide_titles}"
+            )
+            self._logger.log(err_msg, level="error")
+
+        if retries:
+            return Command(
+                update={"messages": [f"[PlanExecutor] Retrying {len(retries)} failed group(s)"]},
+                goto=retries,
+            )
+
+        # All failed groups exhausted — proceed to END with partial deck
+        msg = (
+            f"[PlanExecutor] Done with partial deck. "
+            f"{len(exhausted)} group(s) permanently failed: {exhausted}"
         )
-
-    # ------------------------------------------------------------------
-    # Step 6 — Build Send objects
-    # ------------------------------------------------------------------
-
-    def _build_sends(
-        self,
-        plan: PartitionPlan,
-        sections: list[_Section],
-        session_id: str,
-    ) -> list[Send]:
-        sends: list[Send] = []
-        slide_cursor = 1
-
-        for asgn in plan.assignments:
-            # Collect chunk IDs in document order
-            chunk_ids: list[str] = []
-            for idx in sorted(asgn.section_indices):
-                chunk_ids.extend(sections[idx].chunk_ids)
-
-            if not chunk_ids:
-                continue
-
-            start_slide = slide_cursor
-            end_slide   = slide_cursor + asgn.slide_count - 1
-            slide_cursor = end_slide + 1
-
-            sends.append(Send(
-                "slide_writer",
-                {
-                    "chunk_ids":          chunk_ids,
-                    "slide_number_range": [start_slide, end_slide],
-                    "session_id":         session_id,
-                },
-            ))
-
-        return sends
+        self._logger.log(msg, level="warning")
+        return Command(update={"messages": [msg]}, goto=END)
 
 
-# ---------------------------------------------------------------------------
-# LangGraph node function
-# ---------------------------------------------------------------------------
-
-def plan_executor_node(state: ResearchState) -> Command[Literal["slide_writer"]]:
+def plan_executor_node(state: ResearchState) -> Command:
     return PlanExecutorAgent().run(state)
