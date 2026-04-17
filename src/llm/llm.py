@@ -135,7 +135,7 @@ def build_litellm_model_list(
 def build_router_from_config_data(config_data: dict[str, Any]) -> Router:
     rb = config_data.get("router") or {}
     if not rb:
-        raise ValueError("config.dev.yaml: missing top-level key ``router``")
+        raise ValueError("Invalid configuration: missing top-level key ``router``")
 
     primary = str(rb.get("default_model_name") or "app")
     fb_alias = rb.get("fallback_model_name")
@@ -148,7 +148,7 @@ def build_router_from_config_data(config_data: dict[str, Any]) -> Router:
         )
 
     if not model_list:
-        raise ValueError("config.dev.yaml: add at least one entry under router.providers.*.models")
+        raise ValueError("Invalid configuration: add at least one entry under router.providers.*.models")
 
     settings = dict(rb.get("settings") or {})
 
