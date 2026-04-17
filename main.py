@@ -18,10 +18,10 @@ from src.memory.objectstore import (
     LocalObjectStore,
     R2ObjectStore,
 )
+from src.processing.export.pandoc_builder import PandocBuilder
 from src.processing.chunker import get_text_chunker
 from src.processing.document import DocProcessor
 from src.processing.embedder.provider import get_text_embedder
-from src.processing.export.pandoc_builder import PandocBuilder
 
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "output"
 
@@ -99,6 +99,12 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=15,
         help="Soft target for number of slides (Planner may adjust based on content density; default: %(default)s)",
+    )
+    parser.add_argument(
+        "--slides",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable/disable slide deck generation mode",
     )
     parser.add_argument(
         "--object-store",
@@ -281,18 +287,13 @@ def main() -> None:
 
     _configure_llm(args)
     callbacks, logger = _get_callbacks(args, logger, session_id)
-
     object_store = _make_object_store(args, logger)
-    db = get_database()
 
-    try:
-        # Each run starts from a clean proto-slide workspace while keeping the
-        # document cache intact for previously processed papers.
-        db.clear_proto_slides()
+    with get_database() as db:
+        if args.slides:
+            # In unified DB mode, clear only generated proto slides for a fresh deck.
+            db.clear_proto_slides()
 
-        # ------------------------------------------------------------------
-        # Ingest each PDF into research.db
-        # ------------------------------------------------------------------
         doc_ids: list[str] = []
         paper_titles: list[str] = []
         preprocessing_messages: list[str] = []
@@ -320,28 +321,23 @@ def main() -> None:
             seen_doc_ids.add(artifacts.doc_id)
             doc_ids.append(artifacts.doc_id)
             title = (
-                artifacts.paper_metadata.title
-                if artifacts.paper_metadata and artifacts.paper_metadata.title
-                else Path(pdf_path_str).stem
+                Path(artifacts.source_path).stem
+                if getattr(artifacts, "source_path", None)
+                else artifacts.doc_id
             )
             paper_titles.append(title)
 
         if not doc_ids:
             sys.exit("error: No documents were successfully processed. Exiting.")
 
-        # ------------------------------------------------------------------
-        # Build and stream the graph
-        # ------------------------------------------------------------------
         initial_state = _build_initial_state(
             args, preprocessing_messages, doc_ids, paper_titles, session_id
         )
 
         graph = build_graph()
-
         final_state = initial_state
         try:
-            # Use streaming to capture the state at each step, allowing us to
-            # recover logs if a crash occurs.
+            # Use streaming to capture the state at each step, allowing us to recover logs if a crash occurs.
             for event in graph.stream(
                 initial_state,
                 config={"callbacks": callbacks},
@@ -352,39 +348,33 @@ def main() -> None:
             print(f"\n[!] Graph encountered an error mid-flight: {exc}")
             print("    Attempting to recover partial logs...")
 
-        ve_files = list(VALIDATION_ERRORS_DIR.glob("*.json"))
-        if ve_files:
-            print(f"\n[validation] {len(ve_files)} error dump(s) written to {VALIDATION_ERRORS_DIR}/")
+            ve_files = list(VALIDATION_ERRORS_DIR.glob("*.json"))
+            if ve_files:
+                print(f"\n[validation] {len(ve_files)} error dump(s) written to {VALIDATION_ERRORS_DIR}/")
 
-        print("\n--- Agent Log ---")
-        for msg in final_state.get("messages", []):
-            print(msg)
-
-        partial_warnings = _partial_deck_warnings(final_state.get("messages", []))
-        if partial_warnings:
-            print("\n[warning] Export will proceed with a partial deck.")
-            for msg in partial_warnings:
+            print("\n--- Agent Log ---")
+            for msg in final_state.get("messages", []):
                 print(msg)
 
-        # ------------------------------------------------------------------
-        # Export PPTX
-        # ------------------------------------------------------------------
-        raw_name = paper_titles[0] if paper_titles else session_id
-        safe_name = _sanitize_filename(raw_name) or session_id
+        if args.slides:
+            raw_name = paper_titles[0] if paper_titles else session_id
+            safe_name = _sanitize_filename(raw_name) or session_id
+            pptx_path = output_dir / f"{safe_name}.pptx"
+            try:
+                out = PandocBuilder(output_path=pptx_path, db=db).build()
+                print(f"\n[export] Presentation saved → {out}")
+            except ValueError as exc:
+                print(f"\n[export] Could not generate PPTX: {exc}")
+        else:
+            print("\n--- Final Draft (Last Known State) ---")
+            final_draft = final_state.get("draft")
+            if final_draft:
+                print(final_draft["document"])
+            else:
+                print("(no draft produced)")
 
-        output_dir.mkdir(parents=True, exist_ok=True)
-        pptx_path = output_dir / f"{safe_name}.pptx"
-        try:
-            out = PandocBuilder(output_path=pptx_path, db=db).build()
-            print(f"\n[export] Presentation saved → {out}")
-        except ValueError as exc:
-            print(f"\n[export] Could not generate PPTX: {exc}")
-    finally:
-        disconnect = getattr(db, "disconnect", None)
-        if callable(disconnect):
-            disconnect()
-        if logger:
-            logger.flush()
+    if logger:
+        logger.flush()
 
 
 if __name__ == "__main__":

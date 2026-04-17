@@ -155,9 +155,9 @@ class ResearchDatabase(DatabaseProvider):
 
     def load_slide(self, slide_number: int):
         return slide.load_slide(self, slide_number)
+
     def list_slide_numbers(self) -> list[int]:
         return slide.list_slide_numbers(self)
-
     def clear_proto_slides(self) -> None:
         return slide.clear_proto_slides(self)
 
