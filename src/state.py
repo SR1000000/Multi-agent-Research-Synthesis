@@ -1,5 +1,5 @@
 import operator
-from typing import Annotated, TypedDict, List, Optional
+from typing import Annotated, TypedDict, List, Optional, Literal
 from pydantic import BaseModel, Field
 
 
@@ -17,7 +17,15 @@ class LLMSlideBlueprint(BaseModel):
     """What the LLM produces per slide — references sections by label."""
     slide_number: int = Field(description="1-based slide number within the full deck")
     working_title: str = Field(description="Punchy working title for the slide")
-    narrative_role: str = Field(
+    narrative_role: Literal[
+        "hook",
+        "problem",
+        "evidence",
+        "insight",
+        "transition",
+        "call_to_action",
+        "conclusion",
+    ] = Field(
         description=(
             "Role this slide plays in the deck: "
             "hook | problem | evidence | insight | transition | call_to_action | conclusion"
@@ -85,7 +93,15 @@ class SlideBlueprint(BaseModel):
     """Resolved blueprint with concrete chunk IDs ready for the Slide Writer."""
     slide_number: int
     working_title: str
-    narrative_role: str
+    narrative_role: Literal[
+        "hook",
+        "problem",
+        "evidence",
+        "insight",
+        "transition",
+        "call_to_action",
+        "conclusion",
+    ]
     intent: str
     source_chunk_ids: List[str]
 

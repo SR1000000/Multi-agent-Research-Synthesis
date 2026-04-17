@@ -129,7 +129,8 @@ class SlideWriterAgent(BaseLLMAgent):
             )
 
             user_prompt_parts = [
-                f"Write exactly {slide_count} slide(s) for this batch.\n",
+                f"Return exactly ONE JSON object whose `slides` array contains exactly {slide_count} slide(s).\n",
+                "",
                 "SLIDE ASSIGNMENTS:",
                 blueprint_block,
                 "",

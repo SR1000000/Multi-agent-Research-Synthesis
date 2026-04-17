@@ -16,8 +16,7 @@ class BulletPoint(BaseModel):
         description='Optional sub-bullet points as plain strings (NOT objects). Example: ["Detail A", "Detail B"]',
     )
     content_type: Literal["insight", "evidence", "statistic", "example", "caveat"] = Field(default="insight", description="Semantic type of this bullet point")
-    bold_phrases: List[str] = Field(default_factory=list, description="List of substrings within the text to be rendered as bold")
-    
+
     @field_validator("sub_bullets", mode="before")
     @classmethod
     def coerce_sub_bullets(cls, v: list) -> list[str]:
