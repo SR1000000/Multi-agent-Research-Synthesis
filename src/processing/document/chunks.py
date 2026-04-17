@@ -60,17 +60,21 @@ class MarkdownChunker:
         final_docs = self._char_splitter.split_documents(header_docs)
 
         chunks: List[ExtractedChunk] = []
-        for doc in final_docs:
+        for idx, doc in enumerate(final_docs):
             header_stack = self._extract_header_stack(doc.metadata)
             contextualized = self._contextualize(header_stack, doc.page_content)
+            meta_data = {
+                "chunk_index": idx,
+                "splitter": "markdown_header_recursive",
+            }
+            if header_stack:
+                meta_data["headings"] = header_stack
             chunks.append(
                 ExtractedChunk(
+                    id=f"chunk_{idx:04d}",
                     text=doc.page_content,
+                    meta_data=meta_data,
                     contextualized_text=contextualized,
-                    headings=header_stack,
-                    captions=[],
-                    page_numbers=[],  # filled downstream by the OCR backend
-                    bboxes=[],
                 )
             )
 

@@ -14,6 +14,22 @@ from src.processing.document.schema import (
     PaperMetadata,
 )
 
+
+def _load_ordered_chunk_rows(db, doc_id: str):
+    """Return chunk rows in document order, falling back to insertion order."""
+    return db._conn.execute(
+        """
+        SELECT *
+        FROM text_chunks
+        WHERE document_id = ?
+        ORDER BY
+            COALESCE(CAST(json_extract(meta_data, '$.chunk_index') AS INTEGER), rowid),
+            rowid
+        """,
+        (doc_id,),
+    ).fetchall()
+
+
 def document_exists(db, content_hash: str) -> bool:
     """Returns True if a document with the given content hash already exists."""
     row = db._conn.execute(
@@ -208,10 +224,7 @@ def load_document(db, doc_id: str) -> ExtractionResult | None:
     if doc_row["paper_metadata"]:
         paper_metadata = PaperMetadata(**json.loads(doc_row["paper_metadata"]))
 
-    chunk_rows = db._conn.execute(
-        "SELECT * FROM text_chunks WHERE document_id = ? ORDER BY COALESCE(CAST(json_extract(meta_data, '$.chunk_index') AS INTEGER), id)",
-        (doc_id,)
-    ).fetchall()
+    chunk_rows = _load_ordered_chunk_rows(db, doc_id)
     source_chunks = [
         ExtractedChunk(
             id=row["id"],
@@ -270,21 +283,10 @@ def get_table(db, table_id: str) -> ExtractedTable | None:
 
 def get_chunks_for_dispatch(db, doc_id: str) -> list[dict]:
     """
-    Return all text chunks for a document ordered by chunk_index, as lightweight
+    Return all text chunks for a document in stable document order, as lightweight
     dicts with keys: id, text, meta_data (parsed dict).
     """
-    rows = db._conn.execute(
-        """
-        SELECT id, text, meta_data
-        FROM   text_chunks
-        WHERE  document_id = ?
-        ORDER BY COALESCE(
-            CAST(json_extract(meta_data, '$.chunk_index') AS INTEGER),
-            rowid
-        )
-        """,
-        (doc_id,),
-    ).fetchall()
+    rows = _load_ordered_chunk_rows(db, doc_id)
 
     return [
         {

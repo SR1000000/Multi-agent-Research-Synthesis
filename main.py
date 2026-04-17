@@ -29,10 +29,8 @@ DEFAULT_QUERY      = "Explain this paper to an audience of laypeople"
 DEFAULT_SOURCE_PDF = "./.samples/Transformers.pdf"
 
 _PROCESSOR_BACKEND_ALIASES = {
-    "llama":      "llama_parse",
+    "llama": "llama_parse",
     "llama_parse": "llama_parse",
-    "docling":    "docling",
-    "lighton":    "lighton",
 }
 
 _TEXT_SPLITTER_ALIASES = {
@@ -70,17 +68,21 @@ def _parse_args() -> argparse.Namespace:
         "--processor",
         type=str,
         choices=sorted(_PROCESSOR_BACKEND_ALIASES.keys()),
-        default="llama",
-        help="Document processor backend (default: %(default)s)",
+        default="llama_parse",
+        help=(
+            "Document processor backend. `llama_parse` is the only supported "
+            "processor in the current build; `llama` is accepted as a legacy alias "
+            "(default: %(default)s)"
+        ),
     )
     parser.add_argument(
         "--text-splitter",
         type=str,
         choices=sorted(_TEXT_SPLITTER_ALIASES.keys()),
-        default="none",
+        default="semantic",
         help=(
-            "Text splitter backend for document chunking "
-            "(defaults to 'semantic' for llama_parse) (default: %(default)s)"
+            "Text splitter backend for llama_parse document chunking "
+            "(default: %(default)s)"
         ),
     )
     parser.add_argument(
@@ -178,10 +180,6 @@ def _process_document(
     processor_backend = _PROCESSOR_BACKEND_ALIASES[args.processor]
     chunker_name      = _TEXT_SPLITTER_ALIASES[args.text_splitter]
 
-    # default to 'semantic' chunking if using LlamaParser and no specific splitter chosen
-    if not chunker_name and processor_backend == "llama_parse":
-        chunker_name = "semantic"
-
     text_chunker = get_text_chunker(chunker_name) if chunker_name else None
     processor = DocProcessor(
         backend=processor_backend,
@@ -267,6 +265,17 @@ def _partial_deck_warnings(messages: list[str]) -> list[str]:
         msg for msg in messages
         if "RETRIES EXHAUSTED" in msg or "PARTIAL DECK" in msg
     ]
+
+
+def _report_final_warnings(messages: list[str]) -> None:
+    """Print a compact end-of-run warning summary for partial deck outcomes."""
+    warnings = _partial_deck_warnings(messages)
+    if not warnings:
+        return
+
+    print("\n--- Final Warnings ---")
+    for msg in warnings:
+        print(msg)
 
 
 def main() -> None:
@@ -358,6 +367,8 @@ def main() -> None:
             print(f"\n[export] Presentation saved → {out}")
         except ValueError as exc:
             print(f"\n[export] Could not generate PPTX: {exc}")
+
+        _report_final_warnings(final_state.get("messages", []))
 
     if logger:
         logger.flush()
