@@ -130,6 +130,9 @@ class AgentLogger:
         validation_error: Exception,
         offending_json: str,
         model: str | None = None,
+        stage: str | None = None,
+        structured_output: dict[str, Any] | None = None,
+        healed_json_changed: bool | None = None,
     ) -> Path | None:
         """Write a structured validation-error dump to VALIDATION_ERRORS_DIR.
 
@@ -147,6 +150,9 @@ class AgentLogger:
                 "attempt": attempt + 1,
                 "max_attempts": max_attempts,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "stage": stage,
+                "structured_output": structured_output,
+                "healed_json_changed": healed_json_changed,
                 "error_summary": str(validation_error),
                 "offending_json": offending_json,
             }

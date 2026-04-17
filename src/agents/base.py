@@ -1,10 +1,29 @@
 import json
-from typing import TypeVar
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from typing import Any, TypeVar
 from pydantic import BaseModel, ValidationError
-from src.llm.llm import get_llm, _strip_think_block, _strip_code_fence, _heal_json, DEFAULT_MODEL_NAME, LLMCallError, current_agent_label, current_session_id
+from src.llm.llm import (
+    get_llm,
+    _strip_think_block,
+    _strip_code_fence,
+    _heal_json,
+    DEFAULT_MODEL_NAME,
+    LLMCallError,
+    StructuredOutputMetadata,
+    current_agent_label,
+    current_session_id,
+)
 from src.logging.logger import AgentLogger
 
 T = TypeVar("T", bound=BaseModel)
+
+
+@dataclass
+class StructuredOutputResult:
+    parsed: BaseModel
+    metadata: StructuredOutputMetadata
+    attempts_used: int
 
 
 # ---------------------------------------------------------------------------
@@ -158,45 +177,36 @@ dense research data into high-impact, professional presentation slides.
 # independently of the persona.
 # ---------------------------------------------------------------------------
 
-SLIDE_OUTPUT_FORMAT = """
-### REQUIRED ROOT JSON SHAPE:
-- Return exactly ONE top-level JSON object with this structure:
-  `{"slides": [<slide1>, <slide2>, ...]}`
-- The top-level key MUST be `"slides"`.
-- The value of `"slides"` MUST be an array containing exactly the requested number of slide objects.
-- Do NOT return multiple top-level objects.
-- Do NOT return newline-delimited JSON.
-- Do NOT return a top-level array.
-- Do NOT include any text before or after the JSON object.
-
-### FIELD GUIDANCE:
-- **`key_message`**: Write one crisp sentence stating what the audience should understand \
-  after this slide. This is the thesis of the slide — not a summary of bullet points.
-- **`title`**: Use punchy, "active" headings (e.g., "Accuracy Jumps 40%" not "Accuracy Results").
-- **`bullets`**: Produce 3-5 `BulletPoint` objects. Each object MUST use these exact field names:
-  - `"text"` — the bullet content string. \
-    Use `**phrase**` to bold 0-2 key terms or statistics per bullet \
-    (e.g., `"Accuracy improves by **47%** over the baseline"`). Only bold genuinely critical terms.
-  - `"content_type"` — exactly one of: `"insight"`, `"evidence"`, `"statistic"`, `"example"`, `"caveat"`.
-  - `"sub_bullets"` — a flat list of plain strings for supporting detail (NOT objects).
-- **`speaker_notes`**: Write in a professional, conversational tone. Include context, nuance, \
-  and supporting evidence too detailed for the slide body. Cover each bullet point.
-
-### CONSTRAINTS:
-- All information must be strictly grounded in the provided research chunks.
-- Avoid academic jargon unless the terminology is important and should be emphasized.
-- Write exactly the number of slides specified — no more, no fewer.
-
-### MARKDOWN & EQUATIONS:
-- Bullet `text` fields support Markdown formatting and LaTeX math.
-- Use LaTeX for important equations:
-  - Inline: `$E = mc^2$` or `$O(n^2)$`
-  - Display (standalone): `$$\\\\text{Attention}(Q,K,V) = \\\\text{softmax}\\\\!\\\\left(\\\\frac{QK^T}{\\\\sqrt{d_k}}\\\\right)V$$`
-- Place display equations as the sole content of a `sub_bullet`.
-- Include an equation only when it is central to the slide's `key_message`.
-- **JSON escaping**: Every LaTeX backslash MUST be written as `\\\\` inside JSON strings \
-  (e.g. `\\\\epsilon`, `\\\\log`, `\\\\text`). A single backslash is invalid JSON and will be rejected.
-"""
+def schema_prompt_contract(
+    schema: type[BaseModel],
+    *,
+    root_key: str | None = None,
+    extra_rules: list[str] | None = None,
+) -> str:
+    """Build a concise prompt contract from a Pydantic schema."""
+    schema_json = json.dumps(schema.model_json_schema(), indent=2)
+    lines = [
+        "### REQUIRED ROOT JSON SHAPE:",
+        "- Return exactly ONE top-level JSON object matching the schema below.",
+    ]
+    if root_key:
+        lines.append(f'- The top-level key MUST be `{root_key}`.')
+    lines.extend([
+        "- Do NOT return multiple top-level objects.",
+        "- Do NOT return newline-delimited JSON.",
+        "- Do NOT return a top-level array.",
+        "- Do NOT include any text before or after the JSON object.",
+    ])
+    if extra_rules:
+        lines.append("")
+        lines.append("### ADDITIONAL RULES:")
+        lines.extend(f"- {rule}" for rule in extra_rules)
+    lines.extend([
+        "",
+        "### EXACT JSON SCHEMA:",
+        schema_json,
+    ])
+    return "\n".join(lines)
 
 
 AGENT_ROLES = {
@@ -214,6 +224,7 @@ class BaseLLMAgent:
         self._log_display = log_display if log_display is not None else role
         self._logger = AgentLogger()
         self._last_model_used: str | None = None  # Used for logging validation errors
+        self._last_structured_output_metadata = StructuredOutputMetadata()
 
     def _set_session_id(self, state: dict) -> None:
         """Propagate session_id from the node's state into the module-level ContextVar.
@@ -287,9 +298,146 @@ class BaseLLMAgent:
             current_agent_label.reset(token)
         actual_model = llm.last_model_used or (model or DEFAULT_MODEL_NAME)
         self._last_model_used = actual_model
+        self._last_structured_output_metadata = (
+            llm.last_structured_output_metadata or StructuredOutputMetadata()
+        )
         label = f"default ({actual_model})" if model is None else f"{model} ({actual_model})"
-        self._logger.log(f"[{self._log_display}] Invoked LLM (model: {label})")
+        metadata = self._last_structured_output_metadata
+        if schema is None or metadata.mode_used is None:
+            self._logger.log(f"[{self._log_display}] Invoked LLM (model: {label})")
+        else:
+            fallback_note = (
+                f", fallback={metadata.fallback_reason}"
+                if metadata.fallback_reason
+                else ""
+            )
+            self._logger.log(
+                f"[{self._log_display}] Invoked LLM (model: {label}, "
+                f"structured_output={metadata.mode_used}{fallback_note})"
+            )
         return content
+
+    def _build_structured_retry_turns(
+        self,
+        current_turns: list[dict],
+        clean_response: str,
+        error_summary: str,
+        schema: type[BaseModel],
+    ) -> list[dict]:
+        return [
+            *current_turns,
+            {"role": "assistant", "content": clean_response},
+            {"role": "user", "content": (
+                f"Your previous response failed validation:\n{error_summary}\n\n"
+                f"Required JSON schema:\n{json.dumps(schema.model_json_schema(), indent=2)}\n\n"
+                "Respond with ONLY a valid JSON object that matches the schema above. "
+                "Do NOT wrap in markdown fences, add explanations, or include any text outside the JSON."
+            )},
+        ]
+
+    def _call_structured(
+        self,
+        turns: list[dict],
+        schema: type[T],
+        *,
+        max_retries: int = 2,
+        model: str | None = None,
+        llm_config_override: dict | None = None,
+        runtime_validator: Callable[[T], list[str]] | None = None,
+    ) -> StructuredOutputResult:
+        current_turns = list(turns)
+        last_error: Exception | None = None
+
+        for attempt in range(max_retries + 1):
+            raw = self._call_raw(
+                current_turns,
+                schema=schema,
+                model=model,
+                llm_config_override=llm_config_override,
+            )
+            clean = _strip_code_fence(_strip_think_block(raw))
+            healed = _heal_json(clean, schema)
+            healed_changed = healed != clean
+            metadata = self._last_structured_output_metadata
+
+            try:
+                parsed = schema.model_validate_json(healed)
+            except ValidationError as exc:
+                last_error = exc
+                retry_note = (
+                    " Retrying with correction prompt."
+                    if attempt < max_retries
+                    else " No retries left; propagating error."
+                )
+                dump_path = self._logger.dump_validation_error(
+                    self._log_display,
+                    attempt,
+                    max_retries + 1,
+                    exc,
+                    clean,
+                    model=self._last_model_used,
+                    stage="schema_validation",
+                    structured_output=asdict(metadata),
+                    healed_json_changed=healed_changed,
+                )
+                location = f" See: {dump_path}" if dump_path else ""
+                self._logger.log(
+                    f"[{self._log_display}] Schema validation error "
+                    f"(attempt {attempt + 1}/{max_retries + 1}).{retry_note}{location}"
+                )
+                if attempt == max_retries:
+                    break
+                current_turns = self._build_structured_retry_turns(
+                    current_turns,
+                    clean,
+                    str(exc),
+                    schema,
+                )
+                continue
+
+            if runtime_validator is not None:
+                failures = runtime_validator(parsed)
+                if failures:
+                    failure_summary = "\n".join(f"  - {failure}" for failure in failures)
+                    last_error = ValueError(failure_summary)
+                    retry_note = (
+                        " Retrying with correction prompt."
+                        if attempt < max_retries
+                        else " No retries left; propagating error."
+                    )
+                    dump_path = self._logger.dump_validation_error(
+                        self._log_display,
+                        attempt,
+                        max_retries + 1,
+                        ValueError(failure_summary),
+                        clean,
+                        model=self._last_model_used,
+                        stage="runtime_validation",
+                        structured_output=asdict(metadata),
+                        healed_json_changed=healed_changed,
+                    )
+                    location = f" See: {dump_path}" if dump_path else ""
+                    self._logger.log(
+                        f"[{self._log_display}] Runtime validation error "
+                        f"(attempt {attempt + 1}/{max_retries + 1}).{retry_note}{location}"
+                    )
+                    if attempt == max_retries:
+                        break
+                    current_turns = self._build_structured_retry_turns(
+                        current_turns,
+                        parsed.model_dump_json(),
+                        failure_summary,
+                        schema,
+                    )
+                    continue
+
+            return StructuredOutputResult(
+                parsed=parsed,
+                metadata=metadata,
+                attempts_used=attempt + 1,
+            )
+
+        raise last_error
 
     def _call(
         self,
@@ -314,43 +462,10 @@ class BaseLLMAgent:
         if schema is None:
             raw = self._call_raw(turns, schema=None, model=model, llm_config_override=llm_config_override)
             return _strip_think_block(raw)
-
-        current_turns = list(turns)
-        last_error: ValidationError | None = None
-
-        for attempt in range(max_retries + 1):
-            raw = self._call_raw(current_turns, schema=schema, model=model, llm_config_override=llm_config_override)
-            clean = _strip_code_fence(_strip_think_block(raw))
-            healed = _heal_json(clean, schema)
-            try:
-                return schema.model_validate_json(healed)
-            except ValidationError as e:
-                last_error = e
-                retry_note = (
-                    " Retrying with correction prompt."
-                    if attempt < max_retries
-                    else " No retries left; propagating error."
-                )
-                dump_path = self._logger.dump_validation_error(
-                    self._log_display, attempt, max_retries + 1, e, clean,
-                    model=self._last_model_used,
-                )
-                location = f" See: {dump_path}" if dump_path else ""
-                self._logger.log(
-                    f"[{self._log_display}] Validation error "
-                    f"(attempt {attempt + 1}/{max_retries + 1}).{retry_note}{location}"
-                )
-                if attempt == max_retries:
-                    break
-                current_turns = [
-                    *current_turns,
-                    {"role": "assistant", "content": clean},
-                    {"role": "user", "content": (
-                        f"Your previous response failed schema validation:\n{last_error}\n\n"
-                        f"Required JSON schema:\n{json.dumps(schema.model_json_schema(), indent=2)}\n\n"
-                        "Respond with ONLY a valid JSON object that matches the schema above. "
-                        "Do NOT wrap in markdown fences, add explanations, or include any text outside the JSON."
-                    )},
-                ]
-
-        raise last_error
+        return self._call_structured(
+            turns,
+            schema,
+            max_retries=max_retries,
+            model=model,
+            llm_config_override=llm_config_override,
+        ).parsed

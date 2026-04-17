@@ -1,5 +1,6 @@
+import json
 from typing import List, Literal, Optional
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, create_model, field_validator
 
 # LLMs frequently output "content" instead of "text" for bullet fields.
 # AliasChoices makes the schema accept either key without a retried call.
@@ -52,6 +53,49 @@ class ProtoSlide(BaseModel):
     slide_number: int = Field(description="The slide number")
     content: SlideContent = Field(description="The structured content of the slide")
     chunk_references: List[str] = Field(description="List of exact text chunk IDs from research.db that this slide covers")
+
+
+def make_slide_batch_model(slide_count: int) -> type[BaseModel]:
+    """Return a schema for a slide batch with an exact number of slides."""
+    return create_model(
+        f"SlideBatch_{slide_count}",
+        slides=(
+            List[SlideContent],
+            Field(
+                description=f"The synthesized slides for this batch. Must contain exactly {slide_count} slides.",
+                min_length=slide_count,
+                max_length=slide_count,
+            ),
+        ),
+    )
+
+
+def slide_output_prompt_contract(slide_count: int) -> str:
+    """Return schema-derived prompt guidance for slide generation."""
+    batch_model = make_slide_batch_model(slide_count)
+    schema_json = json.dumps(batch_model.model_json_schema(), indent=2)
+    rules = [
+        f'Return exactly {slide_count} slide objects in the top-level `slides` array.',
+        "All information must be strictly grounded in the provided research chunks.",
+        "Use Markdown and LaTeX only when they materially improve clarity.",
+        "Display equations should appear as the sole content of a sub_bullet string.",
+    ]
+    lines = [
+        "### REQUIRED ROOT JSON SHAPE:",
+        "- Return exactly ONE top-level JSON object matching the schema below.",
+        '- The top-level key MUST be `slides`.',
+        "- Do NOT return multiple top-level objects.",
+        "- Do NOT return newline-delimited JSON.",
+        "- Do NOT return a top-level array.",
+        "- Do NOT include any text before or after the JSON object.",
+        "",
+        "### ADDITIONAL RULES:",
+        *[f"- {rule}" for rule in rules],
+        "",
+        "### EXACT JSON SCHEMA:",
+        schema_json,
+    ]
+    return "\n".join(lines)
 
 CREATE_PROTO_SLIDES_TABLE = """
 CREATE TABLE IF NOT EXISTS proto_slides (
