@@ -331,7 +331,7 @@ class PlannerAgent(BaseLLMAgent):
         msg = (
             f"[Planner] Plan created: {total_slides} slides across "
             f"{len(presentation_plan.slide_groups)} group(s). "
-            f"Thesis: {presentation_plan.thesis[:80]}..."
+            f"Thesis: {presentation_plan.thesis}"
         )
         self._logger.log(msg)
 
