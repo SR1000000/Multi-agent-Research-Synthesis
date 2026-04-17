@@ -17,18 +17,8 @@ from typing import List, TypedDict
 from langgraph.types import Command
 
 from src.agents.base import BaseLLMAgent, SLIDE_OUTPUT_FORMAT
-from src.memory.research.schema import ProtoSlide, SlideContent
+from src.memory.research.schema import ProtoSlide, make_slide_batch_model, slide_output_prompt_contract
 from src.memory.research.database import ResearchDatabase
-
-
-# ---------------------------------------------------------------------------
-# LLM output schema
-# ---------------------------------------------------------------------------
-
-class SlideGenerationOutput(BaseModel):
-    slides: List[SlideContent] = Field(
-        description="The synthesized slides for this batch"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +137,13 @@ class SlideWriterAgent(BaseLLMAgent):
 
             user_prompt_parts += [
                 "",
-                SLIDE_OUTPUT_FORMAT,
+                slide_output_prompt_contract(slide_count),
+                "",
+                "### SEMANTIC GUIDANCE:",
+                "- Keep each slide focused on one primary takeaway.",
+                "- Choose the layout that best supports the evidence and intended narrative role.",
+                "- Speaker notes should be professional, conversational, and cover the core bullets with added context.",
+                "- Avoid academic jargon unless the original terminology is important to preserve.",
                 "",
                 "SOURCE MATERIAL (research chunks):",
                 combined_text,
@@ -159,16 +155,29 @@ class SlideWriterAgent(BaseLLMAgent):
             # ------------------------------------------------------------------
             # 3. Call LLM
             # ------------------------------------------------------------------
-            result: SlideGenerationOutput = self._call(
-                turns, schema=SlideGenerationOutput, model="slides"
+            output_schema = make_slide_batch_model(slide_count)
+            result = self._call_structured(
+                turns,
+                output_schema,
+                model="slides",
+                runtime_validator=lambda parsed: [] if len(parsed.slides) == slide_count else [
+                    f"Expected exactly {slide_count} slides but received {len(parsed.slides)}."
+                ],
             )
+            slides = result.parsed.slides
+
+            if len(slides) != slide_count:
+                raise ValueError(
+                    f"Expected exactly {slide_count} slides but received {len(slides)}."
+                )
 
             # ------------------------------------------------------------------
             # 4. Save proto-slides to wip.db
             # ------------------------------------------------------------------
             saved_count = 0
             with WIPDatabase() as wip_db:
-                for slide_content, bp_dict in zip(result.slides, slide_blueprints):
+                for idx, bp_dict in enumerate(slide_blueprints):
+                    slide_content = slides[idx]
                     slide_num = bp_dict.get("slide_number", saved_count + 1)
                     proto = ProtoSlide(
                         slide_number=slide_num,
