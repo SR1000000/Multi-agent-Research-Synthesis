@@ -46,14 +46,14 @@ class AgentLogger:
         self._log_langfuse_auth_status()
 
     def _log_langfuse_auth_status(self) -> None:
-        """Log whether Langfuse credentials work (``auth_check``), or why the check was skipped."""
+        """Log whether Langfuse credentials work (``auth_check``) only if they fail."""
         client = self.client
+        # If explicitly disabled, stay silent
         if os.environ.get("LANGFUSE_ENABLED", "").lower() == "false":
-            self.log("Langfuse: auth check skipped (LANGFUSE_ENABLED=false)", level="info")
             return
         if not getattr(client, "enabled", True):
-            self.log("Langfuse: auth check skipped (client disabled or missing keys)", level="info")
             return
+
         try:
             # The Langfuse SDK may print an "Unauthorized..." line directly to stdout/stderr
             # on auth failures. Suppress that so we only emit our structured log line.
@@ -64,9 +64,8 @@ class AgentLogger:
             msg = str(exc).split("\n")[0][:200]
             self.log(f"Langfuse: auth check failed — {type(exc).__name__}: {msg}", level="warning")
             return
-        if ok:
-            self.log("Langfuse: auth check passed", level="info")
-        else:
+
+        if not ok:
             self.log("Langfuse: auth check returned False (credentials not accepted)", level="warning")
 
     def get_langgraph_handler(self, **kwargs) -> CallbackHandler:
