@@ -1,15 +1,20 @@
+# Active pipeline nodes
 from .planner import planner_node
+from .plan_executor import plan_executor_node
+from .slide_writer import slide_writer_node
+
+# Dormant nodes (not wired into the graph; preserved for future reactivation)
 from .writer import writer_node
 from .critic import critic_node
 from .supervisor import supervisor_node
-from .parse_supervisor import parse_supervisor_node
-from .research_to_slide import research_to_slide_node
 
 __all__ = [
+    # Active
     "planner_node",
+    "plan_executor_node",
+    "slide_writer_node",
+    # Dormant
     "writer_node",
     "critic_node",
     "supervisor_node",
-    "parse_supervisor_node",
-    "research_to_slide_node",
 ]

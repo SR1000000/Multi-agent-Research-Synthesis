@@ -84,6 +84,14 @@ class LLMConfig:
 GLOBAL_CONFIG = LLMConfig()
 
 
+@dataclass
+class StructuredOutputMetadata:
+    requested_mode: str | None = None
+    mode_used: str | None = None
+    used_native_schema: bool = False
+    fallback_reason: str | None = None
+
+
 class LLMCallError(RuntimeError):
     """Raised when the LiteLLM router exhausts all retries/fallbacks."""
     def __init__(self, model: str, cause: Exception) -> None:
@@ -221,6 +229,30 @@ def _fix_latex_escapes(text: str) -> str:
     return _INVALID_JSON_ESCAPE.sub(r'\\\\', text)
 
 
+def _parse_first_json_value(text: str) -> Any | None:
+    """Parse the first JSON value and ignore any trailing junk."""
+    try:
+        value, _end = json.JSONDecoder().raw_decode(text)
+    except json.JSONDecodeError:
+        return None
+    return value
+
+
+def _unwrap_schema_wrapper(candidate: Any, schema: type[BaseModel]) -> Any:
+    """Unwrap a lone outer key when the inner object clearly matches the schema better."""
+    if not isinstance(candidate, dict) or len(candidate) != 1:
+        return candidate
+
+    inner = next(iter(candidate.values()))
+    if not isinstance(inner, dict):
+        return candidate
+
+    schema_keys = set(schema.model_fields)
+    outer_overlap = len(set(candidate) & schema_keys)
+    inner_overlap = len(set(inner) & schema_keys)
+    return inner if inner_overlap > outer_overlap else candidate
+
+
 def _heal_json(raw: str, schema: type[BaseModel]) -> str:
 
     list_fields = [
@@ -230,29 +262,64 @@ def _heal_json(raw: str, schema: type[BaseModel]) -> str:
     ]
     key = list_fields[0] if len(list_fields) == 1 else None
     if not key:
-        return raw
+        key = None
 
     stripped = _fix_latex_escapes(raw.strip())
-    try:
-        candidate = json.loads(stripped)
-        if isinstance(candidate, dict) and key in candidate:
-            return stripped
+    candidate = _parse_first_json_value(stripped)
+    if candidate is not None:
+        candidate = _unwrap_schema_wrapper(candidate, schema)
         if isinstance(candidate, dict):
+            if key is None or key in candidate:
+                return json.dumps(candidate)
             return json.dumps({key: [candidate]})
-        if isinstance(candidate, list):
+        if isinstance(candidate, list) and key is not None:
             return json.dumps({key: candidate})
         return raw
-    except json.JSONDecodeError:
-        pass
 
-    try:
-        items = json.loads(f"[{stripped}]")
-        if isinstance(items, list) and all(isinstance(i, dict) for i in items):
-            return json.dumps({key: items})
-    except json.JSONDecodeError:
-        pass
+    if key is not None:
+        try:
+            items = json.loads(f"[{stripped}]")
+            if isinstance(items, list) and all(isinstance(i, dict) for i in items):
+                return json.dumps({key: items})
+        except json.JSONDecodeError:
+            pass
 
     return raw
+
+
+def build_json_schema_response_format(schema: type[BaseModel]) -> dict[str, Any]:
+    """Build a LiteLLM/OpenAI-style JSON Schema response format payload."""
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": schema.__name__,
+            "schema": schema.model_json_schema(),
+            "strict": True,
+        },
+    }
+
+
+def should_fallback_to_json_object(exc: Exception) -> bool:
+    """Return True when a provider likely rejected native JSON Schema mode."""
+    message = str(exc).lower()
+    fallback_markers = (
+        "json_schema",
+        "response schema",
+        "response_schema",
+        "response format",
+        "response_format",
+        "structured output",
+        "structured-output",
+        "unsupported",
+        "not supported",
+        "unknown parameter",
+        "invalid parameter",
+        "invalid value",
+        "extra_forbidden",
+        "extra inputs are not permitted",
+        "extra inputs not permitted",
+    )
+    return any(marker in message for marker in fallback_markers)
 
 
 class LiteLLMProvider:
@@ -262,6 +329,7 @@ class LiteLLMProvider:
             init_from_config()
         self._router = ROUTER
         self.last_model_used: str | None = None
+        self.last_structured_output_metadata: StructuredOutputMetadata | None = None
 
     def complete(
         self,
@@ -283,8 +351,7 @@ class LiteLLMProvider:
             kw["temperature"] = t
         if mt is not None:
             kw["max_tokens"] = mt
-        if schema is not None:
-            kw["response_format"] = {"type": "json_object"}
+        self.last_structured_output_metadata = None
 
         # Inject session_id into LiteLLM metadata so the built-in Langfuse
         # callback tags every litellm-completion trace with the current session.
@@ -294,7 +361,32 @@ class LiteLLMProvider:
             kw["metadata"] = {"session_id": session_id, **existing_meta}
 
         try:
-            resp = self._router.completion(**kw)
+            if schema is None:
+                resp = self._router.completion(**kw)
+                self.last_structured_output_metadata = StructuredOutputMetadata()
+            else:
+                native_kw = dict(kw)
+                native_kw["response_format"] = build_json_schema_response_format(schema)
+                try:
+                    resp = self._router.completion(**native_kw)
+                    self.last_structured_output_metadata = StructuredOutputMetadata(
+                        requested_mode="native_schema",
+                        mode_used="native_schema",
+                        used_native_schema=True,
+                    )
+                except Exception as native_exc:
+                    if not should_fallback_to_json_object(native_exc):
+                        raise native_exc
+
+                    json_object_kw = dict(kw)
+                    json_object_kw["response_format"] = {"type": "json_object"}
+                    resp = self._router.completion(**json_object_kw)
+                    self.last_structured_output_metadata = StructuredOutputMetadata(
+                        requested_mode="native_schema",
+                        mode_used="json_object",
+                        used_native_schema=False,
+                        fallback_reason=str(native_exc).split("\n")[0][:200],
+                    )
         except Exception as exc:
             raise LLMCallError(kw["model"], exc) from None
         self.last_model_used = getattr(resp, "model", None) or kw["model"]

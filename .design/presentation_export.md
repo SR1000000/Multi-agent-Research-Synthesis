@@ -6,8 +6,8 @@ This document describes the architecture for converting intermediate slide repre
 
 Slide generation is a two-phase process:
 
-1.  **Synthesis Phase**: The Multi-agent Graph (`src.graph`) analyzes research data and populates `wip.db` with `ProtoSlide` objects.
-2.  **Export Phase**: `PandocBuilder` reads `wip.db`, renders each slide as Pandoc Markdown, and converts the full deck to `.pptx` via the Pandoc binary (bundled with the `pypandoc_binary` wheel).
+1.  **Synthesis Phase**: The Multi-agent Graph (`src.graph`) analyzes research data and populates the `proto_slides` table in `research.db` with `ProtoSlide` objects.
+2.  **Export Phase**: `PandocBuilder` reads `research.db`, renders each slide as Pandoc Markdown, and converts the full deck to `.pptx` via the Pandoc binary (bundled with the `pypandoc_binary` wheel).
 
 ## Data Contract: Proto-Slides
 
@@ -75,7 +75,7 @@ The `tex_math_dollars` Markdown extension enables `$...$` (inline) and `$$...$$`
 
 ### Markdown & LaTeX in Bullet Text
 
-The `BulletPoint.text` field and `sub_bullets` strings support Markdown and LaTeX math. The slide generation agents (`research_to_slide`) are instructed to use these when presenting important equations:
+The `BulletPoint.text` field and `sub_bullets` strings support Markdown and LaTeX math. The slide generation agents (`slide_writer`) are instructed to use these when presenting important equations:
 
 *   **Inline math** — for formulas referenced within a sentence:
     ```
