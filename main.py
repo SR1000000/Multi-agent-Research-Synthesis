@@ -248,6 +248,14 @@ def _sanitize_filename(name: str) -> str:
     return safe[:150]
 
 
+def _partial_deck_warnings(messages: list[str]) -> list[str]:
+    """Extract final warnings that indicate skipped groups or a partial deck export."""
+    return [
+        msg for msg in messages
+        if "RETRIES EXHAUSTED" in msg or "PARTIAL DECK" in msg
+    ]
+
+
 def main() -> None:
     args       = _parse_args()
     logger     = AgentLogger()
@@ -318,6 +326,12 @@ def main() -> None:
     print("\n--- Agent Log ---")
     for msg in final_state.get("messages", []):
         print(msg)
+
+    partial_warnings = _partial_deck_warnings(final_state.get("messages", []))
+    if partial_warnings:
+        print("\n[warning] Export will proceed with a partial deck.")
+        for msg in partial_warnings:
+            print(msg)
 
     # ------------------------------------------------------------------
     # Export PPTX

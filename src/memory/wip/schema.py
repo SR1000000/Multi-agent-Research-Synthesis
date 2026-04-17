@@ -52,7 +52,11 @@ class SlideContent(BaseModel):
 class ProtoSlide(BaseModel):
     slide_number: int = Field(description="The slide number")
     content: SlideContent = Field(description="The structured content of the slide")
-    chunk_references: List[str] = Field(description="List of exact text chunk IDs from research.db that this slide covers")
+    chunk_references: List[str] = Field(
+        description=(
+            "List of exact text chunk IDs from research.db assigned to and supporting this slide."
+        )
+    )
 
 
 def make_slide_batch_model(slide_count: int) -> type[BaseModel]:
