@@ -42,7 +42,7 @@ def _parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         metavar="PATH",
-        help="YAML file with providers and LiteLLM Router settings (default: src/llm/config.yaml)",
+        help="YAML file with providers and LiteLLM Router settings (default: src/llm/config.dev.yaml)",
     )
     parser.add_argument(
         "--pdf",
