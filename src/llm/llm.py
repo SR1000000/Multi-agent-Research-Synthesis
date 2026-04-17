@@ -4,6 +4,7 @@ import contextvars
 import json
 import os
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar, get_origin
@@ -23,6 +24,7 @@ T = TypeVar("T", bound=BaseModel)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.dev.yaml"
+_SAMPLE_CONFIG_PATH = Path(__file__).resolve().parent / "config.sample.yaml"
 load_dotenv(dotenv_path=str(_PROJECT_ROOT / ".env"))
 
 # Langfuse Python SDK v2 reads LANGFUSE_HOST for the API URL, not LANGFUSE_BASE_URL.
@@ -187,6 +189,17 @@ def init_from_config(config_path: str | None = None) -> None:
     global ROUTER, DEFAULT_MODEL_NAME
 
     path = Path(config_path) if config_path else _DEFAULT_CONFIG_PATH
+    if path == _DEFAULT_CONFIG_PATH and not path.exists():
+        if not _SAMPLE_CONFIG_PATH.exists():
+            raise FileNotFoundError(
+                f"Missing LLM config at {path} and sample config at {_SAMPLE_CONFIG_PATH}"
+            )
+        shutil.copyfile(_SAMPLE_CONFIG_PATH, path)
+        _agent_logger.log(
+            f"[LLM] Seeded missing config from sample: {path.name}",
+            level="info",
+        )
+
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 

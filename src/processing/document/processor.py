@@ -6,24 +6,15 @@ from src.logging.logger import AgentLogger
 from src.processing.chunker import TextChunkerProvider
 
 from .backend_base import OCRBackend
-from .backends import DoclingBackend, LightOnOCRBackend, LlamaParseBackend, MarkerBackend, ChandraOCRBackend, GLMOCRBackend
+from .backends import LlamaParseBackend
 from src.processing.embedder.base import TextEmbedder
 
 from .schema import ExtractedChunk, ExtractionResult, Contextualizer
 
-BACKEND_REGISTRY: dict[str, type[OCRBackend]] = {
+BACKEND_REGISTRY: dict[str, type[OCRBackend] | None] = {
     "llama_parse": LlamaParseBackend,
-    "docling": DoclingBackend,
-    "lighton": LightOnOCRBackend,
 }
-if DoclingBackend:
-    BACKEND_REGISTRY["docling"] = DoclingBackend
-if ChandraOCRBackend:
-    BACKEND_REGISTRY["chandra"] = ChandraOCRBackend
-if GLMOCRBackend:
-    BACKEND_REGISTRY["glm"] = GLMOCRBackend
-if MarkerBackend:
-    BACKEND_REGISTRY["marker"] = MarkerBackend
+ARCHIVAL_BACKENDS = ("docling", "lighton", "chandra", "glm", "marker")
 
 
 def get_ocr_backend(
@@ -35,6 +26,16 @@ def get_ocr_backend(
     """Instantiate an OCR backend by name."""
     cls = BACKEND_REGISTRY.get(name)
     if cls is None:
+        if name == "llama_parse":
+            raise ValueError(
+                "OCR backend 'llama_parse' is not available in this environment. "
+                "Install the current build dependencies for the supported processor."
+            )
+        if name in ARCHIVAL_BACKENDS:
+            raise ValueError(
+                f"OCR backend '{name}' is retained for archival/reference purposes only. "
+                "The current build only supports 'llama_parse'."
+            )
         raise ValueError(
             f"Unknown OCR backend '{name}'. "
             f"Available: {list(BACKEND_REGISTRY.keys())}"

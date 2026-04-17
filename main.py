@@ -29,10 +29,8 @@ DEFAULT_QUERY      = "Explain this paper to an audience of laypeople"
 DEFAULT_SOURCE_PDF = "./.samples/Transformers.pdf"
 
 _PROCESSOR_BACKEND_ALIASES = {
-    "llama":      "llama_parse",
+    "llama": "llama_parse",
     "llama_parse": "llama_parse",
-    "docling":    "docling",
-    "lighton":    "lighton",
 }
 
 _TEXT_SPLITTER_ALIASES = {
@@ -70,17 +68,21 @@ def _parse_args() -> argparse.Namespace:
         "--processor",
         type=str,
         choices=sorted(_PROCESSOR_BACKEND_ALIASES.keys()),
-        default="llama",
-        help="Document processor backend (default: %(default)s)",
+        default="llama_parse",
+        help=(
+            "Document processor backend. `llama_parse` is the only supported "
+            "processor in the current build; `llama` is accepted as a legacy alias "
+            "(default: %(default)s)"
+        ),
     )
     parser.add_argument(
         "--text-splitter",
         type=str,
         choices=sorted(_TEXT_SPLITTER_ALIASES.keys()),
-        default="none",
+        default="semantic",
         help=(
-            "Text splitter backend for document chunking "
-            "(defaults to 'semantic' for llama_parse) (default: %(default)s)"
+            "Text splitter backend for llama_parse document chunking "
+            "(default: %(default)s)"
         ),
     )
     parser.add_argument(
@@ -100,12 +102,7 @@ def _parse_args() -> argparse.Namespace:
         default=15,
         help="Soft target for number of slides (Planner may adjust based on content density; default: %(default)s)",
     )
-    parser.add_argument(
-        "--slides",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Enable/disable slide deck generation mode",
-    )
+
     parser.add_argument(
         "--object-store",
         type=str,
@@ -182,10 +179,6 @@ def _process_document(
     embedder = get_text_embedder()
     processor_backend = _PROCESSOR_BACKEND_ALIASES[args.processor]
     chunker_name      = _TEXT_SPLITTER_ALIASES[args.text_splitter]
-
-    # default to 'semantic' chunking if using LlamaParser and no specific splitter chosen
-    if not chunker_name and processor_backend == "llama_parse":
-        chunker_name = "semantic"
 
     text_chunker = get_text_chunker(chunker_name) if chunker_name else None
     processor = DocProcessor(
@@ -274,6 +267,17 @@ def _partial_deck_warnings(messages: list[str]) -> list[str]:
     ]
 
 
+def _report_final_warnings(messages: list[str]) -> None:
+    """Print a compact end-of-run warning summary for partial deck outcomes."""
+    warnings = _partial_deck_warnings(messages)
+    if not warnings:
+        return
+
+    print("\n--- Final Warnings ---")
+    for msg in warnings:
+        print(msg)
+
+
 def main() -> None:
     args       = _parse_args()
     logger     = AgentLogger()
@@ -290,9 +294,8 @@ def main() -> None:
     object_store = _make_object_store(args, logger)
 
     with get_database() as db:
-        if args.slides:
-            # In unified DB mode, clear only generated proto slides for a fresh deck.
-            db.clear_proto_slides()
+        # Clear generated proto slides for a fresh deck.
+        db.clear_proto_slides()
 
         doc_ids: list[str] = []
         paper_titles: list[str] = []
@@ -356,22 +359,16 @@ def main() -> None:
             for msg in final_state.get("messages", []):
                 print(msg)
 
-        if args.slides:
-            raw_name = paper_titles[0] if paper_titles else session_id
-            safe_name = _sanitize_filename(raw_name) or session_id
-            pptx_path = output_dir / f"{safe_name}.pptx"
-            try:
-                out = PandocBuilder(output_path=pptx_path, db=db).build()
-                print(f"\n[export] Presentation saved → {out}")
-            except ValueError as exc:
-                print(f"\n[export] Could not generate PPTX: {exc}")
-        else:
-            print("\n--- Final Draft (Last Known State) ---")
-            final_draft = final_state.get("draft")
-            if final_draft:
-                print(final_draft["document"])
-            else:
-                print("(no draft produced)")
+        raw_name = paper_titles[0] if paper_titles else session_id
+        safe_name = _sanitize_filename(raw_name) or session_id
+        pptx_path = output_dir / f"{safe_name}.pptx"
+        try:
+            out = PandocBuilder(output_path=pptx_path, db=db).build()
+            print(f"\n[export] Presentation saved → {out}")
+        except ValueError as exc:
+            print(f"\n[export] Could not generate PPTX: {exc}")
+
+        _report_final_warnings(final_state.get("messages", []))
 
     if logger:
         logger.flush()
