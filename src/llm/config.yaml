@@ -24,7 +24,7 @@ router:
       models:
         - model: "gemini/gemini-3.1-flash-lite-preview"
           model_name: "slides"
-          rpm: 20
+          rpm: 15
 
   # Note: splitting fallback_providers into *_high and *_rest allows us to control the 
   # exact model-level fallback order across different providers (e.g. OpenRouter -> Ollama -> OpenRouter)
