@@ -288,7 +288,7 @@ class PlannerAgent(BaseLLMAgent):
             turns,
             LLMPresentationPlan,
             max_retries=PLAN_MAX_RETRIES,
-            model="slides",
+            model="planner",
             runtime_validator=lambda plan: _validate_llm_plan(plan, valid_labels),
         )
         llm_plan: LLMPresentationPlan = llm_plan_result.parsed
