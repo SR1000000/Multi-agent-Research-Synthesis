@@ -15,9 +15,9 @@ from src.processing.document.schema import (
 )
 
 
-def _load_ordered_chunk_rows(db, doc_id: str):
+def _load_ordered_chunk_rows(db, doc_id):
     """Return chunk rows in document order, falling back to insertion order."""
-    return db._conn.execute(
+    return db.connection.execute(
         """
         SELECT *
         FROM text_chunks
