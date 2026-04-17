@@ -58,16 +58,6 @@ def _build_send(group: SlideGroup, group_idx: int, session_id: str) -> Send:
     )
 
 
-def _exhausted_group_message(group: SlideGroup, group_idx: int) -> str:
-    """Return a user-visible warning when a group's retries are exhausted."""
-    slide_titles = [bp.working_title for bp in group.slide_blueprints]
-    return (
-        f"[PlanExecutor] RETRIES EXHAUSTED — group {group_idx} failed after "
-        f"{MAX_RETRIES_PER_GROUP + 1} attempts with 0 slides. "
-        f"Slides skipped: {slide_titles}"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
@@ -147,7 +137,6 @@ class PlanExecutorAgent:
         # Retry failed groups that haven't exhausted their retry budget
         retries: list[Send]   = []
         exhausted: list[int]  = []
-        exhausted_messages: list[str] = []
 
         for idx in failed_groups:
             attempts_so_far = len(counts_by_group.get(idx, []))
@@ -160,26 +149,28 @@ class PlanExecutorAgent:
                 retries.append(_build_send(groups[idx], idx, session_id))
             else:
                 exhausted.append(idx)
-                err_msg = _exhausted_group_message(groups[idx], idx)
-                exhausted_messages.append(err_msg)
-                self._logger.log(err_msg, level="error")
+
+        for idx in exhausted:
+            slide_titles = [bp.working_title for bp in groups[idx].slide_blueprints]
+            err_msg = (
+                f"[PlanExecutor] Group {idx} exhausted {MAX_RETRIES_PER_GROUP + 1} "
+                f"attempts with 0 slides. Slides skipped: {slide_titles}"
+            )
+            self._logger.log(err_msg, level="error")
 
         if retries:
-            retry_msg = f"[PlanExecutor] Retrying {len(retries)} failed group(s)"
             return Command(
-                update={"messages": [*exhausted_messages, retry_msg]},
+                update={"messages": [f"[PlanExecutor] Retrying {len(retries)} failed group(s)"]},
                 goto=retries,
             )
 
         # All failed groups exhausted — proceed to END with partial deck
-        completed_groups = len(groups) - len(exhausted)
         msg = (
-            f"[PlanExecutor] PARTIAL DECK — proceeding with "
-            f"{completed_groups}/{len(groups)} completed group(s). "
-            f"Exhausted groups: {exhausted}"
+            f"[PlanExecutor] Done with partial deck. "
+            f"{len(exhausted)} group(s) permanently failed: {exhausted}"
         )
         self._logger.log(msg, level="warning")
-        return Command(update={"messages": [*exhausted_messages, msg]}, goto=END)
+        return Command(update={"messages": [msg]}, goto=END)
 
 
 def plan_executor_node(state: ResearchState) -> Command:

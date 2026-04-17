@@ -16,10 +16,19 @@ from typing import List, TypedDict
 
 from langgraph.types import Command
 
-from src.agents.base import BaseLLMAgent
+from src.agents.base import BaseLLMAgent, SLIDE_OUTPUT_FORMAT
+from src.memory.research.schema import ProtoSlide, SlideContent
 from src.memory.research.database import ResearchDatabase
-from src.memory.wip.database import WIPDatabase
-from src.memory.wip.schema import ProtoSlide, make_slide_batch_model, slide_output_prompt_contract
+
+
+# ---------------------------------------------------------------------------
+# LLM output schema
+# ---------------------------------------------------------------------------
+
+class SlideGenerationOutput(BaseModel):
+    slides: List[SlideContent] = Field(
+        description="The synthesized slides for this batch"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -28,7 +37,7 @@ from src.memory.wip.schema import ProtoSlide, make_slide_batch_model, slide_outp
 
 class SlideWriterDispatch(TypedDict):
     """State payload delivered to each slide_writer node via Send()."""
-    chunk_ids:             List[str]   # group-wide union passed to the writer as shared working context
+    chunk_ids:             List[str]   # union of source_chunk_ids across all blueprints
     slide_blueprints:      List[dict]  # serialized SlideBlueprint dicts
     group_idx:             int         # index into PresentationPlan.slide_groups
     session_id:            str
@@ -45,19 +54,6 @@ def _group_log_label(state: SlideWriterDispatch) -> str:
         return "SlideWriter[empty]"
     nums = [bp.get("slide_number", "?") for bp in blueprints]
     return f"SlideWriter[slides {nums[0]}-{nums[-1]}, group {state.get('group_idx', '?')}]"
-
-
-def _ordered_chunk_texts(rows: list, chunk_ids: list[str]) -> list[str]:
-    """Return chunk text blocks in the caller-provided chunk order."""
-    rows_by_id = {row["id"]: row for row in rows}
-    ordered: list[str] = []
-    for chunk_id in chunk_ids:
-        row = rows_by_id.get(chunk_id)
-        if row is None:
-            continue
-        text = row["contextualized_text"] if row["contextualized_text"] else row["text"]
-        ordered.append(f"--- Chunk ID: {row['id']} ---\n{text}")
-    return ordered
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +110,11 @@ class SlideWriterAgent(BaseLLMAgent):
                     chunk_ids,
                 ).fetchall()
 
-            chunk_texts = _ordered_chunk_texts(rows, chunk_ids)
+            chunk_texts: list[str] = []
+            for row in rows:
+                text = row["contextualized_text"] if row["contextualized_text"] else row["text"]
+                chunk_texts.append(f"--- Chunk ID: {row['id']} ---\n{text}")
+
             combined_text = "\n\n".join(chunk_texts)
 
             # ------------------------------------------------------------------
@@ -129,8 +129,7 @@ class SlideWriterAgent(BaseLLMAgent):
             )
 
             user_prompt_parts = [
-                f"Return exactly ONE JSON object whose `slides` array contains exactly {slide_count} slide(s).\n",
-                "",
+                f"Write exactly {slide_count} slide(s) for this batch.\n",
                 "SLIDE ASSIGNMENTS:",
                 blueprint_block,
                 "",
@@ -147,13 +146,7 @@ class SlideWriterAgent(BaseLLMAgent):
 
             user_prompt_parts += [
                 "",
-                slide_output_prompt_contract(slide_count),
-                "",
-                "### SEMANTIC GUIDANCE:",
-                "- Keep each slide focused on one primary takeaway.",
-                "- Choose the layout that best supports the evidence and intended narrative role.",
-                "- Speaker notes should be professional, conversational, and cover the core bullets with added context.",
-                "- Avoid academic jargon unless the original terminology is important to preserve.",
+                SLIDE_OUTPUT_FORMAT,
                 "",
                 "SOURCE MATERIAL (research chunks):",
                 combined_text,
@@ -165,35 +158,21 @@ class SlideWriterAgent(BaseLLMAgent):
             # ------------------------------------------------------------------
             # 3. Call LLM
             # ------------------------------------------------------------------
-            output_schema = make_slide_batch_model(slide_count)
-            result = self._call_structured(
-                turns,
-                output_schema,
-                model="slides",
-                runtime_validator=lambda parsed: [] if len(parsed.slides) == slide_count else [
-                    f"Expected exactly {slide_count} slides but received {len(parsed.slides)}."
-                ],
+            result: SlideGenerationOutput = self._call(
+                turns, schema=SlideGenerationOutput, model="slides"
             )
-            slides = result.parsed.slides
-
-            if len(slides) != slide_count:
-                raise ValueError(
-                    f"Expected exactly {slide_count} slides but received {len(slides)}."
-                )
 
             # ------------------------------------------------------------------
             # 4. Save proto-slides to wip.db
             # ------------------------------------------------------------------
             saved_count = 0
             with WIPDatabase() as wip_db:
-                for idx, bp_dict in enumerate(slide_blueprints):
-                    slide_content = slides[idx]
+                for slide_content, bp_dict in zip(result.slides, slide_blueprints):
                     slide_num = bp_dict.get("slide_number", saved_count + 1)
-                    slide_chunk_ids = bp_dict.get("source_chunk_ids", [])
                     proto = ProtoSlide(
                         slide_number=slide_num,
                         content=slide_content,
-                        chunk_references=slide_chunk_ids,
+                        chunk_references=chunk_ids,
                     )
                     wip_db.save_slide(proto)
                     saved_count += 1

@@ -12,13 +12,11 @@ If validation fails the entire LLM call is retried (up to PLAN_MAX_RETRIES).
 """
 from __future__ import annotations
 
-import json
 import re
 from typing import Literal
 
 from langgraph.types import Command
 
-from src.agents.base import BaseLLMAgent, schema_prompt_contract
 from src.state import (
     LLMPresentationPlan,
     PresentationPlan,
@@ -26,6 +24,7 @@ from src.state import (
     SlideBlueprint,
     SlideGroup,
 )
+from src.agents.base import BaseLLMAgent
 from src.memory.research.database import ResearchDatabase
 
 # ---------------------------------------------------------------------------
@@ -38,18 +37,6 @@ MAX_GROUP_SIZE   = 7
 
 # Matches ATX headings: # / ## / ### / #### at the start of a line
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+\S")
-
-
-def _planner_output_format() -> str:
-    """Return a schema-derived output contract for planner structured JSON."""
-    return schema_prompt_contract(
-        LLMPresentationPlan,
-        extra_rules=[
-            "Do NOT wrap the plan in `presentation_plan` or any other outer key.",
-            "Use only section labels that appear in the outline exactly as shown.",
-            f"Each SlideGroup must contain between {MIN_GROUP_SIZE} and {MAX_GROUP_SIZE} slide_blueprints.",
-        ],
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -276,22 +263,48 @@ class PlannerAgent(BaseLLMAgent):
         user_prompt = (
             f"USER QUERY:\n{query}\n\n"
             f"{outline}\n\n"
-            "Produce a PresentationPlan for the above paper(s) based on the user query.\n\n"
-            f"{_planner_output_format()}"
+            "Produce a PresentationPlan for the above paper(s) based on the user query."
         )
         turns = [{"role": "user", "content": user_prompt}]
 
         # ------------------------------------------------------------------
-        # Phase 1c + Phase 2: LLM call + strict validation
+        # Phase 1c + Phase 2: LLM call + strict validation (retry loop)
         # ------------------------------------------------------------------
-        llm_plan_result = self._call_structured(
-            turns,
-            LLMPresentationPlan,
-            max_retries=PLAN_MAX_RETRIES,
-            model="planner",
-            runtime_validator=lambda plan: _validate_llm_plan(plan, valid_labels),
-        )
-        llm_plan: LLMPresentationPlan = llm_plan_result.parsed
+        for attempt in range(PLAN_MAX_RETRIES + 1):
+            llm_plan: LLMPresentationPlan = self._call(
+                turns, schema=LLMPresentationPlan, model="slides"
+            )
+
+            failures = _validate_llm_plan(llm_plan, valid_labels)
+
+            if not failures:
+                break  # Validation passed
+
+            failure_summary = "\n".join(f"  - {f}" for f in failures)
+            self._logger.log(
+                f"[Planner] Validation failed (attempt {attempt + 1}/{PLAN_MAX_RETRIES + 1}):\n"
+                f"{failure_summary}",
+                level="warning",
+            )
+
+            if attempt == PLAN_MAX_RETRIES:
+                raise ValueError(
+                    f"[Planner] Presentation plan failed validation after "
+                    f"{PLAN_MAX_RETRIES + 1} attempts:\n{failure_summary}"
+                )
+
+            # Add failure feedback to conversation for next attempt
+            turns = [
+                *turns,
+                {"role": "assistant", "content": llm_plan.model_dump_json()},
+                {"role": "user", "content": (
+                    f"Your plan failed validation with the following errors:\n{failure_summary}\n\n"
+                    "Fix ALL errors and return a corrected PresentationPlan. "
+                    "Only use section labels that appear in the outline exactly as shown. "
+                    f"Every SlideGroup must have between {MIN_GROUP_SIZE} and {MAX_GROUP_SIZE} blueprints. "
+                    "Every blueprint must have at least one source_sections entry."
+                )},
+            ]
 
         # ------------------------------------------------------------------
         # Phase 2: resolve section labels → chunk IDs

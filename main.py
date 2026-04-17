@@ -150,6 +150,7 @@ def _process_document(args: argparse.Namespace, logger: AgentLogger, db: Any) ->
             logger.log(f"R2ObjectStore initialization failed: {str(e)}. Falling back to LocalObjectStore.", level="warning")
             object_store = LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
 
+    db       = get_database()
     embedder = get_text_embedder()
     processor_backend = _PROCESSOR_BACKEND_ALIASES[args.processor]
     chunker_name      = _TEXT_SPLITTER_ALIASES[args.text_splitter]
@@ -235,14 +236,6 @@ def _sanitize_filename(name: str) -> str:
     # Collapse multiple underscores/spaces and switch spaces to underscores
     safe = re.sub(r"[ _]+", "_", safe).strip("_")
     return safe[:150]
-
-
-def _partial_deck_warnings(messages: list[str]) -> list[str]:
-    """Extract final warnings that indicate skipped groups or a partial deck export."""
-    return [
-        msg for msg in messages
-        if "RETRIES EXHAUSTED" in msg or "PARTIAL DECK" in msg
-    ]
 
 
 def main() -> None:
