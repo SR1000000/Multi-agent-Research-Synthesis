@@ -16,7 +16,7 @@ from typing import List, TypedDict
 
 from langgraph.types import Command
 
-from src.agents.base import BaseLLMAgent, SLIDE_OUTPUT_FORMAT
+from src.agents.base import BaseLLMAgent
 from src.memory.research.schema import ProtoSlide, make_slide_batch_model, slide_output_prompt_contract
 from src.memory.research.database import ResearchDatabase
 
@@ -181,10 +181,10 @@ class SlideWriterAgent(BaseLLMAgent):
                 )
 
             # ------------------------------------------------------------------
-            # 4. Save proto-slides to wip.db
+            # 4. Save proto-slides to research.db
             # ------------------------------------------------------------------
             saved_count = 0
-            with WIPDatabase() as wip_db:
+            with ResearchDatabase() as research_db:
                 for idx, bp_dict in enumerate(slide_blueprints):
                     slide_content = slides[idx]
                     slide_num = bp_dict.get("slide_number", saved_count + 1)
@@ -194,7 +194,7 @@ class SlideWriterAgent(BaseLLMAgent):
                         content=slide_content,
                         chunk_references=slide_chunk_ids,
                     )
-                    wip_db.save_slide(proto)
+                    research_db.save_slide(proto)
                     saved_count += 1
 
             if saved_count == 0:

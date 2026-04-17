@@ -14,6 +14,10 @@ router:
   fallback_model_name: "fallback"
   fallbacks:
     - app: ["fallback"]
+    # Planner has its own alias chain so it can prefer only the largest models.
+    - planner: ["planner_openrouter_large"]
+    - planner_openrouter_large: ["planner_gemini_fallback"]
+    # Slide writing stays Gemini-first, then falls back to the generic pool.
     - slides: ["fallback"]
     # - writer: ["fallback"]
     # - fast: ["fallback"]
@@ -23,10 +27,13 @@ router:
       api_key: "os.environ/GEMINI_API_KEY"
       models:
         - model: "gemini/gemini-3.1-flash-lite-preview"
+          model_name: "planner_gemini_fallback"
+          rpm: 15
+        - model: "gemini/gemini-3.1-flash-lite-preview"
           model_name: "slides"
-          rpm: 20
+          rpm: 15
 
-  # Note: splitting fallback_providers into *_high and *_rest allows us to control the
+  # Note: splitting fallback_providers into *_high and *_rest allows us to control the 
   # exact model-level fallback order across different providers (e.g. OpenRouter -> Ollama -> OpenRouter)
   # since the Router follows the order entries appear in this YAML.
   fallback_providers:
@@ -35,11 +42,15 @@ router:
       api_base: "os.environ/OPENROUTER_BASE_URL"
       models:
         - model: "openrouter/openai/gpt-oss-120b:free"
+          model_name: "planner_openrouter_large"
+        - model: "openrouter/openai/gpt-oss-120b:free"
 
     ollama_high:
       api_key: "os.environ/OLLAMA_API_KEY"
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
+        - model: "ollama/qwen3.5:397b-cloud"
+          model_name: "planner"
         - model: "ollama/qwen3.5:397b-cloud"
 
     gemini_rest:
@@ -53,7 +64,6 @@ router:
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
         - model: "ollama/gemma4:31b-cloud"
-          timeout: 180
 
     openrouter_rest:
       api_key: "os.environ/OPENROUTER_API_KEY"

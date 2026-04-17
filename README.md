@@ -99,7 +99,7 @@ The default query is `"Explain this paper to an audience of laypeople"`.
 
 ### Output
 
-The finished presentation is saved as a `.pptx` file in `output/`, named after the first paper's title (or the session ID if no title is detected). The file is built from proto-slides stored in `data/wip.db`.
+The finished presentation is saved as a `.pptx` file in `output/` by default, or to a custom directory via `--output-dir`. The filename is derived from the first paper's title (or the session ID if no title is detected). Proto-slides are stored in the `proto_slides` table inside `data/research.db`, and that table is cleared at the start of each new run.
 
 ---
 
@@ -113,6 +113,7 @@ The finished presentation is saved as a `.pptx` file in `output/`, named after t
 | `--processor` | `llama` | Document processor backend: `llama`, `docling`, `lighton` |
 | `--text-splitter` | `none` | Chunking strategy: `none` or `semantic` (auto-defaults to `semantic` for LlamaParse) |
 | `--object-store` | _(R2 with local fallback)_ | `local` or `r2` for image storage |
+| `--output-dir PATH` | `output/` | Directory where the generated `.pptx` will be written |
 | `--llm-config PATH` | `src/llm/config.yaml` | LiteLLM Router config file |
 | `-i`, `--interactive` | off | Pause after each document extraction for confirmation |
 | `--no-logging` | _(logging on)_ | Disable Langfuse tracing |
@@ -157,16 +158,16 @@ START
         Reads slide_groups from plan                        │
         Fans out via Send() — one agent per group     (retry loop)
         │                                                   │
-        ├─► Slide Writer 1 ─► writes proto-slides → wip.db─┤
-        ├─► Slide Writer 2 ─► writes proto-slides → wip.db─┤
-        └─► Slide Writer N ─► writes proto-slides → wip.db─┘
+        ├─► Slide Writer 1 ─► writes proto-slides → research.db─┤
+        ├─► Slide Writer 2 ─► writes proto-slides → research.db─┤
+        └─► Slide Writer N ─► writes proto-slides → research.db─┘
               After all writers finish, Plan Executor checks
               slides_written counts. Any group with 0 slides
               is re-dispatched (up to 2 retries).
               When all groups pass → END
         │
         ▼
-      PPTX Export (PandocBuilder reads wip.db → output/*.pptx)
+      PPTX Export (PandocBuilder reads research.db → output/*.pptx)
 ```
 
 ### Planner
@@ -188,7 +189,7 @@ The Plan Executor is a pure dispatcher with a retry loop:
 
 ### Slide Writers
 
-Each Slide Writer receives the blueprints and chunk text for its group. It synthesizes the proto-slides and writes them to `wip.db`. All errors are caught and reported without crashing the graph — the Plan Executor handles retry at the group level.
+Each Slide Writer receives the blueprints and chunk text for its group. It synthesizes the proto-slides and writes them to `research.db`. All errors are caught and reported without crashing the graph; the Plan Executor handles retry at the group level.
 
 ---
 

@@ -1,23 +1,29 @@
 import argparse
-import shutil
-import sys
-from typing import Any
-import time
-from pathlib import Path
 import os
 import re
-from src.memory import get_database
+import shutil
+import sys
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
 from src.graph import build_graph
-from src.llm.llm import init_from_config, current_session_id
+from src.llm.llm import current_session_id, init_from_config
+from src.logging.logger import AgentLogger, VALIDATION_ERRORS_DIR
+from src.memory import get_database
+from src.memory.objectstore import (
+    DEFAULT_OBJECT_STORE_CONFIG,
+    LocalObjectStore,
+    R2ObjectStore,
+)
 from src.processing.chunker import get_text_chunker
 from src.processing.document import DocProcessor
 from src.processing.embedder.provider import get_text_embedder
-import uuid
-from datetime import datetime, timezone
-from src.logging.logger import AgentLogger, VALIDATION_ERRORS_DIR
-from src.memory.objectstore import LocalObjectStore, R2ObjectStore, DEFAULT_OBJECT_STORE_CONFIG
+from src.processing.export.pandoc_builder import PandocBuilder
 
-OUTPUT_DIR = Path(__file__).parent / "output"  # PowerPoint files land here
+DEFAULT_OUTPUT_DIR = Path(__file__).parent / "output"
 
 DEFAULT_QUERY      = "Explain this paper to an audience of laypeople"
 DEFAULT_SOURCE_PDF = "./.samples/Transformers.pdf"
@@ -101,6 +107,13 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Object store type: 'local' for local filesystem, 'r2' for Cloudflare R2 (default: R2 with local fallback)",
     )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=str(DEFAULT_OUTPUT_DIR),
+        metavar="PATH",
+        help="Directory where the generated PPTX will be written (default: %(default)s)",
+    )
     return parser.parse_args()
 
 
@@ -124,33 +137,42 @@ def _get_callbacks(args, logger: AgentLogger, session_id: str):
 def _configure_llm(args: argparse.Namespace) -> None:
     init_from_config(config_path=args.llm_config)
 
-def _process_document(args: argparse.Namespace, logger: AgentLogger, db: Any) -> tuple[Any, str]:
-    pdf_path = Path(args.pdf)
+
+def _make_object_store(args: argparse.Namespace, logger: AgentLogger) -> Any:
+    """Create the object store selected for this run."""
+    if args.object_store == "local":
+        logger.log("Using LocalObjectStore for image storage (explicitly selected)", level="info")
+        return LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
+
+    if args.object_store == "r2":
+        logger.log("Using R2ObjectStore for image storage (explicitly selected)", level="info")
+        return R2ObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
+
+    try:
+        logger.log("Using R2ObjectStore for image storage (default behavior)", level="info")
+        return R2ObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
+    except Exception as exc:
+        logger.log(
+            f"R2ObjectStore initialization failed: {exc}. Falling back to LocalObjectStore.",
+            level="warning",
+        )
+        return LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
+
+
+def _process_document(
+    pdf_path_str: str,
+    args: argparse.Namespace,
+    logger: AgentLogger,
+    db: Any,
+    object_store: Any,
+) -> tuple[Any, str]:
+    pdf_path = Path(pdf_path_str)
     if not pdf_path.exists():
         sys.exit(f"error: PDF not found: {pdf_path}")
     if pdf_path.suffix.lower() != ".pdf":
         sys.exit(f"error: file does not have a .pdf extension: {pdf_path}")
 
     _t0 = time.perf_counter()
-
-    # Initialize object store based on CLI argument
-    if args.object_store == "local":
-        object_store = LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
-        logger.log("Using LocalObjectStore for image storage (explicitly selected)", level="info")
-    elif args.object_store == "r2":
-        r2_config = DEFAULT_OBJECT_STORE_CONFIG
-        object_store = R2ObjectStore(config=r2_config)
-        logger.log("Using R2ObjectStore for image storage (explicitly selected)", level="info")
-    else:  # Default behavior
-        try:
-            r2_config = DEFAULT_OBJECT_STORE_CONFIG
-            object_store = R2ObjectStore(config=r2_config)
-            logger.log("Using R2ObjectStore for image storage (default behavior)", level="info")
-        except Exception as e:
-            logger.log(f"R2ObjectStore initialization failed: {str(e)}. Falling back to LocalObjectStore.", level="warning")
-            object_store = LocalObjectStore(config=DEFAULT_OBJECT_STORE_CONFIG)
-
-    db       = get_database()
     embedder = get_text_embedder()
     processor_backend = _PROCESSOR_BACKEND_ALIASES[args.processor]
     chunker_name      = _TEXT_SPLITTER_ALIASES[args.text_splitter]
@@ -250,6 +272,7 @@ def main() -> None:
     args       = _parse_args()
     logger     = AgentLogger()
     session_id = str(uuid.uuid4())
+    output_dir = Path(args.output_dir).expanduser().resolve()
 
     # Clear validation error dumps from previous run
     if VALIDATION_ERRORS_DIR.exists():
@@ -260,18 +283,41 @@ def main() -> None:
     callbacks, logger = _get_callbacks(args, logger, session_id)
 
     object_store = _make_object_store(args, logger)
+    db = get_database()
 
-    # ------------------------------------------------------------------
-    # Ingest each PDF into research.db
-    # ------------------------------------------------------------------
-    doc_ids:              list[str] = []
-    paper_titles:         list[str] = []
-    preprocessing_messages: list[str] = []
+    try:
+        # Each run starts from a clean proto-slide workspace while keeping the
+        # document cache intact for previously processed papers.
+        db.clear_proto_slides()
 
-    for pdf_path_str in args.pdf:
-        artifacts, msg = _process_document(pdf_path_str, args, logger, object_store)
-        preprocessing_messages.append(msg)
-        if artifacts:
+        # ------------------------------------------------------------------
+        # Ingest each PDF into research.db
+        # ------------------------------------------------------------------
+        doc_ids: list[str] = []
+        paper_titles: list[str] = []
+        preprocessing_messages: list[str] = []
+        seen_doc_ids: set[str] = set()
+
+        for pdf_path_str in args.pdf:
+            artifacts, msg = _process_document(
+                pdf_path_str,
+                args,
+                logger,
+                db,
+                object_store,
+            )
+            preprocessing_messages.append(msg)
+            if not artifacts:
+                continue
+
+            if artifacts.doc_id in seen_doc_ids:
+                preprocessing_messages.append(
+                    f"[preprocessing] {Path(pdf_path_str).name}: duplicate document skipped "
+                    f"(doc_id={artifacts.doc_id})"
+                )
+                continue
+
+            seen_doc_ids.add(artifacts.doc_id)
             doc_ids.append(artifacts.doc_id)
             title = (
                 artifacts.paper_metadata.title
@@ -280,71 +326,65 @@ def main() -> None:
             )
             paper_titles.append(title)
 
-    if not doc_ids:
-        sys.exit("error: No documents were successfully processed. Exiting.")
+        if not doc_ids:
+            sys.exit("error: No documents were successfully processed. Exiting.")
 
-    # ------------------------------------------------------------------
-    # Build and stream the graph
-    # ------------------------------------------------------------------
-    initial_state = _build_initial_state(
-        args, preprocessing_messages, doc_ids, paper_titles, session_id
-    )
+        # ------------------------------------------------------------------
+        # Build and stream the graph
+        # ------------------------------------------------------------------
+        initial_state = _build_initial_state(
+            args, preprocessing_messages, doc_ids, paper_titles, session_id
+        )
 
-    graph = build_graph()
+        graph = build_graph()
 
-    final_state = initial_state
-    try:
-        # Use streaming to capture the state at each step, allowing us to recover logs if a crash occurs
-        for event in graph.stream(
-            initial_state,
-            config={"callbacks": callbacks},
-            stream_mode="values",
-        ):
-            final_state = event
-    except Exception as e:
-        print(f"\n[!] Graph encountered an error mid-flight: {e}")
-        print("    Attempting to recover partial logs...")
+        final_state = initial_state
+        try:
+            # Use streaming to capture the state at each step, allowing us to
+            # recover logs if a crash occurs.
+            for event in graph.stream(
+                initial_state,
+                config={"callbacks": callbacks},
+                stream_mode="values",
+            ):
+                final_state = event
+        except Exception as exc:
+            print(f"\n[!] Graph encountered an error mid-flight: {exc}")
+            print("    Attempting to recover partial logs...")
 
-    ve_files = list(VALIDATION_ERRORS_DIR.glob("*.json"))
-    if ve_files:
-        print(f"\n[validation] {len(ve_files)} error dump(s) written to {VALIDATION_ERRORS_DIR}/")
+        ve_files = list(VALIDATION_ERRORS_DIR.glob("*.json"))
+        if ve_files:
+            print(f"\n[validation] {len(ve_files)} error dump(s) written to {VALIDATION_ERRORS_DIR}/")
 
-    print("\n--- Agent Log ---")
-    for msg in final_state.get("messages", []):
-        print(msg)
-
-    partial_warnings = _partial_deck_warnings(final_state.get("messages", []))
-    if partial_warnings:
-        print("\n[warning] Export will proceed with a partial deck.")
-        for msg in partial_warnings:
+        print("\n--- Agent Log ---")
+        for msg in final_state.get("messages", []):
             print(msg)
 
-    partial_warnings = _partial_deck_warnings(final_state.get("messages", []))
-    if partial_warnings:
-        print("\n[warning] Export will proceed with a partial deck.")
-        for msg in partial_warnings:
-            print(msg)
+        partial_warnings = _partial_deck_warnings(final_state.get("messages", []))
+        if partial_warnings:
+            print("\n[warning] Export will proceed with a partial deck.")
+            for msg in partial_warnings:
+                print(msg)
 
-    # ------------------------------------------------------------------
-    # Export PPTX
-    # ------------------------------------------------------------------
-    from src.processing.export.pandoc_builder import PandocBuilder
+        # ------------------------------------------------------------------
+        # Export PPTX
+        # ------------------------------------------------------------------
+        raw_name = paper_titles[0] if paper_titles else session_id
+        safe_name = _sanitize_filename(raw_name) or session_id
 
-    # Use first paper title, or fall back to session_id
-    raw_name  = paper_titles[0] if paper_titles else session_id
-    safe_name = _sanitize_filename(raw_name) or session_id
-
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    pptx_path = OUTPUT_DIR / f"{safe_name}.pptx"
-    try:
-        with WIPDatabase() as wip_db:
-            out = PandocBuilder(output_path=pptx_path, db=wip_db).build()
-        print(f"\n[export] Presentation saved → {out}")
-    except ValueError as exc:
-        print(f"\n[export] Could not generate PPTX: {exc}")
-
-    if logger:
-        logger.flush()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        pptx_path = output_dir / f"{safe_name}.pptx"
+        try:
+            out = PandocBuilder(output_path=pptx_path, db=db).build()
+            print(f"\n[export] Presentation saved → {out}")
+        except ValueError as exc:
+            print(f"\n[export] Could not generate PPTX: {exc}")
+    finally:
+        disconnect = getattr(db, "disconnect", None)
+        if callable(disconnect):
+            disconnect()
+        if logger:
+            logger.flush()
 
 
 if __name__ == "__main__":

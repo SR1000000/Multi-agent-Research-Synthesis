@@ -6,8 +6,8 @@ This document describes the architecture for converting intermediate slide repre
 
 Slide generation is a two-phase process:
 
-1.  **Synthesis Phase**: The Multi-agent Graph (`src.graph`) analyzes research data and populates `wip.db` with `ProtoSlide` objects.
-2.  **Export Phase**: `PandocBuilder` reads `wip.db`, renders each slide as Pandoc Markdown, and converts the full deck to `.pptx` via the Pandoc binary (bundled with the `pypandoc_binary` wheel).
+1.  **Synthesis Phase**: The Multi-agent Graph (`src.graph`) analyzes research data and populates the `proto_slides` table in `research.db` with `ProtoSlide` objects.
+2.  **Export Phase**: `PandocBuilder` reads `research.db`, renders each slide as Pandoc Markdown, and converts the full deck to `.pptx` via the Pandoc binary (bundled with the `pypandoc_binary` wheel).
 
 ## Data Contract: Proto-Slides
 
