@@ -159,12 +159,22 @@ dense research data into high-impact, professional presentation slides.
 # ---------------------------------------------------------------------------
 
 SLIDE_OUTPUT_FORMAT = """
+### REQUIRED ROOT JSON SHAPE:
+- Return exactly ONE top-level JSON object with this structure:
+  `{"slides": [<slide1>, <slide2>, ...]}`
+- The top-level key MUST be `"slides"`.
+- The value of `"slides"` MUST be an array containing exactly the requested number of slide objects.
+- Do NOT return multiple top-level objects.
+- Do NOT return newline-delimited JSON.
+- Do NOT return a top-level array.
+- Do NOT include any text before or after the JSON object.
+
 ### FIELD GUIDANCE:
 - **`key_message`**: Write one crisp sentence stating what the audience should understand \
   after this slide. This is the thesis of the slide — not a summary of bullet points.
 - **`title`**: Use punchy, "active" headings (e.g., "Accuracy Jumps 40%" not "Accuracy Results").
 - **`bullets`**: Produce 3-5 `BulletPoint` objects. Each object MUST use these exact field names:
-  - `"text"` — the bullet content string. IMPORTANT: the field is called `"text"`, NOT `"content"`. \
+  - `"text"` — the bullet content string. \
     Use `**phrase**` to bold 0-2 key terms or statistics per bullet \
     (e.g., `"Accuracy improves by **47%** over the baseline"`). Only bold genuinely critical terms.
   - `"content_type"` — exactly one of: `"insight"`, `"evidence"`, `"statistic"`, `"example"`, `"caveat"`.

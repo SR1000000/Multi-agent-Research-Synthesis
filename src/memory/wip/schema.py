@@ -43,9 +43,9 @@ class SlideContent(BaseModel):
         default="title_and_body",
         description="Slide layout: 'title_slide' for openers/dividers, 'title_and_body' for standard bullet slides, 'two_column' for comparisons, 'big_number' for stat callouts, 'quote' for direct quotations, 'media_left'/'media_right' when a figure or chart is the focus"
     )
-    narrative_role: Literal["hook", "context", "evidence", "insight", "transition", "conclusion"] = Field(
+    narrative_role: Literal["hook", "problem", "evidence", "insight", "transition", "call_to_action", "conclusion"] = Field(
         default="evidence",
-        description="Role this slide plays in the deck's narrative arc: 'hook' grabs attention, 'context' provides background, 'evidence' presents data, 'insight' delivers the key takeaway, 'transition' bridges sections, 'conclusion' wraps up"
+        description="Role this slide plays in the deck's narrative arc: 'hook' grabs attention, 'problem' establishes the challenge or gap, 'evidence' presents data, 'insight' delivers the key takeaway, 'transition' bridges sections, 'call_to_action' motivates next steps or future work, 'conclusion' wraps up"
     )
 
 class ProtoSlide(BaseModel):
