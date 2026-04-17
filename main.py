@@ -100,12 +100,7 @@ def _parse_args() -> argparse.Namespace:
         default=15,
         help="Soft target for number of slides (Planner may adjust based on content density; default: %(default)s)",
     )
-    parser.add_argument(
-        "--slides",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Enable/disable slide deck generation mode",
-    )
+
     parser.add_argument(
         "--object-store",
         type=str,
@@ -290,9 +285,8 @@ def main() -> None:
     object_store = _make_object_store(args, logger)
 
     with get_database() as db:
-        if args.slides:
-            # In unified DB mode, clear only generated proto slides for a fresh deck.
-            db.clear_proto_slides()
+        # Clear generated proto slides for a fresh deck.
+        db.clear_proto_slides()
 
         doc_ids: list[str] = []
         paper_titles: list[str] = []
@@ -356,22 +350,14 @@ def main() -> None:
             for msg in final_state.get("messages", []):
                 print(msg)
 
-        if args.slides:
-            raw_name = paper_titles[0] if paper_titles else session_id
-            safe_name = _sanitize_filename(raw_name) or session_id
-            pptx_path = output_dir / f"{safe_name}.pptx"
-            try:
-                out = PandocBuilder(output_path=pptx_path, db=db).build()
-                print(f"\n[export] Presentation saved → {out}")
-            except ValueError as exc:
-                print(f"\n[export] Could not generate PPTX: {exc}")
-        else:
-            print("\n--- Final Draft (Last Known State) ---")
-            final_draft = final_state.get("draft")
-            if final_draft:
-                print(final_draft["document"])
-            else:
-                print("(no draft produced)")
+        raw_name = paper_titles[0] if paper_titles else session_id
+        safe_name = _sanitize_filename(raw_name) or session_id
+        pptx_path = output_dir / f"{safe_name}.pptx"
+        try:
+            out = PandocBuilder(output_path=pptx_path, db=db).build()
+            print(f"\n[export] Presentation saved → {out}")
+        except ValueError as exc:
+            print(f"\n[export] Could not generate PPTX: {exc}")
 
     if logger:
         logger.flush()
