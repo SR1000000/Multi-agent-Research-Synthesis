@@ -170,6 +170,26 @@ dense research data into high-impact, professional presentation slides.
    - `conclusion` — wraps up the presentation
 """
 
+SLIDE_REWRITER_ROLE = """
+You are a Senior Presentation Editor and Research Synthesizer. Your job is to revise an existing \
+set of slides so they satisfy reviewer feedback while remaining grounded in the provided research chunks.
+
+### PRIORITY ORDER:
+1. Follow the reviewer's rewrite instructions exactly.
+2. Preserve factual grounding in the provided research chunks.
+3. Use the slide assignments and narrative roles as supporting context.
+4. Use layout and storytelling judgment only when it helps satisfy the rewrite instructions.
+
+If the reviewer instructions conflict with the prior slide assignment or prior wording, follow the \
+reviewer instructions. Treat this as an edit pass, not a fresh unconstrained rewrite.
+
+### REVISION DIRECTIVES:
+1. Preserve what already works; change only what is necessary to resolve the review feedback.
+2. Fix the specific issues named by the reviewer rather than drifting into a broader rewrite.
+3. Keep each slide coherent and presentation-ready after revision.
+4. Do not introduce claims that are not supported by the provided research chunks.
+"""
+
 
 # ---------------------------------------------------------------------------
 # Slide output format — injected into the Slide Writer user prompt.
@@ -237,7 +257,12 @@ class BaseLLMAgent:
         if sid:
             current_session_id.set(sid)
 
-    def _build_messages(self, turns: list[dict]) -> list[dict]:
+    def _build_messages(
+        self,
+        turns: list[dict],
+        *,
+        system_prompt_override: str | None = None,
+    ) -> list[dict]:
         """Build the full message list by prepending the system prompt.
 
         LiteLLM handles system message translation for all providers including
@@ -249,7 +274,8 @@ class BaseLLMAgent:
                 {'type': 'text', 'text': '...', 'cache_control': {'type': 'ephemeral'}}
             ]}
         """
-        return [{'role': 'system', 'content': AGENT_ROLES[self.role]}, *turns]
+        system_prompt = system_prompt_override or AGENT_ROLES[self.role]
+        return [{'role': 'system', 'content': system_prompt}, *turns]
 
     def _call_raw(
         self,
@@ -257,6 +283,7 @@ class BaseLLMAgent:
         schema: type[T] | None = None,
         model: str | None = None,
         llm_config_override: dict | None = None,
+        system_prompt_override: str | None = None,
     ) -> str:
         """
         Single LLM completion call. Transport reliability (retries, fallbacks,
@@ -277,7 +304,7 @@ class BaseLLMAgent:
             Raw string response from the model (may contain think blocks or
             code fences — callers strip those themselves).
         """
-        messages = self._build_messages(turns)
+        messages = self._build_messages(turns, system_prompt_override=system_prompt_override)
         override = dict(llm_config_override) if llm_config_override else {}
         if model is not None:
             override["model"] = model
@@ -344,6 +371,7 @@ class BaseLLMAgent:
         model: str | None = None,
         llm_config_override: dict | None = None,
         runtime_validator: Callable[[T], list[str]] | None = None,
+        system_prompt_override: str | None = None,
     ) -> StructuredOutputResult:
         current_turns = list(turns)
         last_error: Exception | None = None
@@ -354,6 +382,7 @@ class BaseLLMAgent:
                 schema=schema,
                 model=model,
                 llm_config_override=llm_config_override,
+                system_prompt_override=system_prompt_override,
             )
             clean = _strip_code_fence(_strip_think_block(raw))
             healed = _heal_json(clean, schema)
@@ -446,6 +475,7 @@ class BaseLLMAgent:
         max_retries: int = 2,
         model: str | None = None,
         llm_config_override: dict | None = None,
+        system_prompt_override: str | None = None,
     ) -> str | T:
         """
         High-level call with optional Pydantic schema validation + correction retries.
@@ -460,7 +490,13 @@ class BaseLLMAgent:
              max_retries times.
         """
         if schema is None:
-            raw = self._call_raw(turns, schema=None, model=model, llm_config_override=llm_config_override)
+            raw = self._call_raw(
+                turns,
+                schema=None,
+                model=model,
+                llm_config_override=llm_config_override,
+                system_prompt_override=system_prompt_override,
+            )
             return _strip_think_block(raw)
         return self._call_structured(
             turns,
@@ -468,4 +504,5 @@ class BaseLLMAgent:
             max_retries=max_retries,
             model=model,
             llm_config_override=llm_config_override,
+            system_prompt_override=system_prompt_override,
         ).parsed
