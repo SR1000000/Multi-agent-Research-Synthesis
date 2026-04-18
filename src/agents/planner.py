@@ -19,12 +19,15 @@ from typing import Literal
 from langgraph.types import Command
 
 from src.agents.base import BaseLLMAgent, schema_prompt_contract
+from src.memory.research.schema import SlideContent
 from src.state import (
+    FIRST_CONTENT_SLIDE_NUMBER,
     LLMPresentationPlan,
     PresentationPlan,
     ResearchState,
     SlideBlueprint,
     SlideGroup,
+    TITLE_SLIDE_NUMBER,
 )
 from src.memory.research.database import ResearchDatabase
 
@@ -48,6 +51,8 @@ def _planner_output_format() -> str:
             "Do NOT wrap the plan in `presentation_plan` or any other outer key.",
             "Use only section labels that appear in the outline exactly as shown.",
             f"Each SlideGroup must contain between {MIN_GROUP_SIZE} and {MAX_GROUP_SIZE} slide_blueprints.",
+            "Provide a top-level `title` with fewer than 7 words.",
+            "Provide a top-level `subtitle` for the reserved title slide.",
         ],
     )
 
@@ -149,7 +154,7 @@ def _build_outline(
     lines = [
         f"PAPER OUTLINE ({len(all_sections)} sections across {len(doc_ids)} paper(s), "
         f"{total_chunks} total chunks, ~{total_words} words)",
-        f"Soft slide target: {max_slides} slides",
+        f"Soft total deck target: {max_slides} slides (including the reserved title slide)",
         "",
     ]
 
@@ -171,7 +176,9 @@ def _build_outline(
         "- Reference sections only by their label (e.g. S0, S3). Do NOT invent labels.",
         f"- Each SlideGroup must contain between {MIN_GROUP_SIZE} and {MAX_GROUP_SIZE} slides.",
         "- A slide may reference sections from different papers.",
-        "- Do not create more than the soft slide target unless the content clearly requires it.",
+        f"- Slide {TITLE_SLIDE_NUMBER} is a reserved title slide created automatically in Python. Your blueprints MUST start at slide_number {FIRST_CONTENT_SLIDE_NUMBER}.",
+        f"- Treat {max_slides} as the total deck size, including the reserved title slide.",
+        f"- Keep content slides within slide numbers {FIRST_CONTENT_SLIDE_NUMBER} through {max_slides}.",
     ]
     return "\n".join(lines)
 
@@ -183,9 +190,23 @@ def _build_outline(
 def _validate_llm_plan(
     plan: LLMPresentationPlan,
     valid_labels: set[str],
+    max_slides: int,
 ) -> list[str]:
     """Return a list of validation failure messages (empty = valid)."""
     failures: list[str] = []
+    seen_slide_numbers: set[int] = set()
+    slide_numbers_in_order: list[int] = []
+    title_word_count = len(plan.title.split())
+
+    if not plan.title.strip():
+        failures.append("Reserved title slide title must not be empty.")
+    elif title_word_count >= 7:
+        failures.append(
+            f"Reserved title slide title must be fewer than 7 words; received {title_word_count}: '{plan.title}'."
+        )
+
+    if not plan.subtitle.strip():
+        failures.append("Reserved title slide subtitle must not be empty.")
 
     for gi, group in enumerate(plan.slide_groups):
         n = len(group.slide_blueprints)
@@ -199,6 +220,21 @@ def _validate_llm_plan(
             )
 
         for bi, bp in enumerate(group.slide_blueprints):
+            slide_numbers_in_order.append(bp.slide_number)
+
+            if bp.slide_number < FIRST_CONTENT_SLIDE_NUMBER:
+                failures.append(
+                    f"Group {gi} blueprint {bi} has slide_number {bp.slide_number}, but content slides must start at {FIRST_CONTENT_SLIDE_NUMBER}."
+                )
+            if bp.slide_number > max_slides:
+                failures.append(
+                    f"Group {gi} blueprint {bi} has slide_number {bp.slide_number}, which exceeds total deck max_slides={max_slides}."
+                )
+            if bp.slide_number in seen_slide_numbers:
+                failures.append(
+                    f"Group {gi} blueprint {bi} reuses slide_number {bp.slide_number}; slide numbers must be unique."
+                )
+            seen_slide_numbers.add(bp.slide_number)
             if not bp.source_sections:
                 failures.append(
                     f"Group {gi} blueprint {bi} (slide {bp.slide_number}) "
@@ -210,7 +246,42 @@ def _validate_llm_plan(
                         f"Group {gi} blueprint {bi} references unknown section '{label}'."
                     )
 
+    if slide_numbers_in_order and slide_numbers_in_order != sorted(slide_numbers_in_order):
+        failures.append("Slide blueprints must be ordered by ascending slide_number across the full plan.")
+    if slide_numbers_in_order:
+        expected_numbers = list(
+            range(
+                FIRST_CONTENT_SLIDE_NUMBER,
+                FIRST_CONTENT_SLIDE_NUMBER + len(slide_numbers_in_order),
+            )
+        )
+        if slide_numbers_in_order != expected_numbers:
+            failures.append(
+                f"Content slide numbers must be contiguous starting at {FIRST_CONTENT_SLIDE_NUMBER}: expected {expected_numbers}, received {slide_numbers_in_order}."
+            )
+
     return failures
+
+
+def _build_title_slide_content(*, title: str, subtitle: str, thesis: str, target_audience: str) -> SlideContent:
+    clean_title = " ".join(title.split())
+    clean_subtitle = " ".join(subtitle.split())
+    clean_thesis = " ".join(thesis.split())
+    clean_audience = " ".join(target_audience.split())
+    key_message = clean_thesis or clean_subtitle or clean_title
+    notes = clean_thesis
+    if clean_audience:
+        notes = f"{notes}\n\nAudience: {clean_audience}" if notes else f"Audience: {clean_audience}"
+
+    return SlideContent(
+        title=clean_title or "Research Presentation",
+        subtitle=clean_subtitle or None,
+        key_message=key_message,
+        bullets=[],
+        speaker_notes=notes,
+        layout="title_slide",
+        narrative_role="hook",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +360,7 @@ class PlannerAgent(BaseLLMAgent):
             LLMPresentationPlan,
             max_retries=PLAN_MAX_RETRIES,
             model="planner",
-            runtime_validator=lambda plan: _validate_llm_plan(plan, valid_labels),
+            runtime_validator=lambda plan: _validate_llm_plan(plan, valid_labels, max_slides),
         )
         llm_plan: LLMPresentationPlan = llm_plan_result.parsed
 
@@ -297,6 +368,25 @@ class PlannerAgent(BaseLLMAgent):
         # Phase 2: resolve section labels → chunk IDs
         # ------------------------------------------------------------------
         resolved_groups: list[SlideGroup] = []
+
+        title_blueprint = SlideBlueprint(
+            slide_number=TITLE_SLIDE_NUMBER,
+            slide_kind="title",
+            working_title="Title Slide",
+            narrative_role="hook",
+            intent="Reserved title slide authored by Planner.",
+            source_chunk_ids=[],
+            prebuilt_content=_build_title_slide_content(
+                title=llm_plan.title,
+                subtitle=llm_plan.subtitle,
+                thesis=llm_plan.thesis,
+                target_audience=llm_plan.target_audience,
+            ),
+        )
+        resolved_groups.append(SlideGroup(
+            slide_blueprints=[title_blueprint],
+            rationale="Title slide authored by Planner.",
+        ))
 
         for group in llm_plan.slide_groups:
             resolved_blueprints: list[SlideBlueprint] = []
@@ -306,6 +396,7 @@ class PlannerAgent(BaseLLMAgent):
                     chunk_ids.extend(section_map.get(label, []))
                 resolved_blueprints.append(SlideBlueprint(
                     slide_number=bp.slide_number,
+                    slide_kind="content",
                     working_title=bp.working_title,
                     narrative_role=bp.narrative_role,
                     intent=bp.intent,

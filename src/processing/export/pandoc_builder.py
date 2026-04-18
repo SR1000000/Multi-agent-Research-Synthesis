@@ -22,6 +22,9 @@ def _render_slide(proto: ProtoSlide) -> str:
 
     parts.append(f"# {content.title}")
     parts.append("")
+    if content.subtitle:
+        parts.append(f"## {content.subtitle}")
+        parts.append("")
 
     for bullet in content.bullets:
         parts.extend(_render_bullet(bullet))

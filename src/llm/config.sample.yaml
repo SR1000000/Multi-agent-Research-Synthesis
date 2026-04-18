@@ -67,7 +67,6 @@ router:
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
         - model: "ollama/gemma4:31b-cloud"
-          timeout: 180
 
     openrouter_rest:
       api_key: "os.environ/OPENROUTER_API_KEY"

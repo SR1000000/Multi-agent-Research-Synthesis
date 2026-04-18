@@ -364,7 +364,7 @@ def main() -> None:
         pptx_path = output_dir / f"{safe_name}.pptx"
         try:
             out = PandocBuilder(output_path=pptx_path, db=db).build()
-            print(f"\n[export] Presentation saved → {out}")
+            print(f"\n[export] Presentation saved -> {out}")
         except ValueError as exc:
             print(f"\n[export] Could not generate PPTX: {exc}")
 
