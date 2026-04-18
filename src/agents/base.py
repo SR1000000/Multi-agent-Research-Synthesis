@@ -1,4 +1,5 @@
 import json
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any, TypeVar
@@ -290,12 +291,12 @@ class BaseLLMAgent:
         cooldowns, timeouts — per LiteLLM Router) is handled inside
         ``LiteLLMProvider.complete()``; this method does not add a second retry layer.
 
-        Schema validation retries (with correction prompts) live in _call().
+        Schema validation retries (with correction prompts) live in ``_call_structured``.
 
         Args:
             turns:               User/assistant conversation turns.
             schema:              Pydantic schema — activates JSON mode.
-                                 Parsing and validation happen in _call(), not here.
+                                 Parsing and validation happen in ``_call_structured``, not here.
             model:               Router group alias: ``router.default_model_name`` when omitted, or any alias
                                  defined in YAML (including per-row ``model_name`` on a provider model).
             llm_config_override: Dict of LLMConfig field overrides for this call.
@@ -309,40 +310,53 @@ class BaseLLMAgent:
         if model is not None:
             override["model"] = model
         llm = get_llm(llm_config_override=override if override else None)
+        alias = (llm.config.model or DEFAULT_MODEL_NAME).strip()
+        intended_model_name = llm.peek_router_litellm_model(messages) or alias
+        intended_structured = "text" if schema is None else "native_schema"
+        self._logger.log(
+            f"[{self._log_display}] LLM request started "
+            f"(model_name={intended_model_name}, structured_output={intended_structured})"
+        )
         token = current_agent_label.set(self._log_display)
         try:
-            content = llm.complete(messages, schema=schema)
-        except LLMCallError as exc:
-            model_label = (
-                f"{exc.model} ({exc.actual_model})" if exc.actual_model else exc.model
+            t0 = time.perf_counter()
+            try:
+                content = llm.complete(messages, schema=schema)
+            except LLMCallError as exc:
+                elapsed_s = time.perf_counter() - t0
+                model_label = (
+                    f"{exc.model} ({exc.actual_model})" if exc.actual_model else exc.model
+                )
+                self._logger.log(
+                    f"[{self._log_display}] LLM call failed after {elapsed_s:.2f}s "
+                    f"(model={model_label}): {exc}",
+                    level="error",
+                )
+                raise
+            elapsed_s = time.perf_counter() - t0
+            actual_model = llm.last_model_used or (model or DEFAULT_MODEL_NAME)
+            self._last_model_used = actual_model
+            self._last_structured_output_metadata = (
+                llm.last_structured_output_metadata or StructuredOutputMetadata()
             )
-            self._logger.log(
-                f"[{self._log_display}] LLM call failed (model={model_label}): {exc}",
-                level="error",
-            )
-            raise
-        finally:
-            current_agent_label.reset(token)
-        actual_model = llm.last_model_used or (model or DEFAULT_MODEL_NAME)
-        self._last_model_used = actual_model
-        self._last_structured_output_metadata = (
-            llm.last_structured_output_metadata or StructuredOutputMetadata()
-        )
-        label = f"default ({actual_model})" if model is None else f"{model} ({actual_model})"
-        metadata = self._last_structured_output_metadata
-        if schema is None or metadata.mode_used is None:
-            self._logger.log(f"[{self._log_display}] Invoked LLM (model: {label})")
-        else:
+            label = f"default ({actual_model})" if model is None else f"{model} ({actual_model})"
+            metadata = self._last_structured_output_metadata
+            if schema is None:
+                used_structured = "text"
+            else:
+                used_structured = metadata.mode_used or "unknown"
             fallback_note = (
                 f", fallback={metadata.fallback_reason}"
-                if metadata.fallback_reason
+                if schema is not None and metadata.fallback_reason
                 else ""
             )
             self._logger.log(
-                f"[{self._log_display}] Invoked LLM (model: {label}, "
-                f"structured_output={metadata.mode_used}{fallback_note})"
+                f"[{self._log_display}] LLM request completed in {elapsed_s:.2f}s "
+                f"(model={label}, structured_output={used_structured}{fallback_note})"
             )
-        return content
+            return content
+        finally:
+            current_agent_label.reset(token)
 
     def _build_structured_retry_turns(
         self,

@@ -335,6 +335,27 @@ def should_fallback_to_json_object(exc: Exception) -> bool:
     return any(marker in message for marker in fallback_markers)
 
 
+def _litellm_model_from_deployment(deployment: Any) -> str | None:
+    """Extract ``litellm_params.model`` from a Router deployment object or dict."""
+    if deployment is None:
+        return None
+    litellm_params = (
+        deployment.get("litellm_params")
+        if isinstance(deployment, dict)
+        else getattr(deployment, "litellm_params", None)
+    )
+    if litellm_params is None:
+        return None
+    model_id = (
+        litellm_params.get("model")
+        if isinstance(litellm_params, dict)
+        else getattr(litellm_params, "model", None)
+    )
+    if not model_id:
+        return None
+    return str(model_id).strip()
+
+
 class LiteLLMProvider:
     def __init__(self, config: LLMConfig):
         self.config = config
@@ -343,6 +364,21 @@ class LiteLLMProvider:
         self._router = ROUTER
         self.last_model_used: str | None = None
         self.last_structured_output_metadata: StructuredOutputMetadata | None = None
+
+    def peek_router_litellm_model(self, messages: list[dict]) -> str | None:
+        """Best-effort ``litellm_params['model']`` for the deployment the router would pick.
+
+        Mirrors the same ``get_available_deployment`` path used for ``completion`` (routing,
+        health, cooldown). Returns ``None`` if the router is unavailable or resolution fails.
+        """
+        if self._router is None:
+            return None
+        alias = (self.config.model or DEFAULT_MODEL_NAME).strip()
+        try:
+            deployment = self._router.get_available_deployment(alias, messages=messages)
+        except Exception:
+            return None
+        return _litellm_model_from_deployment(deployment)
 
     def complete(
         self,
