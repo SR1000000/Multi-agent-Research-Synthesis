@@ -14,8 +14,9 @@ from typing import List, TypedDict
 from langgraph.types import Command
 
 from src.agents.base import BaseLLMAgent, SLIDE_REWRITER_ROLE
-from src.memory.research.schema import ProtoSlide, make_slide_batch_model, slide_output_prompt_contract
+from src.memory.research.schema import ProtoSlide, SlideContent, make_slide_batch_model, slide_output_prompt_contract
 from src.memory.research.database import ResearchDatabase
+from src.state import group_allows_empty_chunks
 
 
 # ---------------------------------------------------------------------------
@@ -94,12 +95,14 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         include_existing_slides: bool,
     ) -> tuple[str, list[ProtoSlide]]:
         with ResearchDatabase() as research_db:
-            placeholders = ",".join(["?"] * len(chunk_ids))
-            rows = research_db.connection.execute(
-                f"SELECT id, text, contextualized_text FROM text_chunks "
-                f"WHERE id IN ({placeholders})",
-                chunk_ids,
-            ).fetchall()
+            rows = []
+            if chunk_ids:
+                placeholders = ",".join(["?"] * len(chunk_ids))
+                rows = research_db.connection.execute(
+                    f"SELECT id, text, contextualized_text FROM text_chunks "
+                    f"WHERE id IN ({placeholders})",
+                    chunk_ids,
+                ).fetchall()
             existing_slides: list[ProtoSlide] = []
             if include_existing_slides:
                 for bp_dict in slide_blueprints:
@@ -128,6 +131,9 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
             "",
             "### SEMANTIC GUIDANCE:",
             "- Keep each slide focused on one primary takeaway.",
+            "- Do not default to a basic slide with exactly three flat bullets unless that structure is genuinely the clearest fit for the material.",
+            "- Vary slide density based on the content: some slides should use 2 strong bullets, others 4-5 concise bullets, and others a few top-level bullets with supporting sub-bullets.",
+            "- Use sub-bullets when they help unpack evidence, examples, caveats, or stepwise logic under a main claim.",
             "- Choose the layout that best supports the evidence and intended narrative role.",
             "- Speaker notes should be professional, conversational, and cover the core bullets with added context.",
             "- Avoid academic jargon unless the original terminology is important to preserve.",
@@ -159,7 +165,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         tag                  = self._log_display
 
         try:
-            if not chunk_ids:
+            if not chunk_ids and not group_allows_empty_chunks(slide_blueprints):
                 self._logger.log(f"[{tag}] No chunk_ids — skipping", level="warning")
                 return Command(update={
                     "slides_written": [{"group_idx": group_idx, "count": 0}],
@@ -171,6 +177,28 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
                 return Command(update={
                     "slides_written": [{"group_idx": group_idx, "count": 0}],
                     "messages":       [f"[{tag}] Skipped (no blueprints)"],
+                })
+
+            prebuilt_slides = [
+                ProtoSlide(
+                    slide_number=bp_dict["slide_number"],
+                    content=SlideContent.model_validate(bp_dict["prebuilt_content"]),
+                    chunk_references=bp_dict.get("source_chunk_ids", []),
+                )
+                for bp_dict in slide_blueprints
+                if bp_dict.get("prebuilt_content") is not None
+            ]
+            if len(prebuilt_slides) == len(slide_blueprints):
+                saved_count = 0
+                with ResearchDatabase() as research_db:
+                    for proto in prebuilt_slides:
+                        research_db.save_slide(proto)
+                        saved_count += 1
+                msg = f"[{tag}] Wrote {saved_count}/{len(slide_blueprints)} planner-authored slide(s) without Slide Writer generation"
+                self._logger.log(msg)
+                return Command(update={
+                    "slides_written": [{"group_idx": group_idx, "count": saved_count}],
+                    "messages":       [msg],
                 })
 
             slide_count = len(slide_blueprints)

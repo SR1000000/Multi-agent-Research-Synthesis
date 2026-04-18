@@ -132,6 +132,7 @@ class PptxBuilder:
         slide = prs.slides.add_slide(layout)
 
         self._set_title(slide, content.title)
+        self._set_subtitle(slide, content.subtitle)
         self._set_body(slide, content, mode)
         self._set_speaker_notes(slide, content.speaker_notes)
 
@@ -148,6 +149,14 @@ class PptxBuilder:
         title_shape = slide.shapes.title
         if title_shape is not None:
             title_shape.text = title
+
+    def _set_subtitle(self, slide, subtitle: str | None) -> None:
+        if not subtitle:
+            return
+        for ph in slide.placeholders:
+            if ph.placeholder_format.idx == 1:
+                ph.text = subtitle
+                return
 
     def _set_body(self, slide, content: SlideContent, mode: str | None) -> None:
         """Finds the body/content placeholder and writes bullets into it."""

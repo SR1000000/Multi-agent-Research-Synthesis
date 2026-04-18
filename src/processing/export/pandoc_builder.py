@@ -22,6 +22,9 @@ def _render_slide(proto: ProtoSlide) -> str:
 
     parts.append(f"# {content.title}")
     parts.append("")
+    if content.subtitle:
+        parts.append(f"## {content.subtitle}")
+        parts.append("")
 
     for bullet in content.bullets:
         parts.extend(_render_bullet(bullet))
@@ -96,5 +99,35 @@ class PandocBuilder:
 
     def _render_markdown(self, slides: List[ProtoSlide]) -> str:
         """Renders the full deck as a Pandoc Markdown string."""
-        blocks = [_render_slide(s) for s in slides]
-        return "\n\n---\n\n".join(blocks)
+        if not slides:
+            return ""
+
+        yaml_header = ""
+        if slides[0].content.layout == "title_slide":
+            title_slide = slides[0]
+            # Escape quotes for YAML strings
+            title = title_slide.content.title.replace('"', '\\"')
+            yaml_lines = ["---", f'title: "{title}"']
+            
+            if title_slide.content.subtitle:
+                subtitle = title_slide.content.subtitle.replace('"', '\\"')
+                yaml_lines.append(f'subtitle: "{subtitle}"')
+            yaml_lines.append("---")
+            
+            if title_slide.content.speaker_notes:
+                yaml_lines.append("")
+                yaml_lines.append("::: notes")
+                yaml_lines.append(title_slide.content.speaker_notes)
+                yaml_lines.append(":::")
+                
+            yaml_header = "\n".join(yaml_lines)
+            slides_to_render = slides[1:]
+        else:
+            slides_to_render = slides
+
+        blocks = [_render_slide(s) for s in slides_to_render]
+        body = "\n\n---\n\n".join(blocks)
+
+        if yaml_header:
+            return f"{yaml_header}\n\n{body}" if body else yaml_header
+        return body

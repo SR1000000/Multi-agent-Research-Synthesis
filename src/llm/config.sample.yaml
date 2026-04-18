@@ -8,6 +8,7 @@
 #       model_name: "app"
 #     - model: "gemini/gemini-2.5-flash"
 #       model_name: "writer"
+# Current sample assumes free teir for Gemini, Ollama and OpenRouter.
 
 router:
   default_model_name: "app"
@@ -15,6 +16,9 @@ router:
   fallbacks:
     - app: ["fallback"]
     - slides: ["fallback"]
+    # Planner: strict tier order only (qwen -> gpt-oss-120b -> gemini flash lite). No hop into ``fallback``.
+    - planner: ["planner_2"]
+    - planner_2: ["planner_3"]
     # - writer: ["fallback"]
     # - fast: ["fallback"]
 
@@ -24,7 +28,11 @@ router:
       models:
         - model: "gemini/gemini-3.1-flash-lite-preview"
           model_name: "slides"
-          rpm: 20
+          rpm: 15
+        # Third planner tier (LiteLLM group ``planner_3``); not used by ``app`` / ``slides``.
+        - model: "gemini/gemini-3.1-flash-lite-preview"
+          model_name: "planner_3"
+          rpm: 15
 
   # Note: splitting fallback_providers into *_high and *_rest allows us to control the
   # exact model-level fallback order across different providers (e.g. OpenRouter -> Ollama -> OpenRouter)
@@ -34,13 +42,21 @@ router:
       api_key: "os.environ/OPENROUTER_API_KEY"
       api_base: "os.environ/OPENROUTER_BASE_URL"
       models:
+        # Second planner tier only (``planner_2``); duplicate row keeps ``fallback`` pool unchanged.
+        - model: "openrouter/openai/gpt-oss-120b:free"
+          model_name: "planner_2"
         - model: "openrouter/openai/gpt-oss-120b:free"
 
     ollama_high:
       api_key: "os.environ/OLLAMA_API_KEY"
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
+        # First planner tier only (``planner``); duplicate row keeps ``fallback`` pool order/contents.
         - model: "ollama/qwen3.5:397b-cloud"
+          model_name: "planner"
+          timeout: 180
+        - model: "ollama/qwen3.5:397b-cloud"
+          timeout: 180
 
     gemini_rest:
       api_key: "os.environ/GEMINI_API_KEY"
@@ -53,7 +69,6 @@ router:
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
         - model: "ollama/gemma4:31b-cloud"
-          timeout: 180
 
     openrouter_rest:
       api_key: "os.environ/OPENROUTER_API_KEY"
