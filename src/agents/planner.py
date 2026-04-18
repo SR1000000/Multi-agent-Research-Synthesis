@@ -536,6 +536,7 @@ class PlannerAgent(BaseLLMAgent):
             ))
 
         presentation_plan = PresentationPlan(
+            title=llm_plan.title,
             thesis=llm_plan.thesis,
             target_audience=llm_plan.target_audience,
             estimated_duration_minutes=llm_plan.estimated_duration_minutes,

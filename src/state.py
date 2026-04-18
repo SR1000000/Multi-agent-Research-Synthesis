@@ -148,6 +148,7 @@ class SlideGroup(BaseModel):
 
 class PresentationPlan(BaseModel):
     """Resolved plan stored in ResearchState — contains chunk IDs, not section labels."""
+    title: str
     thesis: str
     target_audience: str
     estimated_duration_minutes: int
