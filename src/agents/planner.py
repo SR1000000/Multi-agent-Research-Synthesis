@@ -2,9 +2,10 @@
 PlannerAgent
 ============
 Reads all chunks for every ingested document from research.db, detects section
-boundaries via Markdown heading analysis, presents the LLM with a human-readable
-section outline (labels like S0, S1, ...), and asks it to produce a
-LLMPresentationPlan in which every slide blueprint references sections by label.
+boundaries via Markdown heading analysis, builds a compact planning brief for
+each paper (outline + abstract/overview + representative section snippets), and
+asks the LLM to produce a LLMPresentationPlan in which every slide blueprint
+references sections by label.
 
 Phase 2 (Python, no LLM) validates the result strictly and resolves section
 labels → concrete chunk IDs before storing the final PresentationPlan in state.
@@ -38,6 +39,9 @@ from src.memory.research.database import ResearchDatabase
 PLAN_MAX_RETRIES = 2
 MIN_GROUP_SIZE   = 2
 MAX_GROUP_SIZE   = 7
+PAPER_SUMMARY_MAX_CHARS = 900
+SECTION_SNIPPET_MAX_CHARS = 420
+SECTION_SNIPPET_PER_CHUNK_CHARS = 180
 
 # Matches ATX headings: # / ## / ### / #### at the start of a line
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+\S")
@@ -63,13 +67,21 @@ def _planner_output_format() -> str:
 
 class _Section:
     """One detected section within a paper."""
-    __slots__ = ("label", "heading", "chunk_ids", "word_count")
+    __slots__ = ("label", "heading", "chunk_ids", "word_count", "snippet")
 
-    def __init__(self, label: str, heading: str, chunk_ids: list[str], word_count: int):
+    def __init__(
+        self,
+        label: str,
+        heading: str,
+        chunk_ids: list[str],
+        word_count: int,
+        snippet: str,
+    ):
         self.label      = label
         self.heading    = heading
         self.chunk_ids  = chunk_ids
         self.word_count = word_count
+        self.snippet    = snippet
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +101,92 @@ def _detect_heading(chunk_text: str) -> str | None:
     return None
 
 
+def _normalize_planner_text(text: str) -> str:
+    """Collapse markdown-ish chunk text into one readable snippet line."""
+    cleaned_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _HEADING_RE.match(line):
+            continue
+        cleaned_lines.append(stripped)
+
+    cleaned = " ".join(cleaned_lines).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned
+
+
+def _truncate_text(text: str, max_chars: int) -> str:
+    """Trim text without cutting too harshly in the middle of a clause."""
+    clean = " ".join(text.split()).strip()
+    if len(clean) <= max_chars:
+        return clean
+
+    floor = max(int(max_chars * 0.6), 1)
+    for sep in (". ", "; ", ": ", ", "):
+        idx = clean.rfind(sep, floor, max_chars + 1)
+        if idx != -1:
+            return clean[: idx + len(sep.strip())].rstrip()
+
+    cut = clean.rfind(" ", floor, max_chars + 1)
+    if cut == -1:
+        cut = max_chars
+    return clean[:cut].rstrip() + "..."
+
+
+def _chunk_planner_text(chunk: dict) -> str:
+    """Prefer contextualized chunk text when available for planning."""
+    contextualized = (chunk.get("contextualized_text") or "").strip()
+    raw = (chunk.get("text") or "").strip()
+    return contextualized or raw
+
+
+def _build_section_snippet(chunks: list[dict]) -> str:
+    """Create a compact section preview from representative chunk texts."""
+    if not chunks:
+        return ""
+
+    candidate_indexes = sorted({0, len(chunks) // 2, len(chunks) - 1})
+    snippets: list[str] = []
+    seen: set[str] = set()
+
+    for idx in candidate_indexes:
+        snippet = _normalize_planner_text(_chunk_planner_text(chunks[idx]))
+        if not snippet:
+            continue
+        snippet = _truncate_text(snippet, SECTION_SNIPPET_PER_CHUNK_CHARS)
+        key = snippet.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        snippets.append(snippet)
+
+    return _truncate_text(" | ".join(snippets), SECTION_SNIPPET_MAX_CHARS)
+
+
+def _build_paper_summary(raw_chunks: list[dict], paper_abstract: str) -> str:
+    """Create a short paper-level summary for the planner prompt."""
+    abstract = _normalize_planner_text(paper_abstract)
+    if abstract:
+        return _truncate_text(abstract, PAPER_SUMMARY_MAX_CHARS)
+
+    snippets: list[str] = []
+    seen: set[str] = set()
+    for chunk in raw_chunks[:3]:
+        snippet = _normalize_planner_text(_chunk_planner_text(chunk))
+        if not snippet:
+            continue
+        snippet = _truncate_text(snippet, SECTION_SNIPPET_PER_CHUNK_CHARS)
+        key = snippet.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        snippets.append(snippet)
+
+    return _truncate_text(" | ".join(snippets), PAPER_SUMMARY_MAX_CHARS) if snippets else "(no paper summary available)"
+
+
 # ---------------------------------------------------------------------------
 # Section grouping
 # ---------------------------------------------------------------------------
@@ -102,6 +200,7 @@ def _detect_sections(raw_chunks: list[dict], label_offset: int = 0) -> list[_Sec
     current_ids: list[str]   = []
     current_heading          = "(no heading)"
     current_words            = 0
+    current_chunks: list[dict] = []
 
     for i, chunk in enumerate(raw_chunks):
         text    = chunk["text"] or ""
@@ -115,15 +214,18 @@ def _detect_sections(raw_chunks: list[dict], label_offset: int = 0) -> list[_Sec
                 heading=current_heading,
                 chunk_ids=current_ids,
                 word_count=current_words,
+                snippet=_build_section_snippet(current_chunks),
             ))
             current_ids   = []
             current_words = 0
+            current_chunks = []
 
         if is_boundary:
             current_heading = heading or ("(no heading)" if i > 0 else "(no heading)")
 
         current_ids.append(chunk["id"])
         current_words += len(text.split())
+        current_chunks.append(chunk)
 
     # Flush last section
     if current_ids:
@@ -133,6 +235,7 @@ def _detect_sections(raw_chunks: list[dict], label_offset: int = 0) -> list[_Sec
             heading=current_heading,
             chunk_ids=current_ids,
             word_count=current_words,
+            snippet=_build_section_snippet(current_chunks),
         ))
 
     return sections
@@ -144,36 +247,39 @@ def _detect_sections(raw_chunks: list[dict], label_offset: int = 0) -> list[_Sec
 
 def _build_outline(
     all_sections: list[_Section],
-    paper_titles: list[str],
-    doc_ids: list[str],
+    paper_contexts: list[dict[str, str]],
     sections_per_doc: list[int],
     max_slides: int,
     total_chunks: int,
 ) -> str:
     total_words = sum(s.word_count for s in all_sections)
     lines = [
-        f"PAPER OUTLINE ({len(all_sections)} sections across {len(doc_ids)} paper(s), "
+        f"PAPER OUTLINE ({len(all_sections)} sections across {len(paper_contexts)} paper(s), "
         f"{total_chunks} total chunks, ~{total_words} words)",
         f"Soft total deck target: {max_slides} slides (including the reserved title slide)",
         "",
     ]
 
     sec_idx = 0
-    for doc_idx, (doc_id, count) in enumerate(zip(doc_ids, sections_per_doc)):
-        title = paper_titles[doc_idx] if doc_idx < len(paper_titles) else doc_id
+    for doc_idx, (paper_context, count) in enumerate(zip(paper_contexts, sections_per_doc)):
+        title = paper_context["title"]
         lines.append(f'Paper {doc_idx + 1}: "{title}"')
-        lines.append(f"  {'Label':<6}  {'Heading':<40}  {'Chunks':>6}  {'~Words':>7}")
-        lines.append(f"  {'-'*6}  {'-'*40}  {'-'*6}  {'-'*7}")
+        lines.append(f"  Doc ID: {paper_context['doc_id']}")
+        lines.append(f"  Paper summary: {paper_context['summary']}")
+        lines.append("  Sections:")
         for _ in range(count):
             s = all_sections[sec_idx]
-            heading_col = s.heading[:40].ljust(40)
-            lines.append(f"  {s.label:<6}  {heading_col}  {len(s.chunk_ids):>6}  {s.word_count:>7}")
+            lines.append(
+                f"  - {s.label} | {s.heading} | {len(s.chunk_ids)} chunk(s) | ~{s.word_count} words"
+            )
+            lines.append(f"    Snippet: {s.snippet or '(no representative snippet available)'}")
             sec_idx += 1
         lines.append("")
 
     lines += [
         "INSTRUCTIONS:",
         "- Reference sections only by their label (e.g. S0, S3). Do NOT invent labels.",
+        "- Use the paper summaries and section snippets to infer the thesis and storyline, not just the headings.",
         f"- Each SlideGroup must contain between {MIN_GROUP_SIZE} and {MAX_GROUP_SIZE} slides.",
         "- A slide may reference sections from different papers.",
         f"- Slide {TITLE_SLIDE_NUMBER} is a reserved title slide created automatically in Python. Your blueprints MUST start at slide_number {FIRST_CONTENT_SLIDE_NUMBER}.",
@@ -308,12 +414,34 @@ class PlannerAgent(BaseLLMAgent):
         # ------------------------------------------------------------------
         all_sections:    list[_Section] = []
         sections_per_doc: list[int]     = []
+        paper_contexts: list[dict[str, str]] = []
         total_chunks = 0
 
         with ResearchDatabase() as db:
-            for doc_id in doc_ids:
+            for doc_idx, doc_id in enumerate(doc_ids):
+                doc_row = db.connection.execute(
+                    "SELECT filename, paper_metadata FROM documents WHERE id = ?",
+                    (doc_id,),
+                ).fetchone()
                 raw_chunks = db.get_chunks_for_dispatch(doc_id)
                 total_chunks += len(raw_chunks)
+                paper_metadata: dict = {}
+                if doc_row and doc_row["paper_metadata"]:
+                    try:
+                        paper_metadata = json.loads(doc_row["paper_metadata"])
+                    except json.JSONDecodeError:
+                        paper_metadata = {}
+
+                title = (
+                    paper_titles[doc_idx].strip()
+                    if doc_idx < len(paper_titles) and paper_titles[doc_idx].strip()
+                    else (paper_metadata.get("title") or (doc_row["filename"] if doc_row else doc_id))
+                )
+                paper_contexts.append({
+                    "doc_id": doc_id,
+                    "title": title,
+                    "summary": _build_paper_summary(raw_chunks, paper_metadata.get("abstract", "")),
+                })
                 if not raw_chunks:
                     self._logger.log(
                         f"[Planner] Warning: no chunks for doc_id={doc_id}", level="warning"
@@ -340,7 +468,7 @@ class PlannerAgent(BaseLLMAgent):
         # Phase 1b: build outline string for LLM
         # ------------------------------------------------------------------
         outline = _build_outline(
-            all_sections, paper_titles, doc_ids,
+            all_sections, paper_contexts,
             sections_per_doc, max_slides, total_chunks,
         )
 

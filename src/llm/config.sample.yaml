@@ -54,7 +54,9 @@ router:
         # First planner tier only (``planner``); duplicate row keeps ``fallback`` pool order/contents.
         - model: "ollama/qwen3.5:397b-cloud"
           model_name: "planner"
+          timeout: 180
         - model: "ollama/qwen3.5:397b-cloud"
+          timeout: 180
 
     gemini_rest:
       api_key: "os.environ/GEMINI_API_KEY"

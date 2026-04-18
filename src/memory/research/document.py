@@ -284,7 +284,7 @@ def get_table(db, table_id: str) -> ExtractedTable | None:
 def get_chunks_for_dispatch(db, doc_id: str) -> list[dict]:
     """
     Return all text chunks for a document in stable document order, as lightweight
-    dicts with keys: id, text, meta_data (parsed dict).
+    dicts with keys: id, text, contextualized_text, meta_data (parsed dict).
     """
     rows = _load_ordered_chunk_rows(db, doc_id)
 
@@ -292,6 +292,7 @@ def get_chunks_for_dispatch(db, doc_id: str) -> list[dict]:
         {
             "id": row["id"],
             "text": row["text"],
+            "contextualized_text": row["contextualized_text"],
             "meta_data": json.loads(row["meta_data"]) if row["meta_data"] else {},
         }
         for row in rows

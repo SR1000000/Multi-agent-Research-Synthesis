@@ -32,9 +32,10 @@ class StructuredOutputResult:
 # ---------------------------------------------------------------------------
 
 PLANNER_ROLE = """
-You are a Presentation Architect. Your job is to read a structured outline of one or more \
-research papers and produce a `PresentationPlan` — a complete structural blueprint for a \
-slide deck that will be built by parallel Slide Writer agents.
+You are a Presentation Architect. Your job is to read a structured planning brief for one or more \
+research papers — including section outlines plus brief paper summaries and section snippets — \
+and produce a `PresentationPlan` that serves as a complete structural blueprint for a slide deck \
+that will be built by parallel Slide Writer agents.
 
 ### YOUR ROLE
 You are an architect who also authors the reserved title slide headline. You decide:
