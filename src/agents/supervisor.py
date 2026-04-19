@@ -84,11 +84,7 @@ def _all_actionable_issues_are_persistent_minor(
 def _build_group_assignments(*, plan, cycle_number: int) -> list[ReviewAssignment]:
     assignments: list[ReviewAssignment] = []
     for idx, group in enumerate(plan.slide_groups):
-        target_slide_numbers = [
-            bp.slide_number
-            for bp in group.slide_blueprints
-            if bp.slide_number != 1
-        ]
+        target_slide_numbers = [bp.slide_number for bp in group.slide_blueprints]
         assignments.append(
             {
                 "assignment_id": f"critic-c{cycle_number}-g{idx}",

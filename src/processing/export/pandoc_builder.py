@@ -44,6 +44,9 @@ class PandocBuilder:
     Markdown (with LaTeX math support via the tex_math_dollars extension),
     and converts the result to a .pptx file using pypandoc.
 
+    The opening title slide is generated from the ``title`` and ``subtitle``
+    constructor arguments as YAML front matter; it is never stored in the DB.
+
     Bullet text may contain Markdown formatting and LaTeX math:
       - Inline math:  $E = mc^2$
       - Display math: $$\\text{Attention}(Q,K,V) = \\text{softmax}(...)V$$
@@ -53,19 +56,33 @@ class PandocBuilder:
     Usage::
 
         with ResearchDatabase() as db:
-            PandocBuilder(output_path=Path("output.pptx"), db=db).build()
+            PandocBuilder(
+                output_path=Path("output.pptx"),
+                db=db,
+                title="My Talk",
+                subtitle="An optional subtitle",
+            ).build()
     """
 
     _PANDOC_FORMAT = "markdown+tex_math_dollars"
 
-    def __init__(self, output_path: Path, db: ResearchDatabase) -> None:
+    def __init__(
+        self,
+        output_path: Path,
+        db: ResearchDatabase,
+        title: str = "",
+        subtitle: str = "",
+    ) -> None:
         self.output_path = Path(output_path)
         self._db = db
+        self._title = title
+        self._subtitle = subtitle
 
     def build(self) -> Path:
         """
         Loads all proto-slides from research.db in slide-number order, renders them
-        to Pandoc Markdown, and writes the presentation to self.output_path.
+        to Pandoc Markdown (prepending a YAML title slide from constructor metadata),
+        and writes the presentation to self.output_path.
         Returns the resolved path.
 
         Raises:
@@ -99,33 +116,17 @@ class PandocBuilder:
 
     def _render_markdown(self, slides: List[ProtoSlide]) -> str:
         """Renders the full deck as a Pandoc Markdown string."""
-        if not slides:
-            return ""
-
         yaml_header = ""
-        if slides[0].content.layout == "title_slide":
-            title_slide = slides[0]
-            # Escape quotes for YAML strings
-            title = title_slide.content.title.replace('"', '\\"')
+        if self._title:
+            title = self._title.replace('"', '\\"')
             yaml_lines = ["---", f'title: "{title}"']
-            
-            if title_slide.content.subtitle:
-                subtitle = title_slide.content.subtitle.replace('"', '\\"')
+            if self._subtitle:
+                subtitle = self._subtitle.replace('"', '\\"')
                 yaml_lines.append(f'subtitle: "{subtitle}"')
             yaml_lines.append("---")
-            
-            if title_slide.content.speaker_notes:
-                yaml_lines.append("")
-                yaml_lines.append("::: notes")
-                yaml_lines.append(title_slide.content.speaker_notes)
-                yaml_lines.append(":::")
-                
             yaml_header = "\n".join(yaml_lines)
-            slides_to_render = slides[1:]
-        else:
-            slides_to_render = slides
 
-        blocks = [_render_slide(s) for s in slides_to_render]
+        blocks = [_render_slide(s) for s in slides]
         body = "\n\n---\n\n".join(blocks)
 
         if yaml_header:

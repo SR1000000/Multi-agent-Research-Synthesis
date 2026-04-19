@@ -9,7 +9,7 @@ from __future__ import annotations
 from langgraph.graph import END
 from langgraph.types import Command, Send
 
-from src.state import PresentationPlan, ResearchState, SlideGroup, group_allows_empty_chunks
+from src.state import PresentationPlan, ResearchState, SlideGroup
 
 MAX_RETRIES_PER_GROUP = 2
 
@@ -131,7 +131,7 @@ class PlanExecutorAgent:
             dispatch_id = f"initial-{dispatch_counter + 1}"
             for idx, group in enumerate(groups):
                 chunk_ids = _group_chunk_ids(group)
-                if not chunk_ids and not group_allows_empty_chunks(group.slide_blueprints):
+                if not chunk_ids:
                     self._logger.log(
                         f"[PlanExecutor] Warning: group {idx} has 0 chunk_ids "
                         f"(blueprints: {[bp.working_title for bp in group.slide_blueprints]})",

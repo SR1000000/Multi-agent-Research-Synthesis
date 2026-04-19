@@ -14,7 +14,6 @@ from src.state import (
     CriticResultRecord,
     ResearchState,
     ReviewAssignment,
-    TITLE_SLIDE_NUMBER,
 )
 
 
@@ -99,12 +98,6 @@ class SlideCriticAgent(BaseLLMAgent):
 
     def _build_user_prompt(self, state: CriticDispatch) -> str:
         slide_numbers = state.get("target_slide_numbers", [])
-        if slide_numbers == [TITLE_SLIDE_NUMBER]:
-            return (
-                "Assigned check is a title-slide grounding review.\n"
-                "Return actionable=false with an empty issue list unless explicit factual errors are present.\n"
-            )
-
         slides = self._load_slides(slide_numbers)
         chunks = self._load_chunks(state.get("chunk_ids", []))
         blueprints = state.get("slide_blueprints", [])

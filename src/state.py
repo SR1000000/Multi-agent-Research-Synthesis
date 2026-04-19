@@ -1,28 +1,10 @@
 import operator
-from typing import Annotated, Any, TypedDict, List, Optional, Literal
+from typing import Annotated, TypedDict, List, Optional, Literal
 from pydantic import BaseModel, Field
-from src.memory.research.schema import SlideContent
 
-TITLE_SLIDE_NUMBER = 1
-FIRST_CONTENT_SLIDE_NUMBER = 2
-SlideKind = Literal["title", "content"]
-
-
-def _blueprint_value(blueprint: Any, field: str, default: Any = None) -> Any:
-    if isinstance(blueprint, dict):
-        return blueprint.get(field, default)
-    return getattr(blueprint, field, default)
-
-
-def is_title_blueprint(blueprint: Any) -> bool:
-    slide_kind = _blueprint_value(blueprint, "slide_kind")
-    if slide_kind is not None:
-        return slide_kind == "title"
-    return _blueprint_value(blueprint, "slide_number") == TITLE_SLIDE_NUMBER
-
-
-def group_allows_empty_chunks(blueprints: list[Any]) -> bool:
-    return bool(blueprints) and all(is_title_blueprint(bp) for bp in blueprints)
+# Persisted / planned content slides are numbered 1..N. The opening title slide is
+# not stored; it is added at export from presentation_plan.title/subtitle.
+FIRST_CONTENT_SLIDE_NUMBER = 1
 
 
 class ErrorRecord(TypedDict):
@@ -49,7 +31,12 @@ ReviewPhase = Literal[
 
 class LLMSlideBlueprint(BaseModel):
     """What the LLM produces per slide — references sections by label."""
-    slide_number: int = Field(description="Slide number within the full deck. Start at 2 because Slide 1 is the reserved title slide.")
+    slide_number: int = Field(
+        description=(
+            "Slide number for this content slide within the persisted deck (1..N). "
+            "The title slide is not a blueprint; it comes from presentation metadata at export."
+        )
+    )
     working_title: str = Field(description="Punchy working title for the slide")
     narrative_role: Literal[
         "hook",
@@ -93,12 +80,12 @@ class LLMPresentationPlan(BaseModel):
     """Schema the LLM must produce — section-label references, no chunk IDs."""
     title: str = Field(
         description=(
-            "Reserved title slide title. Must be fewer than 7 words and suitable as a presentation headline."
+            "Presentation title. Must be fewer than 7 words and suitable as a presentation headline."
         )
     )
     subtitle: str = Field(
         description=(
-            "Reserved title slide subtitle. A concise supporting phrase or sentence for the audience."
+            "Presentation subtitle. A concise supporting phrase or sentence for the audience."
         )
     )
     thesis: str = Field(
@@ -136,7 +123,6 @@ class LLMPresentationPlan(BaseModel):
 class SlideBlueprint(BaseModel):
     """Resolved blueprint with concrete chunk IDs ready for the Slide Writer."""
     slide_number: int
-    slide_kind: SlideKind = "content"
     working_title: str
     narrative_role: Literal[
         "hook",
@@ -149,7 +135,6 @@ class SlideBlueprint(BaseModel):
     ]
     intent: str
     source_chunk_ids: List[str]
-    prebuilt_content: Optional[SlideContent] = None
 
 
 class SlideGroup(BaseModel):
@@ -161,6 +146,7 @@ class SlideGroup(BaseModel):
 class PresentationPlan(BaseModel):
     """Resolved plan stored in ResearchState — contains chunk IDs, not section labels."""
     title: str
+    subtitle: str
     thesis: str
     target_audience: str
     estimated_duration_minutes: int

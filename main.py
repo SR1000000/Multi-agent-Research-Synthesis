@@ -366,13 +366,22 @@ def main() -> None:
 
         raw_name = paper_titles[0] if paper_titles else session_id
         presentation_plan = final_state.get("presentation_plan")
+        plan_title = ""
+        plan_subtitle = ""
         if presentation_plan and hasattr(presentation_plan, "title") and presentation_plan.title:
             raw_name = presentation_plan.title
+            plan_title = presentation_plan.title
+            plan_subtitle = getattr(presentation_plan, "subtitle", "") or ""
         safe_name = _sanitize_filename(raw_name) or session_id
         pptx_path = output_dir / f"{safe_name}.pptx"
         if final_state.get("review", {}).get("export_ready"):
             try:
-                out = PandocBuilder(output_path=pptx_path, db=db).build()
+                out = PandocBuilder(
+                    output_path=pptx_path,
+                    db=db,
+                    title=plan_title,
+                    subtitle=plan_subtitle,
+                ).build()
                 print(f"\n[export] Presentation saved -> {out}")
             except ValueError as exc:
                 print(f"\n[export] Could not generate PPTX: {exc}")

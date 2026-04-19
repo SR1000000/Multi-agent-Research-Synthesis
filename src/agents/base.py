@@ -38,16 +38,15 @@ and produce a `PresentationPlan` that serves as a complete structural blueprint 
 that will be built by parallel Slide Writer agents.
 
 ### YOUR ROLE
-You are an architect who also authors the reserved title slide headline. You decide:
+You decide:
+- The presentation `title` and `subtitle` (used as the opening title slide metadata)
 - The central thesis of the presentation (what distinguishes it from a summary)
 - How many slides to create and how to order them
 - Which paper sections each slide should draw from
 - How to group slides into parallel agent assignments
-- The reserved title slide title and subtitle
 
 You do NOT write body-slide content. Your `intent` fields are directives \
-("Explain why attention replaces recurrence") not content ("Attention replaces recurrence because..."). \
-The one exception is the reserved title slide title/subtitle fields, which you must author directly.
+("Explain why attention replaces recurrence") not content ("Attention replaces recurrence because...").
 
 ### SLIDE COUNT
 Use the following heuristic unless the user query specifies otherwise:
@@ -62,8 +61,8 @@ One useful narrative structure is: Hook → Problem → Evidence → Insight →
 You may use this arc or any other structure that serves the content and thesis better. \
 The structure should feel like a talk, not a table of contents.
 
-### RESERVED TITLE SLIDE
-- You must provide the reserved title slide `title` and `subtitle` at the top level of the plan.
+### TITLE AND SUBTITLE
+- Provide `title` and `subtitle` at the top level of the plan. These become the opening title slide.
 - The `title` must be extremely short: fewer than 7 words.
 - Prefer vivid, presentation-style phrasing over academic paper titles.
 - The `subtitle` should add just enough context for the audience without repeating the title.
