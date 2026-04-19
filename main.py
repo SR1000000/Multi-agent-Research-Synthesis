@@ -373,7 +373,16 @@ def main() -> None:
             plan_title = presentation_plan.title
             plan_subtitle = getattr(presentation_plan, "subtitle", "") or ""
         safe_name = _sanitize_filename(raw_name) or session_id
-        pptx_path = output_dir / f"{safe_name}.pptx"
+
+        # Determine the prefix based on existing .pptx files in the output directory
+        if not output_dir.exists():
+            output_dir.mkdir(parents=True, exist_ok=True)
+            pptx_count = 0
+        else:
+            pptx_count = len(list(output_dir.glob("*.pptx")))
+
+        prefix = f"{pptx_count + 1} - "
+        pptx_path = output_dir / f"{prefix}{safe_name}.pptx"
         if final_state.get("review", {}).get("export_ready"):
             try:
                 out = PandocBuilder(
