@@ -55,3 +55,74 @@ def clear_proto_slides(db) -> None:
     """Deletes all proto-slides from the research database."""
     with db._conn:
         db._conn.execute("DELETE FROM proto_slides")
+
+
+def clear_slide_review_events(db) -> None:
+    """Deletes all slide review events (critic/supervisor audit trail) from the research database."""
+    with db._conn:
+        db._conn.execute("DELETE FROM slide_review_events")
+
+
+def save_review_event(
+    db,
+    *,
+    session_id: str,
+    cycle_number: int,
+    scope_type: str,
+    scope_id: str,
+    check_type: str,
+    assignment_id: str | None = None,
+    issue_code: str | None = None,
+    severity: str | None = None,
+    fingerprint: str | None = None,
+    rewrite_instruction_summary: str | None = None,
+    decision: str | None = None,
+) -> None:
+    """Persists a compact review event for recurrence tracking and auditability."""
+    with db._conn:
+        db._conn.execute(
+            """
+            INSERT INTO slide_review_events (
+                session_id,
+                cycle_number,
+                scope_type,
+                scope_id,
+                check_type,
+                assignment_id,
+                issue_code,
+                severity,
+                fingerprint,
+                rewrite_instruction_summary,
+                decision
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                cycle_number,
+                scope_type,
+                scope_id,
+                check_type,
+                assignment_id,
+                issue_code,
+                severity,
+                fingerprint,
+                rewrite_instruction_summary,
+                decision,
+            ),
+        )
+
+
+def list_review_events(db, session_id: str) -> list[dict]:
+    rows = db._conn.execute(
+        """
+        SELECT session_id, cycle_number, scope_type, scope_id, check_type,
+               assignment_id, issue_code, severity, fingerprint,
+               rewrite_instruction_summary, decision, created_at
+        FROM slide_review_events
+        WHERE session_id = ?
+        ORDER BY cycle_number ASC, id ASC
+        """,
+        (session_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]

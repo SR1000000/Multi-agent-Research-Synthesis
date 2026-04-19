@@ -22,6 +22,7 @@ from src.processing.export.pandoc_builder import PandocBuilder
 from src.processing.chunker import get_text_chunker
 from src.processing.document import DocProcessor
 from src.processing.embedder.provider import get_text_embedder
+from src.state import make_initial_review_state
 
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "output"
 
@@ -243,7 +244,10 @@ def _build_initial_state(
         "max_slides":        args.max_slides,
         "slide_numbers":     [],
         "presentation_plan": None,
+        "review":            make_initial_review_state(),
         "slides_written":    [],
+        "critic_results":    [],
+        "review_summaries":  [],
         "messages":          preprocessing_messages,
         "errors":            [],
     }
@@ -294,8 +298,9 @@ def main() -> None:
     object_store = _make_object_store(args, logger)
 
     with get_database() as db:
-        # Clear generated proto slides for a fresh deck.
+        # Clear deck generation artifacts so each run starts clean (ingestion tables unchanged).
         db.clear_proto_slides()
+        db.clear_slide_review_events()
 
         doc_ids: list[str] = []
         paper_titles: list[str] = []
@@ -365,11 +370,14 @@ def main() -> None:
             raw_name = presentation_plan.title
         safe_name = _sanitize_filename(raw_name) or session_id
         pptx_path = output_dir / f"{safe_name}.pptx"
-        try:
-            out = PandocBuilder(output_path=pptx_path, db=db).build()
-            print(f"\n[export] Presentation saved -> {out}")
-        except ValueError as exc:
-            print(f"\n[export] Could not generate PPTX: {exc}")
+        if final_state.get("review", {}).get("export_ready"):
+            try:
+                out = PandocBuilder(output_path=pptx_path, db=db).build()
+                print(f"\n[export] Presentation saved -> {out}")
+            except ValueError as exc:
+                print(f"\n[export] Could not generate PPTX: {exc}")
+        else:
+            print("\n[export] Skipped because supervisor did not accept the deck.")
 
         _report_final_warnings(final_state.get("messages", []))
 

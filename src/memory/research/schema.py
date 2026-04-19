@@ -196,6 +196,24 @@ CREATE TABLE IF NOT EXISTS proto_slides (
 );
 """
 
+CREATE_SLIDE_REVIEW_EVENTS_TABLE = """
+CREATE TABLE IF NOT EXISTS slide_review_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    cycle_number INTEGER NOT NULL,
+    scope_type TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    check_type TEXT NOT NULL,
+    assignment_id TEXT,
+    issue_code TEXT,
+    severity TEXT,
+    fingerprint TEXT,
+    rewrite_instruction_summary TEXT,
+    decision TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 # Indexes for performance and filtering
 CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash);",
@@ -206,4 +224,5 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_equations_document_id ON equations(document_id);",
     "CREATE INDEX IF NOT EXISTS idx_equations_page_number ON equations(page_number);",
     "CREATE INDEX IF NOT EXISTS idx_text_chunks_document_id ON text_chunks(document_id);",
+    "CREATE INDEX IF NOT EXISTS idx_slide_review_events_session_cycle ON slide_review_events(session_id, cycle_number);",
 ]

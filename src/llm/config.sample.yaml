@@ -16,6 +16,7 @@ router:
   fallbacks:
     - app: ["fallback"]
     - slides: ["fallback"]
+    - critic: ["fallback"]
     # Planner: strict tier order only (qwen -> gpt-oss-120b -> gemini flash lite). No hop into ``fallback``.
     - planner: ["planner_2"]
     - planner_2: ["planner_3"]
@@ -26,6 +27,10 @@ router:
     gemini:
       api_key: "os.environ/GEMINI_API_KEY"
       models:
+        # ``default_model_name`` (``app``): Supervisor and any agent that omits ``model=``.
+        - model: "gemini/gemini-3.1-flash-lite-preview"
+          model_name: "app"
+          rpm: 15
         - model: "gemini/gemini-3.1-flash-lite-preview"
           model_name: "slides"
           rpm: 15
@@ -45,6 +50,8 @@ router:
         # Second planner tier only (``planner_2``); duplicate row keeps ``fallback`` pool unchanged.
         - model: "openrouter/openai/gpt-oss-120b:free"
           model_name: "planner_2"
+        - model: "openrouter/openai/gpt-oss-120b:free"
+          model_name: "critic"
         - model: "openrouter/openai/gpt-oss-120b:free"
 
     ollama_high:

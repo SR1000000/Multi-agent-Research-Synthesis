@@ -16,6 +16,7 @@ from .schema import (
     CREATE_IMAGES_TABLE,
     CREATE_INDEXES,
     CREATE_PROTO_SLIDES_TABLE,
+    CREATE_SLIDE_REVIEW_EVENTS_TABLE,
     CREATE_TABLES_TABLE,
     CREATE_TEXT_CHUNKS_TABLE,
     CREATE_TEXT_CHUNKS_VEC_TABLE,
@@ -103,6 +104,7 @@ class ResearchDatabase(DatabaseProvider):
             CREATE_TEXT_CHUNKS_TABLE,
             CREATE_TEXT_CHUNKS_VEC_TABLE.format(vec_dimensions=self.config.vec_dimensions),
             CREATE_PROTO_SLIDES_TABLE,
+            CREATE_SLIDE_REVIEW_EVENTS_TABLE,
         ]
         statements.extend(CREATE_INDEXES)
 
@@ -161,6 +163,15 @@ class ResearchDatabase(DatabaseProvider):
 
     def clear_proto_slides(self) -> None:
         return slide.clear_proto_slides(self)
+
+    def clear_slide_review_events(self) -> None:
+        return slide.clear_slide_review_events(self)
+
+    def save_review_event(self, **kwargs) -> None:
+        return slide.save_review_event(self, **kwargs)
+
+    def list_review_events(self, session_id: str) -> list[dict]:
+        return slide.list_review_events(self, session_id)
 
     @property
     def connection(self) -> sqlite3.Connection:
