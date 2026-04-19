@@ -1,26 +1,15 @@
 """
 PlanExecutorAgent
 =================
-Pure dispatcher + retry loop. No LLM calls, no section detection.
-
-First call (slides_written is empty in state):
-  - Reads slide_groups from the PresentationPlan
-  - Fans out one Send("slide_writer") per group
-  - Records which group indices were dispatched
-
-Subsequent calls (after Slide Writers complete and loop back):
-  - Reads slides_written counts from state
-  - Re-dispatches any group that produced 0 slides (up to MAX_RETRIES_PER_GROUP)
-  - Proceeds to END when all groups have produced slides or retry cap is reached
+Deterministic fanout/fan-in coordinator for initial slide writing, critics,
+and rewrites.
 """
 from __future__ import annotations
-
-from typing import Literal
 
 from langgraph.graph import END
 from langgraph.types import Command, Send
 
-from src.state import PresentationPlan, ResearchState, SlideGroup, group_allows_empty_chunks
+from src.state import PresentationPlan, ResearchState, SlideGroup
 
 MAX_RETRIES_PER_GROUP = 2
 
@@ -45,15 +34,47 @@ def _blueprints_as_dicts(group: SlideGroup) -> list[dict]:
     return [bp.model_dump() for bp in group.slide_blueprints]
 
 
-def _build_send(group: SlideGroup, group_idx: int, session_id: str) -> Send:
+def _build_slide_writer_send(
+    *,
+    dispatch_id: str,
+    assignment_id: str,
+    group: SlideGroup,
+    group_idx: int,
+    session_id: str,
+    rewrite_instructions: str = "",
+    target_slide_numbers: list[int] | None = None,
+) -> Send:
     return Send(
         "slide_writer",
         {
+            "dispatch_id":        dispatch_id,
+            "assignment_id":      assignment_id,
             "chunk_ids":          _group_chunk_ids(group),
             "slide_blueprints":   _blueprints_as_dicts(group),
             "group_idx":          group_idx,
             "session_id":         session_id,
-            "rewrite_instructions": "",
+            "rewrite_instructions": rewrite_instructions,
+            "target_slide_numbers": target_slide_numbers or [],
+        },
+    )
+
+
+def _build_critic_send(*, dispatch_id: str, session_id: str, assignment: dict) -> Send:
+    return Send(
+        "critic",
+        {
+            "dispatch_id": dispatch_id,
+            "assignment_id": assignment["assignment_id"],
+            "cycle_number": assignment["cycle_number"],
+            "session_id": session_id,
+            "check_type": assignment["check_type"],
+            "scope_type": assignment["scope_type"],
+            "scope_id": assignment["scope_id"],
+            "group_idx": assignment["group_idx"],
+            "chunk_ids": assignment["chunk_ids"],
+            "slide_blueprints": assignment["slide_blueprints"],
+            "target_slide_numbers": assignment["target_slide_numbers"],
+            "rewrite_instructions": assignment.get("rewrite_instructions", ""),
         },
     )
 
@@ -91,95 +112,187 @@ class PlanExecutorAgent:
         session_id        = state.get("session_id", "")
         presentation_plan: PresentationPlan | None = state.get("presentation_plan")
         slides_written:    list[dict]               = state.get("slides_written", [])
+        critic_results:    list[dict]               = state.get("critic_results", [])
+        review = dict(state.get("review") or {})
 
         if presentation_plan is None:
             raise ValueError("[PlanExecutor] No presentation_plan in state.")
 
         groups = presentation_plan.slide_groups
+        phase = review.get("phase", "initial_write")
+        dispatch_counter = int(review.get("dispatch_counter", 0))
+        active_dispatch = review.get("active_dispatch")
 
-        # ------------------------------------------------------------------
-        # First call: initial dispatch of all groups
-        # ------------------------------------------------------------------
-        if not slides_written:
+        if phase == "initial_write" and active_dispatch is None:
             self._logger.log(
                 f"[PlanExecutor] Initial dispatch — {len(groups)} group(s)"
             )
             sends: list[Send] = []
+            dispatch_id = f"initial-{dispatch_counter + 1}"
             for idx, group in enumerate(groups):
                 chunk_ids = _group_chunk_ids(group)
-                if not chunk_ids and not group_allows_empty_chunks(group.slide_blueprints):
+                if not chunk_ids:
                     self._logger.log(
                         f"[PlanExecutor] Warning: group {idx} has 0 chunk_ids "
                         f"(blueprints: {[bp.working_title for bp in group.slide_blueprints]})",
                         level="warning",
                     )
-                sends.append(_build_send(group, idx, session_id))
-
-            return Command(goto=sends)
-
-        # ------------------------------------------------------------------
-        # Subsequent calls: verify counts, retry failures
-        # ------------------------------------------------------------------
-
-        # Build a map: group_idx → list of counts seen so far (one per attempt)
-        counts_by_group: dict[int, list[int]] = {}
-        for entry in slides_written:
-            gidx  = entry["group_idx"]
-            count = entry["count"]
-            counts_by_group.setdefault(gidx, []).append(count)
-
-        # A group is "done" if any attempt produced > 0 slides
-        failed_groups: list[int] = []
-        for idx in range(len(groups)):
-            attempts = counts_by_group.get(idx, [])
-            succeeded = any(c > 0 for c in attempts)
-            if not succeeded:
-                failed_groups.append(idx)
-
-        if not failed_groups:
-            total_slides = sum(
-                max(counts_by_group.get(idx, [0])) for idx in range(len(groups))
-            )
-            msg = f"[PlanExecutor] All {len(groups)} group(s) completed. Total slides written: {total_slides}"
-            self._logger.log(msg)
-            return Command(update={"messages": [msg]}, goto=END)
-
-        # Retry failed groups that haven't exhausted their retry budget
-        retries: list[Send]   = []
-        exhausted: list[int]  = []
-        exhausted_messages: list[str] = []
-
-        for idx in failed_groups:
-            attempts_so_far = len(counts_by_group.get(idx, []))
-            if attempts_so_far <= MAX_RETRIES_PER_GROUP:
-                self._logger.log(
-                    f"[PlanExecutor] Retrying group {idx} "
-                    f"(attempt {attempts_so_far + 1}/{MAX_RETRIES_PER_GROUP + 1})",
-                    level="warning",
+                sends.append(
+                    _build_slide_writer_send(
+                        dispatch_id=dispatch_id,
+                        assignment_id=f"initial-g{idx}",
+                        group=group,
+                        group_idx=idx,
+                        session_id=session_id,
+                    )
                 )
-                retries.append(_build_send(groups[idx], idx, session_id))
-            else:
-                exhausted.append(idx)
-                err_msg = _exhausted_group_message(groups[idx], idx)
-                exhausted_messages.append(err_msg)
-                self._logger.log(err_msg, level="error")
 
-        if retries:
-            retry_msg = f"[PlanExecutor] Retrying {len(retries)} failed group(s)"
-            return Command(
-                update={"messages": [*exhausted_messages, retry_msg]},
-                goto=retries,
+            review.update(
+                {
+                    "phase": "initial_write",
+                    "dispatch_counter": dispatch_counter + 1,
+                    "active_dispatch": {
+                        "dispatch_id": dispatch_id,
+                        "kind": "initial_write",
+                        "cycle_number": 0,
+                        "expected_assignment_ids": [f"initial-g{idx}" for idx in range(len(groups))],
+                    },
+                }
             )
+            return Command(update={"review": review}, goto=sends)
 
-        # All failed groups exhausted — proceed to END with partial deck
-        completed_groups = len(groups) - len(exhausted)
-        msg = (
-            f"[PlanExecutor] PARTIAL DECK — proceeding with "
-            f"{completed_groups}/{len(groups)} completed group(s). "
-            f"Exhausted groups: {exhausted}"
-        )
-        self._logger.log(msg, level="warning")
-        return Command(update={"messages": [*exhausted_messages, msg]}, goto=END)
+        if phase == "initial_write" and active_dispatch is not None:
+            relevant = [entry for entry in slides_written if entry.get("dispatch_id") == active_dispatch["dispatch_id"]]
+            if len(relevant) < len(active_dispatch["expected_assignment_ids"]):
+                return Command(update={})
+            counts_by_group: dict[int, list[int]] = {}
+            for entry in relevant:
+                gidx = entry["group_idx"]
+                count = entry["count"]
+                counts_by_group.setdefault(gidx, []).append(count)
+            failed_groups: list[int] = []
+            for idx in range(len(groups)):
+                attempts = counts_by_group.get(idx, [])
+                if not any(c > 0 for c in attempts):
+                    failed_groups.append(idx)
+            if failed_groups:
+                retries: list[Send] = []
+                exhausted_messages: list[str] = []
+                for idx in failed_groups:
+                    attempts_so_far = len(counts_by_group.get(idx, []))
+                    if attempts_so_far <= MAX_RETRIES_PER_GROUP:
+                        retries.append(
+                            _build_slide_writer_send(
+                                dispatch_id=active_dispatch["dispatch_id"],
+                                assignment_id=f"initial-g{idx}",
+                                group=groups[idx],
+                                group_idx=idx,
+                                session_id=session_id,
+                            )
+                        )
+                    else:
+                        exhausted_messages.append(_exhausted_group_message(groups[idx], idx))
+                if retries:
+                    return Command(update={"messages": exhausted_messages}, goto=retries)
+            review.update({"phase": "awaiting_supervisor", "active_dispatch": None})
+            total_slides = sum(max(counts_by_group.get(idx, [0])) for idx in range(len(groups)))
+            msg = f"[PlanExecutor] Initial write complete. Total slides written: {total_slides}"
+            return Command(update={"review": review, "messages": [msg]}, goto="supervisor")
+
+        if phase == "critic_dispatch":
+            assignments = review.get("pending_critic_assignments", [])
+            if assignments and active_dispatch is None:
+                dispatch_id = f"critic-{dispatch_counter + 1}"
+                sends = [
+                    _build_critic_send(dispatch_id=dispatch_id, session_id=session_id, assignment=assignment)
+                    for assignment in assignments
+                ]
+                review.update(
+                    {
+                        "dispatch_counter": dispatch_counter + 1,
+                        "active_dispatch": {
+                            "dispatch_id": dispatch_id,
+                            "kind": "critic",
+                            "cycle_number": review.get("cycle_number", 0),
+                            "expected_assignment_ids": [assignment["assignment_id"] for assignment in assignments],
+                        },
+                    }
+                )
+                return Command(update={"review": review}, goto=sends)
+
+            if active_dispatch:
+                relevant_results = [
+                    result for result in critic_results
+                    if result.get("dispatch_id") == active_dispatch["dispatch_id"]
+                ]
+                if len(relevant_results) < len(active_dispatch["expected_assignment_ids"]):
+                    return Command(update={})
+                review.update(
+                    {
+                        "active_dispatch": None,
+                        "pending_critic_assignments": [],
+                        "last_critic_assignment_ids": [result["assignment_id"] for result in relevant_results],
+                        "last_rewrites_required_by_assignment": {
+                            result["assignment_id"]: bool(result.get("actionable"))
+                            for result in relevant_results
+                        },
+                        "phase": "awaiting_supervisor",
+                    }
+                )
+                return Command(update={"review": review}, goto="supervisor")
+
+        if phase == "rewrite_dispatch":
+            assignments = review.get("pending_rewrite_assignments", [])
+            if assignments and active_dispatch is None:
+                dispatch_id = f"rewrite-{dispatch_counter + 1}"
+                sends = []
+                for assignment in assignments:
+                    group_idx = assignment["group_idx"]
+                    sends.append(
+                        _build_slide_writer_send(
+                            dispatch_id=dispatch_id,
+                            assignment_id=assignment["assignment_id"],
+                            group=groups[group_idx],
+                            group_idx=group_idx,
+                            session_id=session_id,
+                            rewrite_instructions=assignment.get("rewrite_instructions", ""),
+                            target_slide_numbers=assignment.get("target_slide_numbers", []),
+                        )
+                    )
+                review.update(
+                    {
+                        "dispatch_counter": dispatch_counter + 1,
+                        "active_dispatch": {
+                            "dispatch_id": dispatch_id,
+                            "kind": "rewrite",
+                            "cycle_number": review.get("cycle_number", 0),
+                            "expected_assignment_ids": [assignment["assignment_id"] for assignment in assignments],
+                        },
+                    }
+                )
+                return Command(update={"review": review}, goto=sends)
+
+            if active_dispatch:
+                relevant_writes = [
+                    entry for entry in slides_written
+                    if entry.get("dispatch_id") == active_dispatch["dispatch_id"]
+                ]
+                if len(relevant_writes) < len(active_dispatch["expected_assignment_ids"]):
+                    return Command(update={})
+                review.update(
+                    {
+                        "active_dispatch": None,
+                        "pending_rewrite_assignments": [],
+                        "last_rewrite_assignment_ids": [entry["assignment_id"] for entry in relevant_writes],
+                        "phase": "awaiting_supervisor",
+                    }
+                )
+                return Command(update={"review": review}, goto="supervisor")
+
+        if review.get("export_ready"):
+            return Command(goto=END)
+
+        return Command(update={}, goto="supervisor")
 
 
 def plan_executor_node(state: ResearchState) -> Command:

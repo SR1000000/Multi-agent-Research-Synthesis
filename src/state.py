@@ -1,33 +1,27 @@
 import operator
-from typing import Annotated, Any, TypedDict, List, Optional, Literal
+from typing import Annotated, TypedDict, List, Optional, Literal
 from pydantic import BaseModel, Field
-from src.memory.research.schema import SlideContent
 
-TITLE_SLIDE_NUMBER = 1
-FIRST_CONTENT_SLIDE_NUMBER = 2
-SlideKind = Literal["title", "content"]
-
-
-def _blueprint_value(blueprint: Any, field: str, default: Any = None) -> Any:
-    if isinstance(blueprint, dict):
-        return blueprint.get(field, default)
-    return getattr(blueprint, field, default)
-
-
-def is_title_blueprint(blueprint: Any) -> bool:
-    slide_kind = _blueprint_value(blueprint, "slide_kind")
-    if slide_kind is not None:
-        return slide_kind == "title"
-    return _blueprint_value(blueprint, "slide_number") == TITLE_SLIDE_NUMBER
-
-
-def group_allows_empty_chunks(blueprints: list[Any]) -> bool:
-    return bool(blueprints) and all(is_title_blueprint(bp) for bp in blueprints)
+# Persisted / planned content slides are numbered 1..N. The opening title slide is
+# not stored; it is added at export from presentation_plan.title/subtitle.
+FIRST_CONTENT_SLIDE_NUMBER = 1
 
 
 class ErrorRecord(TypedDict):
     node: str
     error: str
+
+
+ReviewScopeType = Literal["deck", "group", "slide"]
+ReviewCheckType = Literal["grounding_consistency"]
+ReviewDispatchKind = Literal["initial_write", "critic", "rewrite"]
+ReviewPhase = Literal[
+    "initial_write",
+    "awaiting_supervisor",
+    "critic_dispatch",
+    "rewrite_dispatch",
+    "complete",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +31,12 @@ class ErrorRecord(TypedDict):
 
 class LLMSlideBlueprint(BaseModel):
     """What the LLM produces per slide — references sections by label."""
-    slide_number: int = Field(description="Slide number within the full deck. Start at 2 because Slide 1 is the reserved title slide.")
+    slide_number: int = Field(
+        description=(
+            "Slide number for this content slide within the persisted deck (1..N). "
+            "The title slide is not a blueprint; it comes from presentation metadata at export."
+        )
+    )
     working_title: str = Field(description="Punchy working title for the slide")
     narrative_role: Literal[
         "hook",
@@ -81,12 +80,12 @@ class LLMPresentationPlan(BaseModel):
     """Schema the LLM must produce — section-label references, no chunk IDs."""
     title: str = Field(
         description=(
-            "Reserved title slide title. Must be fewer than 7 words and suitable as a presentation headline."
+            "Presentation title. Must be fewer than 7 words and suitable as a presentation headline."
         )
     )
     subtitle: str = Field(
         description=(
-            "Reserved title slide subtitle. A concise supporting phrase or sentence for the audience."
+            "Presentation subtitle. A concise supporting phrase or sentence for the audience."
         )
     )
     thesis: str = Field(
@@ -124,7 +123,6 @@ class LLMPresentationPlan(BaseModel):
 class SlideBlueprint(BaseModel):
     """Resolved blueprint with concrete chunk IDs ready for the Slide Writer."""
     slide_number: int
-    slide_kind: SlideKind = "content"
     working_title: str
     narrative_role: Literal[
         "hook",
@@ -137,7 +135,6 @@ class SlideBlueprint(BaseModel):
     ]
     intent: str
     source_chunk_ids: List[str]
-    prebuilt_content: Optional[SlideContent] = None
 
 
 class SlideGroup(BaseModel):
@@ -149,12 +146,111 @@ class SlideGroup(BaseModel):
 class PresentationPlan(BaseModel):
     """Resolved plan stored in ResearchState — contains chunk IDs, not section labels."""
     title: str
+    subtitle: str
     thesis: str
     target_audience: str
     estimated_duration_minutes: int
     narrative_arc_summary: str
     slide_groups: List[SlideGroup]
     reasoning: str
+
+
+class ReviewAssignment(TypedDict):
+    assignment_id: str
+    cycle_number: int
+    check_type: ReviewCheckType
+    scope_type: ReviewScopeType
+    scope_id: str
+    group_idx: int
+    chunk_ids: List[str]
+    slide_blueprints: List[dict]
+    target_slide_numbers: List[int]
+    rewrite_instructions: str
+
+
+class ActiveDispatch(TypedDict):
+    dispatch_id: str
+    kind: ReviewDispatchKind
+    cycle_number: int
+    expected_assignment_ids: List[str]
+
+
+class SlideWriteRecord(TypedDict):
+    dispatch_id: str
+    assignment_id: str
+    group_idx: int
+    count: int
+    target_slide_numbers: List[int]
+
+
+class CriticIssueRecord(TypedDict):
+    issue_code: str
+    severity: Literal["critical", "major", "minor"]
+    issue_type: str
+    location: str
+    description: str
+    fingerprint: str
+    affected_slide_numbers: List[int]
+    rewrite_instruction: str
+
+
+class CriticResultRecord(TypedDict):
+    dispatch_id: str
+    assignment_id: str
+    cycle_number: int
+    check_type: ReviewCheckType
+    scope_type: ReviewScopeType
+    scope_id: str
+    group_idx: int
+    target_slide_numbers: List[int]
+    actionable: bool
+    rewrite_instructions: str
+    summary: str
+    issues: List[CriticIssueRecord]
+
+
+class ReviewCycleSummary(TypedDict):
+    cycle_number: int
+    issue_counts: dict[str, int]
+    decision: str
+    routing: str
+    rewrites_required_by_assignment: dict[str, bool]
+
+
+class ReviewState(TypedDict):
+    phase: ReviewPhase
+    cycle_number: int
+    max_cycles: int
+    dispatch_counter: int
+    active_dispatch: Optional[ActiveDispatch]
+    pending_critic_assignments: List[ReviewAssignment]
+    pending_rewrite_assignments: List[ReviewAssignment]
+    last_critic_assignment_ids: List[str]
+    last_rewrite_assignment_ids: List[str]
+    last_issue_counts: dict[str, int]
+    last_rewrites_required_by_assignment: dict[str, bool]
+    last_failed_assignment_ids: List[str]
+    final_decision: Optional[Literal["accept", "replan"]]
+    export_ready: bool
+
+
+def make_initial_review_state(*, max_cycles: int = 3) -> ReviewState:
+    return {
+        "phase": "initial_write",
+        "cycle_number": 0,
+        "max_cycles": max_cycles,
+        "dispatch_counter": 0,
+        "active_dispatch": None,
+        "pending_critic_assignments": [],
+        "pending_rewrite_assignments": [],
+        "last_critic_assignment_ids": [],
+        "last_rewrite_assignment_ids": [],
+        "last_issue_counts": {"critical": 0, "major": 0, "minor": 0},
+        "last_rewrites_required_by_assignment": {},
+        "last_failed_assignment_ids": [],
+        "final_decision": None,
+        "export_ready": False,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -176,9 +272,13 @@ class ResearchState(TypedDict):
     # -- presentation plan (set by Planner, read by Plan Executor + Slide Writers) --
     presentation_plan: Optional[PresentationPlan]
 
-    # -- slide completion tracking (append-only; one entry per Slide Writer call) --
-    # Each entry: {"group_idx": int, "count": int}
-    slides_written: Annotated[List[dict], operator.add]
+    # -- review coordination --
+    review: ReviewState
+
+    # -- append-only execution records --
+    slides_written: Annotated[List[SlideWriteRecord], operator.add]
+    critic_results: Annotated[List[CriticResultRecord], operator.add]
+    review_summaries: Annotated[List[ReviewCycleSummary], operator.add]
 
     # -- observability --
     messages: Annotated[List[str], operator.add]

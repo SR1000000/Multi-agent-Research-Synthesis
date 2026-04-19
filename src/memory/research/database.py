@@ -16,6 +16,7 @@ from .schema import (
     CREATE_IMAGES_TABLE,
     CREATE_INDEXES,
     CREATE_PROTO_SLIDES_TABLE,
+    CREATE_SLIDE_REVIEW_EVENTS_TABLE,
     CREATE_TABLES_TABLE,
     CREATE_TEXT_CHUNKS_TABLE,
     CREATE_TEXT_CHUNKS_VEC_TABLE,
@@ -103,6 +104,7 @@ class ResearchDatabase(DatabaseProvider):
             CREATE_TEXT_CHUNKS_TABLE,
             CREATE_TEXT_CHUNKS_VEC_TABLE.format(vec_dimensions=self.config.vec_dimensions),
             CREATE_PROTO_SLIDES_TABLE,
+            CREATE_SLIDE_REVIEW_EVENTS_TABLE,
         ]
         statements.extend(CREATE_INDEXES)
 
@@ -119,6 +121,28 @@ class ResearchDatabase(DatabaseProvider):
                         self._conn.execute("ALTER TABLE documents ADD COLUMN schema TEXT;")
                     if "paper_metadata" not in doc_columns:
                         self._conn.execute("ALTER TABLE documents ADD COLUMN paper_metadata TEXT;")
+
+                slide_columns = [
+                    info["name"] for info in self._conn.execute("PRAGMA table_info(proto_slides)").fetchall()
+                ]
+                if slide_columns:
+                    if "previous_content" not in slide_columns:
+                        self._conn.execute("ALTER TABLE proto_slides ADD COLUMN previous_content TEXT;")
+                    if "previous_chunk_references" not in slide_columns:
+                        self._conn.execute(
+                            "ALTER TABLE proto_slides ADD COLUMN previous_chunk_references TEXT;"
+                        )
+                    if "previous_updated_at" not in slide_columns:
+                        self._conn.execute("ALTER TABLE proto_slides ADD COLUMN previous_updated_at TEXT;")
+
+                review_event_columns = [
+                    info["name"]
+                    for info in self._conn.execute("PRAGMA table_info(slide_review_events)").fetchall()
+                ]
+                if review_event_columns and "affected_slide_numbers" not in review_event_columns:
+                    self._conn.execute(
+                        "ALTER TABLE slide_review_events ADD COLUMN affected_slide_numbers TEXT;"
+                    )
             except Exception as e:
                 self._logger.log(f"[ResearchDatabase] Schema migration error: {e}")
 
@@ -161,6 +185,15 @@ class ResearchDatabase(DatabaseProvider):
 
     def clear_proto_slides(self) -> None:
         return slide.clear_proto_slides(self)
+
+    def clear_slide_review_events(self) -> None:
+        return slide.clear_slide_review_events(self)
+
+    def save_review_event(self, **kwargs) -> None:
+        return slide.save_review_event(self, **kwargs)
+
+    def list_review_events(self, session_id: str) -> list[dict]:
+        return slide.list_review_events(self, session_id)
 
     @property
     def connection(self) -> sqlite3.Connection:

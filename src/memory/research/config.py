@@ -21,4 +21,4 @@ class StorageConfig:
 
 
 DEFAULT_CONFIG = StorageConfig()
-TABLE_NAMES = ["images", "tables", "equations", "text_chunks", "text_chunks_vec", "documents", "proto_slides"]
+TABLE_NAMES = ["images", "tables", "equations", "text_chunks", "text_chunks_vec", "documents", "proto_slides", "slide_review_events"]

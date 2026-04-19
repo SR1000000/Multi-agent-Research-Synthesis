@@ -14,9 +14,8 @@ from typing import List, TypedDict
 from langgraph.types import Command
 
 from src.agents.base import BaseLLMAgent, SLIDE_REWRITER_ROLE
-from src.memory.research.schema import ProtoSlide, SlideContent, make_slide_batch_model, slide_output_prompt_contract
+from src.memory.research.schema import ProtoSlide, make_slide_batch_model, slide_output_prompt_contract
 from src.memory.research.database import ResearchDatabase
-from src.state import group_allows_empty_chunks
 
 
 # ---------------------------------------------------------------------------
@@ -25,11 +24,14 @@ from src.state import group_allows_empty_chunks
 
 class SlideWriterDispatch(TypedDict):
     """State payload delivered to each slide_writer node via Send()."""
+    dispatch_id:            str
+    assignment_id:          str
     chunk_ids:             List[str]   # group-wide union passed to the writer as shared working context
     slide_blueprints:      List[dict]  # serialized SlideBlueprint dicts
     group_idx:             int         # index into PresentationPlan.slide_groups
     session_id:            str
     rewrite_instructions:  str         # empty for initial gen; Critic populates for rewrites
+    target_slide_numbers:  List[int]
 
 
 # ---------------------------------------------------------------------------
@@ -77,12 +79,27 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
     def __init__(self, *, log_display: str | None = None):
         super().__init__("slide_writer", log_display=log_display)
 
-    def _failure(self, error: Exception, *, group_idx: int, tag: str) -> Command:
+    def _failure(
+        self,
+        error: Exception,
+        *,
+        dispatch_id: str,
+        assignment_id: str,
+        group_idx: int,
+        target_slide_numbers: list[int],
+        tag: str,
+    ) -> Command:
         err_str = f"{type(error).__name__}: {error}"
         self._logger.log(f"[{tag}] ERROR: {err_str}", level="error")
         err_msg = f"[{tag}] FAILED: {err_str}"
         return Command(update={
-            "slides_written": [{"group_idx": group_idx, "count": 0}],
+            "slides_written": [{
+                "dispatch_id": dispatch_id,
+                "assignment_id": assignment_id,
+                "group_idx": group_idx,
+                "count": 0,
+                "target_slide_numbers": target_slide_numbers,
+            }],
             "messages":       [err_msg],
             "errors":         [{"node": tag, "error": err_str}],
         })
@@ -162,44 +179,56 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         slide_blueprints     = state.get("slide_blueprints", [])
         group_idx            = state.get("group_idx", 0)
         rewrite_instructions = state.get("rewrite_instructions", "")
+        target_slide_numbers = state.get("target_slide_numbers", [])
+        dispatch_id          = state.get("dispatch_id", "")
+        assignment_id        = state.get("assignment_id", f"group-{group_idx}")
         tag                  = self._log_display
 
         try:
-            if not chunk_ids and not group_allows_empty_chunks(slide_blueprints):
+            if not chunk_ids:
                 self._logger.log(f"[{tag}] No chunk_ids — skipping", level="warning")
                 return Command(update={
-                    "slides_written": [{"group_idx": group_idx, "count": 0}],
+                    "slides_written": [{
+                        "dispatch_id": dispatch_id,
+                        "assignment_id": assignment_id,
+                        "group_idx": group_idx,
+                        "count": 0,
+                        "target_slide_numbers": target_slide_numbers,
+                    }],
                     "messages":       [f"[{tag}] Skipped (no chunks)"],
                 })
 
             if not slide_blueprints:
                 self._logger.log(f"[{tag}] No blueprints — skipping", level="warning")
                 return Command(update={
-                    "slides_written": [{"group_idx": group_idx, "count": 0}],
+                    "slides_written": [{
+                        "dispatch_id": dispatch_id,
+                        "assignment_id": assignment_id,
+                        "group_idx": group_idx,
+                        "count": 0,
+                        "target_slide_numbers": target_slide_numbers,
+                    }],
                     "messages":       [f"[{tag}] Skipped (no blueprints)"],
                 })
 
-            prebuilt_slides = [
-                ProtoSlide(
-                    slide_number=bp_dict["slide_number"],
-                    content=SlideContent.model_validate(bp_dict["prebuilt_content"]),
-                    chunk_references=bp_dict.get("source_chunk_ids", []),
-                )
-                for bp_dict in slide_blueprints
-                if bp_dict.get("prebuilt_content") is not None
-            ]
-            if len(prebuilt_slides) == len(slide_blueprints):
-                saved_count = 0
-                with ResearchDatabase() as research_db:
-                    for proto in prebuilt_slides:
-                        research_db.save_slide(proto)
-                        saved_count += 1
-                msg = f"[{tag}] Wrote {saved_count}/{len(slide_blueprints)} planner-authored slide(s) without Slide Writer generation"
-                self._logger.log(msg)
-                return Command(update={
-                    "slides_written": [{"group_idx": group_idx, "count": saved_count}],
-                    "messages":       [msg],
-                })
+            if target_slide_numbers:
+                target_set = set(target_slide_numbers)
+                slide_blueprints = [
+                    bp_dict for bp_dict in slide_blueprints
+                    if bp_dict.get("slide_number") in target_set
+                ]
+                if not slide_blueprints:
+                    self._logger.log(f"[{tag}] No matching target slides — skipping", level="warning")
+                    return Command(update={
+                        "slides_written": [{
+                            "dispatch_id": dispatch_id,
+                            "assignment_id": assignment_id,
+                            "group_idx": group_idx,
+                            "count": 0,
+                            "target_slide_numbers": target_slide_numbers,
+                        }],
+                        "messages": [f"[{tag}] Skipped (no target slides)"],
+                    })
 
             slide_count = len(slide_blueprints)
             combined_text, existing_slides = self._load_context(
@@ -260,12 +289,25 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
             self._logger.log(msg)
 
             return Command(update={
-                "slides_written": [{"group_idx": group_idx, "count": saved_count}],
+                "slides_written": [{
+                    "dispatch_id": dispatch_id,
+                    "assignment_id": assignment_id,
+                    "group_idx": group_idx,
+                    "count": saved_count,
+                    "target_slide_numbers": target_slide_numbers,
+                }],
                 "messages":       [msg],
             })
 
         except Exception as e:
-            return self._failure(e, group_idx=group_idx, tag=tag)
+            return self._failure(
+                e,
+                dispatch_id=dispatch_id,
+                assignment_id=assignment_id,
+                group_idx=group_idx,
+                target_slide_numbers=target_slide_numbers,
+                tag=tag,
+            )
 
 
 # ---------------------------------------------------------------------------
