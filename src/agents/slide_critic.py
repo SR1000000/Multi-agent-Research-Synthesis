@@ -43,9 +43,16 @@ class CriticIssue(BaseModel):
 
 
 class CriticOutput(BaseModel):
-    summary: str
-    actionable: bool
-    issues: list[CriticIssue] = Field(default_factory=list)
+    summary: str = Field(
+        description="A concise 1-2 sentence overview of the review. Do NOT list specific issues here; use the issues array for structured issues."
+    )
+    actionable: bool = Field(
+        description="True if there is at least one issue that requires correcting. False otherwise."
+    )
+    issues: list[CriticIssue] = Field(
+        default_factory=list,
+        description="List of specific issues found. Leave empty if actionable is False."
+    )
 
 
 def _critic_output_format() -> str:
