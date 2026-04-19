@@ -29,6 +29,7 @@ router:
 
   providers:
     gemini:
+      # Gemini Free tier store used prompts for their own use.
       api_key: "os.environ/GEMINI_API_KEY"
       models:
         # ``default_model_name`` (``app``): Supervisor and any agent that omits ``model=``.
@@ -52,7 +53,7 @@ router:
       api_base: "os.environ/OPENROUTER_BASE_URL"
       models:
         # Third planner tier (``planner_3``) and critic: Nemotron 3 Super; extra rows = same pool order for ``fallback``.
-        # Nemotron 3 and elephant-alpha log used prompts and completions for their own use.
+        # Nemotron 3 and elephant-alpha store used prompts and completions for their own use.
         - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
           model_name: "planner_3"
         - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"

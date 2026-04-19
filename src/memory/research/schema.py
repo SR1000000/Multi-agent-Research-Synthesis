@@ -192,7 +192,10 @@ CREATE TABLE IF NOT EXISTS proto_slides (
     content TEXT NOT NULL,
     chunk_references TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    previous_content TEXT,
+    previous_chunk_references TEXT,
+    previous_updated_at TEXT
 );
 """
 

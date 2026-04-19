@@ -214,7 +214,10 @@ class SlideCriticAgent(BaseLLMAgent):
             "summary": result.summary,
             "issues": issues,
         }
-        
+        msg = (
+            f"[critic] assignment={state['assignment_id']} "
+            f"actionable={critic_result['actionable']} issues={len(issues)}"
+        )
         with ResearchDatabase() as research_db:
             for issue in issues:
                 research_db.save_review_event(
@@ -239,6 +242,7 @@ class SlideCriticAgent(BaseLLMAgent):
                     assignment_id=state["assignment_id"],
                     decision="pass",
                 )
+                
         return Command(update={"critic_results": [critic_result], "messages": [msg]})
 
 

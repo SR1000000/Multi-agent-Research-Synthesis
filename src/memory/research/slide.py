@@ -6,11 +6,25 @@ from .schema import ProtoSlide, SlideContent
 
 
 def save_slide(db, slide: ProtoSlide) -> None:
-    """Persists a ProtoSlide to the research database, overwriting if it exists."""
+    """Persists a ProtoSlide to the research database, overwriting if it exists.
+
+    On update, the row's prior content/chunk_references/updated_at are copied into
+    previous_* columns so at most one revision back remains for debugging.
+    """
     content_json = slide.content.model_dump_json()
     chunks_json = json.dumps(slide.chunk_references)
 
     with db._conn:
+        db._conn.execute(
+            """
+            UPDATE proto_slides SET
+                previous_content = content,
+                previous_chunk_references = chunk_references,
+                previous_updated_at = updated_at
+            WHERE slide_number = ?
+            """,
+            (slide.slide_number,),
+        )
         db._conn.execute(
             """
             INSERT INTO proto_slides (slide_number, content, chunk_references, updated_at)
@@ -20,7 +34,7 @@ def save_slide(db, slide: ProtoSlide) -> None:
                 chunk_references=excluded.chunk_references,
                 updated_at=CURRENT_TIMESTAMP
             """,
-            (slide.slide_number, content_json, chunks_json)
+            (slide.slide_number, content_json, chunks_json),
         )
     db._logger.log(f"[ResearchDatabase] Saved slide {slide.slide_number}")
 

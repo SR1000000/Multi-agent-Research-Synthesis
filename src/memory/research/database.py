@@ -121,6 +121,19 @@ class ResearchDatabase(DatabaseProvider):
                         self._conn.execute("ALTER TABLE documents ADD COLUMN schema TEXT;")
                     if "paper_metadata" not in doc_columns:
                         self._conn.execute("ALTER TABLE documents ADD COLUMN paper_metadata TEXT;")
+
+                slide_columns = [
+                    info["name"] for info in self._conn.execute("PRAGMA table_info(proto_slides)").fetchall()
+                ]
+                if slide_columns:
+                    if "previous_content" not in slide_columns:
+                        self._conn.execute("ALTER TABLE proto_slides ADD COLUMN previous_content TEXT;")
+                    if "previous_chunk_references" not in slide_columns:
+                        self._conn.execute(
+                            "ALTER TABLE proto_slides ADD COLUMN previous_chunk_references TEXT;"
+                        )
+                    if "previous_updated_at" not in slide_columns:
+                        self._conn.execute("ALTER TABLE proto_slides ADD COLUMN previous_updated_at TEXT;")
             except Exception as e:
                 self._logger.log(f"[ResearchDatabase] Schema migration error: {e}")
 
