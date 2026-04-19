@@ -2,7 +2,7 @@
 
 LangGraph-coordinated pipeline that ingests one or more research PDFs and
 produces a PowerPoint presentation driven by parallel AI agents:
-**Planner → Plan Executor → Slide Writers** (fan-out/fan-in with retry).
+**Planner → Plan Executor → Slide Writers → Critics → Supervisor** with iterative review cycles and fan-out/fan-in parallelism.
 
 ## Setup
 
@@ -63,11 +63,7 @@ You can keep multiple experimental YAML files elsewhere and point the app at one
 python main.py --llm-config path/to/your/config.dev.yaml
 ```
 
-The pipeline uses two router group aliases:
-
-You are not limited to the providers in the sample: **any provider and model string LiteLLM supports** can be added by following the same config structure in `config.dev.yaml`.
-
-Any provider and model string LiteLLM supports can be added to `config.yaml` following the same structure. See the [LiteLLM provider docs](https://docs.litellm.ai/docs/providers) for parameter names and provider-specific options.
+The pipeline uses four router group aliases — `planner`, `slides`, `critic`, and `app` — each mapped to a pool of models with fallbacks. Any provider and model string LiteLLM supports can be added following the same config structure. See the [LiteLLM provider docs](https://docs.litellm.ai/docs/providers) for parameter names and provider-specific options.
 
 ---
 
@@ -110,11 +106,11 @@ The finished presentation is saved as a `.pptx` file in `output/` by default, or
 | `--pdf PATH [PATH ...]` | `.samples/Transformers.pdf` | One or more PDF files to process |
 | `--query TEXT` | `"Explain this paper to an audience of laypeople"` | Presentation query / audience |
 | `--max-slides N` | `15` | Soft slide target (Planner adjusts based on content density) |
-| `--processor` | `llama` | Document processor backend: `llama`, `docling`, `lighton` |
-| `--text-splitter` | `none` | Chunking strategy: `none` or `semantic` (auto-defaults to `semantic` for LlamaParse) |
+| `--processor` | `llama_parse` | Document processor backend: `llama_parse` (or `llama` as an alias) |
+| `--text-splitter` | `semantic` | Chunking strategy: `semantic` or `none` |
 | `--object-store` | _(R2 with local fallback)_ | `local` or `r2` for image storage |
 | `--output-dir PATH` | `output/` | Directory where the generated `.pptx` will be written |
-| `--llm-config PATH` | `src/llm/config.yaml` | LiteLLM Router config file |
+| `--llm-config PATH` | `src/llm/config.dev.yaml` | LiteLLM Router config file |
 | `-i`, `--interactive` | off | Pause after each document extraction for confirmation |
 | `--no-logging` | _(logging on)_ | Disable Langfuse tracing |
 
@@ -149,25 +145,54 @@ Use `--object-store local` to skip R2 entirely.
 START
   └─► Planner
         Loads all chunks from research.db
-        Detects section boundaries
-        Calls LLM → PresentationPlan (thesis, slide groups)
-        Resolves section labels → chunk IDs
+        Detects section boundaries; builds section outline (S0, S1, ...)
+        Calls LLM → LLMPresentationPlan (thesis, slide blueprints, slide groups)
+        Validates LLM output; retries up to 2× on schema or label errors
+        Resolves section labels → source_chunk_ids in Python
+        Stores resolved PresentationPlan in state
         │
         ▼
-      Plan Executor  ◄─────────────────────────────────────┐
-        Reads slide_groups from plan                        │
-        Fans out via Send() — one agent per group     (retry loop)
-        │                                                   │
-        ├─► Slide Writer 1 ─► writes proto-slides → research.db─┤
-        ├─► Slide Writer 2 ─► writes proto-slides → research.db─┤
-        └─► Slide Writer N ─► writes proto-slides → research.db─┘
-              After all writers finish, Plan Executor checks
-              slides_written counts. Any group with 0 slides
-              is re-dispatched (up to 2 retries).
-              When all groups pass → END
-        │
-        ▼
-      PPTX Export (PandocBuilder reads research.db → output/*.pptx)
+      Plan Executor  ◄──────────────────────────────────────────────────────┐
+        Reads review.phase to dispatch the right fan-out                    │
+        │                                                                   │
+        │ phase = initial_write                                             │
+        ├─► Send × N groups                                                │
+        │     Slide Writer 1 → writes proto-slides → research.db            │
+        │     Slide Writer 2 → writes proto-slides → research.db            │
+        │     Slide Writer N → writes proto-slides → research.db            │
+        │   Fan-in: groups with 0 slides retried (up to 2×)                │
+        │   All groups written → phase = awaiting_supervisor → Supervisor   │
+        │                                                                   │
+        │ phase = critic_dispatch                                           │
+        ├─► Send × N groups                                                │
+        │     Critic 1 → grounding_consistency check → critic_results       │
+        │     Critic 2 → grounding_consistency check → critic_results       │
+        │     Critic N → grounding_consistency check → critic_results       │
+        │   Fan-in: all critics done → phase = awaiting_supervisor          │
+        │   → Supervisor                                                    │
+        │                                                                   │
+        │ phase = rewrite_dispatch                                          │
+        └─► Send × actionable groups                                       │
+              Slide Writer (rewrite) → updates proto-slides → research.db   │
+            Fan-in: all rewrites done → phase = awaiting_supervisor         │
+            → Supervisor                                                    │
+        │                                                                   │
+        ▼                                                                   │
+      Supervisor ─────────────────────────────────────────────────────────┘
+        Loads full slide_review_events from research.db (recurring fingerprints)
+        If no critic results yet → dispatch next critic cycle
+        If rewrites ran this cycle → dispatch follow-up critic cycle
+        Else → LLM decision: accept / revise / replan
+          Guard overrides: critical issues force revise; no actionable forces accept;
+          at cycle cap (default 3) force replan
+          │
+          ├─► accept → export_ready = True → END
+          │     PandocBuilder reads proto_slides → output/*.pptx
+          │
+          ├─► revise → build rewrite assignments with rewrite_instructions
+          │     phase = rewrite_dispatch → Plan Executor
+          │
+          └─► replan → goto Planner (cycle summary appended to state)
 ```
 
 ### Planner
@@ -176,20 +201,33 @@ The Planner is a presentation architect, not a content writer. It:
 
 1. Detects section boundaries in each paper using Markdown heading analysis
 2. Builds a human-readable section outline with labels (`S0: Abstract`, `S3: Model Architecture`, ...)
-3. Calls the LLM — which works with section labels, never raw chunk IDs — to produce a `PresentationPlan` containing a thesis, slide blueprints (with per-slide intents), and agent groupings (2-7 slides per group)
+3. Calls the LLM — which works with section labels, never raw chunk IDs — to produce a `PresentationPlan` containing a thesis, per-slide blueprints (each with a `narrative_role` and `intent`), and agent groupings (2–7 slides per group)
 4. Validates the LLM output strictly; retries the full LLM call (up to 2 times) if any section label is invalid, any group is out of range, or any blueprint is empty
 5. Resolves section labels → concrete chunk IDs in Python code before storing the plan in state
 
 ### Plan Executor
 
-The Plan Executor is a pure dispatcher with a retry loop:
+The Plan Executor is a deterministic dispatcher with no LLM calls. It reads `review.phase` and `review.active_dispatch` to decide which fan-out to run next:
 
-- **First call**: fans out one `slide_writer` per `SlideGroup` via LangGraph's `Send()` API
-- **After writers complete**: checks `slides_written` counts from state; re-dispatches groups that produced 0 slides (up to 2 retries per group); exits to END when all groups pass
+- **`initial_write`**: fans out one `slide_writer` per `SlideGroup` via LangGraph's `Send()` API; re-dispatches groups that produced 0 slides (up to 2 retries per group); routes to Supervisor when all groups pass
+- **`critic_dispatch`**: fans out one `critic` per group; routes to Supervisor when all critics report back
+- **`rewrite_dispatch`**: fans out `slide_writer` (rewrite mode) per actionable group, carrying `rewrite_instructions`; routes to Supervisor when all rewrites complete
 
 ### Slide Writers
 
-Each Slide Writer receives the blueprints and chunk text for its group. It synthesizes the proto-slides and writes them to `research.db`. All errors are caught and reported without crashing the graph; the Plan Executor handles retry at the group level.
+Each Slide Writer receives the blueprints and chunk text for its assigned group. In **initial write** mode it drafts slides from scratch following the blueprint intent. In **rewrite** mode it receives the current proto-slides plus explicit rewrite instructions from the Supervisor and produces corrected versions. Both modes persist structured `ProtoSlide` records to `research.db`. Errors are caught without crashing the graph; the Plan Executor handles retry at the group level.
+
+### Critics
+
+Each Critic evaluates one group of slides for `grounding_consistency` — whether slide content is supported by the source chunks. It returns a summary, an `actionable` flag, and a typed issue list (`critical` / `major` / `minor`) where every issue includes a concrete `rewrite_instruction`. Each issue is assigned a **fingerprint** (hash of scope + issue type + location) that the Supervisor uses to detect recurring problems across cycles. All events are persisted to `slide_review_events` in `research.db`.
+
+### Supervisor
+
+The Supervisor is the session's decision-maker. It evaluates critic results after each fan-in:
+
+- **accept** → sets `export_ready = True`, graph exits to END and the PPTX is exported
+- **revise** → dispatches Slide Writer rewrites for every actionable group; a follow-up critic cycle runs automatically after rewrites complete
+- **replan** → routes back to Planner when the cycle cap is hit (default 3 cycles) or persistent critical issues remain unresolved
 
 ---
 
