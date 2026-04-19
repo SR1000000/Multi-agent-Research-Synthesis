@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 from .schema import ProtoSlide, SlideContent
 
@@ -90,9 +91,15 @@ def save_review_event(
     severity: str | None = None,
     fingerprint: str | None = None,
     rewrite_instruction_summary: str | None = None,
+    affected_slide_numbers: list[int] | None = None,
     decision: str | None = None,
 ) -> None:
     """Persists a compact review event for recurrence tracking and auditability."""
+    affected_json: str | None
+    if affected_slide_numbers:
+        affected_json = json.dumps(affected_slide_numbers)
+    else:
+        affected_json = None
     with db._conn:
         db._conn.execute(
             """
@@ -107,9 +114,10 @@ def save_review_event(
                 severity,
                 fingerprint,
                 rewrite_instruction_summary,
+                affected_slide_numbers,
                 decision
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -122,9 +130,29 @@ def save_review_event(
                 severity,
                 fingerprint,
                 rewrite_instruction_summary,
+                affected_json,
                 decision,
             ),
         )
+
+
+def _row_affected_slide_numbers(row: sqlite3.Row) -> list[int] | None:
+    raw = row["affected_slide_numbers"] if "affected_slide_numbers" in row.keys() else None
+    if raw is None or raw == "":
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    out: list[int] = []
+    for x in parsed:
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    return out or None
 
 
 def list_review_events(db, session_id: str) -> list[dict]:
@@ -132,11 +160,16 @@ def list_review_events(db, session_id: str) -> list[dict]:
         """
         SELECT session_id, cycle_number, scope_type, scope_id, check_type,
                assignment_id, issue_code, severity, fingerprint,
-               rewrite_instruction_summary, decision, created_at
+               rewrite_instruction_summary, affected_slide_numbers, decision, created_at
         FROM slide_review_events
         WHERE session_id = ?
         ORDER BY cycle_number ASC, id ASC
         """,
         (session_id,),
     ).fetchall()
-    return [dict(row) for row in rows]
+    result: list[dict] = []
+    for row in rows:
+        d = dict(row)
+        d["affected_slide_numbers"] = _row_affected_slide_numbers(row)
+        result.append(d)
+    return result

@@ -212,6 +212,7 @@ CREATE TABLE IF NOT EXISTS slide_review_events (
     severity TEXT,
     fingerprint TEXT,
     rewrite_instruction_summary TEXT,
+    affected_slide_numbers TEXT,
     decision TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

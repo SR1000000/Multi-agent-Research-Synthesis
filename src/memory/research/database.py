@@ -134,6 +134,15 @@ class ResearchDatabase(DatabaseProvider):
                         )
                     if "previous_updated_at" not in slide_columns:
                         self._conn.execute("ALTER TABLE proto_slides ADD COLUMN previous_updated_at TEXT;")
+
+                review_event_columns = [
+                    info["name"]
+                    for info in self._conn.execute("PRAGMA table_info(slide_review_events)").fetchall()
+                ]
+                if review_event_columns and "affected_slide_numbers" not in review_event_columns:
+                    self._conn.execute(
+                        "ALTER TABLE slide_review_events ADD COLUMN affected_slide_numbers TEXT;"
+                    )
             except Exception as e:
                 self._logger.log(f"[ResearchDatabase] Schema migration error: {e}")
 

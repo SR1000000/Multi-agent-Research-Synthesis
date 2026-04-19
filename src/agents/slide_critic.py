@@ -231,6 +231,7 @@ class SlideCriticAgent(BaseLLMAgent):
                     severity=issue["severity"],
                     fingerprint=issue["fingerprint"],
                     rewrite_instruction_summary=issue["rewrite_instruction"],
+                    affected_slide_numbers=issue.get("affected_slide_numbers") or None,
                 )
             if not issues:
                 research_db.save_review_event(
