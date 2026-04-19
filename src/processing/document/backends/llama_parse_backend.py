@@ -63,6 +63,7 @@ _PARSE_KWARGS: dict[str, Any] = {
                 "output_tables_as_markdown": False,
                 "merge_continued_tables": True,
             },
+            "inline_images": True,
             "annotate_links": True,
         },
         "extract_printed_page_number": True,

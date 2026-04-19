@@ -8,7 +8,7 @@ sqlite-vec>=0.1.0
 langfuse>=2.0,<3.0
 langchain>=0.2,<1.0
 sentence-transformers>=3.0,<4.0
-llama-cloud
+llama-cloud>=2.3.0,<3.0
 semantic-text-splitter
 boto3>=1.34.0
 tenacity>=8.0.0
