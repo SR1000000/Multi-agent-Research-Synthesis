@@ -32,6 +32,22 @@ class CriticDispatch(TypedDict):
     rewrite_instructions: str
 
 
+def _critic_log_label(state: CriticDispatch) -> str:
+    """Match SlideWriter-style prefixes so parallel critics are easy to tell apart in logs."""
+    nums = list(state.get("target_slide_numbers") or [])
+    if not nums:
+        for bp in state.get("slide_blueprints") or []:
+            n = bp.get("slide_number")
+            if n is not None:
+                nums.append(n)
+    if not nums:
+        return "Critic[empty]"
+    ordered = sorted(int(n) for n in nums)
+    lo, hi = ordered[0], ordered[-1]
+    span = f"slides {lo}-{hi}" if lo != hi else f"slide {lo}"
+    return f"Critic[{span}, group {state.get('group_idx', '?')}]"
+
+
 class CriticIssue(BaseModel):
     issue_code: str = Field(description="Unique issue id like ISS_001")
     severity: Literal["critical", "major", "minor"]
@@ -89,8 +105,8 @@ def _fingerprint(*, scope_type: str, scope_id: str, issue_type: str, location: s
 
 
 class SlideCriticAgent(BaseLLMAgent):
-    def __init__(self) -> None:
-        super().__init__("critic")
+    def __init__(self, *, log_display: str | None = None) -> None:
+        super().__init__("critic", log_display=log_display)
 
     def _load_chunks(self, chunk_ids: list[str]) -> str:
         if not chunk_ids:
@@ -198,10 +214,7 @@ class SlideCriticAgent(BaseLLMAgent):
             "summary": result.summary,
             "issues": issues,
         }
-        msg = (
-            f"[critic] assignment={state['assignment_id']} "
-            f"actionable={critic_result['actionable']} issues={len(issues)}"
-        )
+        
         with ResearchDatabase() as research_db:
             for issue in issues:
                 research_db.save_review_event(
@@ -230,4 +243,4 @@ class SlideCriticAgent(BaseLLMAgent):
 
 
 def critic_node(state: CriticDispatch | ResearchState) -> Command:
-    return SlideCriticAgent().run(state)  # type: ignore[arg-type]
+    return SlideCriticAgent(log_display=_critic_log_label(state)).run(state)  # type: ignore[arg-type]

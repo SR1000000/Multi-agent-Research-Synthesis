@@ -102,6 +102,30 @@ def _build_group_assignments(*, plan, cycle_number: int) -> list[ReviewAssignmen
     return assignments
 
 
+def _format_dispatch_targets(assignments: list[ReviewAssignment]) -> str:
+    """One-line summary of critic/rewrite fan-out for terminal logs."""
+    if not assignments:
+        return "(none)"
+    parts: list[str] = []
+    for a in assignments:
+        aid = a.get("assignment_id", "?")
+        nums = a.get("target_slide_numbers") or []
+        if nums:
+            lo, hi = min(nums), max(nums)
+            span = f"slides {lo}-{hi}" if lo != hi else f"slide {lo}"
+        else:
+            span = "slides ?"
+        parts.append(f"{aid} [{span}]")
+    return "; ".join(parts)
+
+
+def _short_reasoning(text: str, max_len: int = 240) -> str:
+    one_line = " ".join((text or "").split())
+    if len(one_line) <= max_len:
+        return one_line
+    return one_line[: max_len - 1] + "…"
+
+
 def _build_rewrite_assignments(*, plan, results: list[dict], cycle_number: int) -> list[ReviewAssignment]:
     assignments: list[ReviewAssignment] = []
     for result in results:
@@ -182,6 +206,10 @@ class SupervisorAgent(BaseLLMAgent):
                     "routing": "planner",
                     "rewrites_required_by_assignment": review.get("last_rewrites_required_by_assignment", {}),
                 }
+                self._logger.log(
+                    "[supervisor] replan: max critic cycles reached while rewrites were still pending "
+                    f"(cycle {cycle_number})"
+                )
                 return Command(
                     update={
                         "review": review,
@@ -208,6 +236,9 @@ class SupervisorAgent(BaseLLMAgent):
                 if phase != "complete"
                 else f"[supervisor] revise: restart critic cycle {next_cycle}"
             )
+            self._logger.log(
+                f"{msg} | dispatch {len(assignments)} critic(s): {_format_dispatch_targets(assignments)}"
+            )
             return Command(update={"review": review, "messages": [msg]}, goto="plan_executor")
 
         # If rewrites already ran for this cycle, the next step is another critic pass
@@ -222,6 +253,10 @@ class SupervisorAgent(BaseLLMAgent):
                     "routing": "planner",
                     "rewrites_required_by_assignment": rewrites_required,
                 }
+                self._logger.log(
+                    f"[supervisor] replan: max cycles after rewrite pass (cycle {cycle_number}, "
+                    f"counts={severity_counts})"
+                )
                 return Command(
                     update={
                         "review": review,
@@ -251,6 +286,11 @@ class SupervisorAgent(BaseLLMAgent):
                 "routing": "critic_cycle",
                 "rewrites_required_by_assignment": rewrites_required,
             }
+            self._logger.log(
+                f"[supervisor] cycle {cycle_number}: post-rewrite critic pass -> cycle {next_cycle} "
+                f"| dispatch {len(assignments)} critic(s): {_format_dispatch_targets(assignments)} "
+                f"| prior counts={severity_counts}"
+            )
             return Command(
                 update={
                     "review": review,
@@ -281,6 +321,7 @@ class SupervisorAgent(BaseLLMAgent):
             [{"role": "user", "content": user}],
             schema=SupervisorOutput,
         )
+        model_decision = result.decision
         at_cycle_cap = cycle_number >= max_cycles
         has_critical_actionable = _has_actionable_critical_issue(actionable_results)
         has_major_actionable = _has_actionable_major_issue(actionable_results)
@@ -288,7 +329,7 @@ class SupervisorAgent(BaseLLMAgent):
             actionable_results,
             recurring,
         )
-        decision = result.decision
+        decision = model_decision
         if decision == "accept":
             if has_critical_actionable:
                 decision = "revise"
@@ -318,6 +359,11 @@ class SupervisorAgent(BaseLLMAgent):
             "review_summaries": [summary],
             "messages": [json.dumps({"supervisor_cycle_summary": summary}, sort_keys=True)],
         }
+
+        self._logger.log(
+            f"[supervisor] cycle {cycle_number}: model={model_decision} -> effective={decision} "
+            f"| counts={severity_counts} | {_short_reasoning(result.reasoning)}"
+        )
 
         if decision == "replan":
             review.update({"final_decision": "replan", "export_ready": False, "phase": "complete"})
@@ -351,6 +397,10 @@ class SupervisorAgent(BaseLLMAgent):
             plan=plan,
             results=actionable_results,
             cycle_number=cycle_number,
+        )
+        self._logger.log(
+            f"[supervisor] dispatch {len(rewrite_assignments)} slide rewriter(s): "
+            f"{_format_dispatch_targets(rewrite_assignments)}"
         )
         review.update(
             {
