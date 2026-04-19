@@ -8,7 +8,10 @@
 #       model_name: "app"
 #     - model: "gemini/gemini-2.5-flash"
 #       model_name: "writer"
+#
 # Current sample assumes free teir for Gemini, Ollama and OpenRouter.
+# Get available OpenRouter free models at https://openrouter.ai/collections/free-models (changes frequently).
+# Free tier at OpenRouter has higher rate limits if you have any amount of credits available.
 
 router:
   default_model_name: "app"
@@ -53,6 +56,8 @@ router:
         - model: "openrouter/openai/gpt-oss-120b:free"
           model_name: "critic"
         - model: "openrouter/openai/gpt-oss-120b:free"
+        #- model: "openrouter/elephant-alpha"
+        #- model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
 
     ollama_high:
       api_key: "os.environ/OLLAMA_API_KEY"

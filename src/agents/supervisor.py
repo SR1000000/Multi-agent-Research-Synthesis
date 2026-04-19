@@ -260,17 +260,20 @@ class SupervisorAgent(BaseLLMAgent):
                 goto="plan_executor",
             )
 
+        actionable_results = [r for r in critic_results if r.get("actionable")]
+        max_cycles = review.get("max_cycles", 3)
+
         user = "\n".join(
             [
                 f"Query:\n{state['query']}",
-                f"Cycle number: {cycle_number}",
+                f"Cycle number: {cycle_number} (Max: {max_cycles})",
                 f"Severity counts: {severity_counts}",
                 "Critic results:",
                 summaries,
                 "Recurring issue fingerprints (count >= 2):",
                 recurring_lines,
                 "",
-                "Decide whether to accept, revise, or replan.",
+                "Based on the edge cases in your system instructions, decide whether to accept, revise, or replan.",
             ]
         )
 
@@ -278,9 +281,6 @@ class SupervisorAgent(BaseLLMAgent):
             [{"role": "user", "content": user}],
             schema=SupervisorOutput,
         )
-
-        actionable_results = [r for r in critic_results if r.get("actionable")]
-        max_cycles = review.get("max_cycles", 3)
         at_cycle_cap = cycle_number >= max_cycles
         has_critical_actionable = _has_actionable_critical_issue(actionable_results)
         has_major_actionable = _has_actionable_major_issue(actionable_results)
