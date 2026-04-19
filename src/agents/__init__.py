@@ -5,9 +5,6 @@ from .slide_writer import slide_writer_node
 from .slide_critic import critic_node
 from .supervisor import supervisor_node
 
-# Dormant nodes (not wired into the graph; preserved for future reactivation)
-from .writer import writer_node
-
 __all__ = [
     # Active
     "planner_node",
