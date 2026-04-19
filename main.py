@@ -260,7 +260,7 @@ def _sanitize_filename(name: str) -> str:
     safe = "".join(ch if ch.isalnum() or ch in (" ", "-", "_") else "_" for ch in name)
     # Collapse multiple underscores/spaces and switch spaces to underscores
     safe = re.sub(r"[ _]+", "_", safe).strip("_")
-    return safe[:30]
+    return safe[:64]
 
 
 def _partial_deck_warnings(messages: list[str]) -> list[str]:
