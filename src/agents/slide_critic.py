@@ -7,7 +7,7 @@ from typing import Literal, TypedDict
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from src.agents.base import BaseLLMAgent
+from src.agents.base import BaseLLMAgent, schema_prompt_contract
 from src.memory.research.database import ResearchDatabase
 from src.memory.research.schema import ProtoSlide
 from src.state import (
@@ -46,6 +46,23 @@ class CriticOutput(BaseModel):
     summary: str
     actionable: bool
     issues: list[CriticIssue] = Field(default_factory=list)
+
+
+def _critic_output_format() -> str:
+    """Schema-derived JSON contract for critic structured output (matches planner/writer pattern)."""
+    return schema_prompt_contract(
+        CriticOutput,
+        extra_rules=[
+            "Top-level keys MUST be exactly `summary`, `actionable`, and `issues` — do not wrap the payload in another key.",
+            "If no meaningful issues exist, set actionable=false and issues=[].",
+            "If one or more issues exist, set actionable=true and include every required field on each issue "
+            "(issue_code, severity, issue_type, location, description, rewrite_instruction).",
+            "issue_code values must be unique within this response (e.g. ISS_001, ISS_002).",
+            "Use the exact field names issue_code and issue_type — not `id`, `classification`, or other synonyms.",
+            "location must pinpoint what to change (e.g. slide number and bullet or heading).",
+            "rewrite_instruction must be one concrete edit directive per issue, not only a restatement of the problem.",
+        ],
+    )
 
 
 def _format_slide(slide: ProtoSlide) -> str:
@@ -123,7 +140,10 @@ class SlideCriticAgent(BaseLLMAgent):
                 "SOURCE CHUNKS:",
                 chunks or "(none)",
                 "",
-                "Identify only meaningful issues. If no changes are needed, return actionable=false and an empty issue list.",
+                "Identify only significant issues that break grounding, clarity, coherence, or the review criteria. "
+                "If no changes are needed, set actionable=false and issues=[].",
+                "",
+                _critic_output_format(),
             ]
         )
 
