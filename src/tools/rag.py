@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from src.memory.research.database import ResearchDatabase
-from src.retriever import Retriever
+from src.retriever import Retriever, RetrievedItem
 
 DEFAULT_CONTEXT_K = 8
 
@@ -20,11 +21,87 @@ class RetrieveArtifactsArgs(BaseModel):
         description="Retrieval strategy to use.",
     )
 
+class RetrieveArtifactsResult(BaseModel):
+    ok: bool
+    tool_name: Literal["retrieve_artifacts"]
+    query: str
+    latency_ms: int
+    error: str | None = None
+    artifacts: list[ArtifactRecord]
+    provenance: RetrieveArtifactsProvenance
 
-def _render_text(kind: str, item_id: str, document_id: str, text: str) -> str:
-    if kind == "equation":
-        return f"equation id={item_id} document_id={document_id}\nLaTeX: {text}"
-    return f"{kind} id={item_id} document_id={document_id}\n{text}"
+class ArtifactRecord(BaseModel):
+    kind: Literal["chunk", "table", "equation", "image"]
+    id: str
+    document_id: str
+    score: float | None = None
+    content: str
+
+class RetrieveArtifactsProvenance(BaseModel):
+    strategy: Literal["fusion", "semantic", "keyword"]
+    top_k: int
+    document_ids: list[str]
+    call_id: str | None = None
+
+OUTPUT_SCHEMA = RetrieveArtifactsResult.model_json_schema()
+
+
+def _build_artifact_content(record: dict[str, Any], *, normalized: bool = False) -> str:
+    kind = str(record.get("kind", "chunk"))
+    lines: list[str] = []
+    caption = ""
+    contextualized = ""
+    raw_value = ""
+
+    if normalized:
+        raw_value = str(record.get("text") or "")
+        contextualized = str(record.get("contextualized_text") or "")
+        caption = str(record.get("caption") or "")
+        if kind in {"image", "table", "equation"} and caption.strip():
+            lines.append(f"caption: {caption}")
+        if contextualized.strip():
+            lines.append(f"contextualized description: {contextualized}")
+        lines.append(f"value: {raw_value}")
+        return "\n".join(lines)
+
+    if kind == "chunk":
+        raw_value = str(record.get("text") or record.get("chunk_text") or "")
+        contextualized = str(
+            record.get("contextualized_text")
+            or record.get("chunk_contextualized_text")
+            or ""
+        )
+    elif kind == "table":
+        raw_value = str(record.get("table_content") or record.get("content") or "")
+        caption = str(record.get("table_caption") or record.get("caption") or "")
+        contextualized = str(
+            record.get("table_contextualized_text")
+            or record.get("contextualized_text")
+            or ""
+        )
+    elif kind == "equation":
+        raw_value = str(record.get("equation_text") or record.get("text") or "")
+        caption = str(record.get("equation_caption") or record.get("caption") or "")
+        contextualized = str(
+            record.get("equation_contextualized_text")
+            or record.get("contextualized_text")
+            or ""
+        )
+    elif kind == "image":
+        raw_value = str(record.get("image_storage_path") or record.get("storage_path") or "")
+        caption = str(record.get("image_caption") or record.get("caption") or "")
+        contextualized = str(
+            record.get("image_contextualized_text")
+            or record.get("contextualized_text")
+            or ""
+        )
+
+    if kind in {"image", "table", "equation"} and caption.strip():
+        lines.append(f"caption: {caption}")
+    if contextualized.strip():
+        lines.append(f"contextualized description: {contextualized}")
+    lines.append(f"value: {raw_value}")
+    return "\n".join(lines)
 
 
 def retrieve_artifacts(
@@ -35,7 +112,7 @@ def retrieve_artifacts(
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    context = context or {}
+    context = {} if context is None else context
     query = args.query.strip()
     if not query:
         return {
@@ -45,74 +122,66 @@ def retrieve_artifacts(
             "latency_ms": 0,
             "error": "Query must not be empty.",
             "artifacts": [],
-            "provenance": {"strategy": args.strategy, "top_k": args.k, "document_ids": []},
+            "provenance": {
+                "strategy": args.strategy,
+                "top_k": args.k,
+                "document_ids": [],
+                "call_id": None,
+            },
         }
 
+    call_id = uuid.uuid4().hex
+    if context is not None:
+        context["last_retrieval_call_id"] = call_id
+
     if args.strategy == "semantic":
-        items = retriever.semantic_retrieve(query, args.k)
+        items: list[RetrievedItem] = retriever.semantic_retrieve(query, args.k)
     elif args.strategy == "keyword":
         items = retriever.keywords_retrieve(query, args.k)
     else:
         items = retriever.fusion_retrieve(query, args.k)
 
-    artifacts: list[dict[str, Any]] = []
-    doc_ids: set[str] = set()
-    for it in items:
-        doc_ids.add(it.document_id)
-        artifact: dict[str, Any] = {
-            "kind": it.kind,
-            "id": it.id,
-            "document_id": it.document_id,
-            "score": it.score,
-            "payload": {"text": it.text},
-            "render_text": _render_text(it.kind, it.id, it.document_id, it.text),
-        }
-        if it.kind == "image":
-            image = research_db.get_image(it.id)
-            if image:
-                artifact["payload"] = {
-                    "caption": image.caption,
-                    "storage_path": image.storage_path,
-                    "mime_type": image.mime_type,
-                    "page": image.page,
-                }
-                artifact["render_text"] = (
-                    f"image id={it.id} document_id={it.document_id}\n"
-                    f"caption={image.caption or ''}\n"
-                    f"storage_path={image.storage_path or ''}"
-                )
-        elif it.kind == "table":
-            table = research_db.get_table(it.id)
-            if table:
-                artifact["payload"] = {
-                    "content": table.content,
-                    "caption": table.title,
-                    "page": table.page,
-                }
-        elif it.kind == "equation":
-            equation = research_db.get_equation(it.id)
-            if equation:
-                artifact["payload"] = {
-                    "latex": equation.latex_or_text,
-                    "caption": equation.caption,
-                    "page": equation.page,
-                }
-        artifacts.append(artifact)
+    normalized_rows = research_db.load_normalized_artifacts_for_keys(items)
 
     session_id = context.get("session_id")
     agent_type = context.get("agent_type", "writer")
     if session_id:
-        for it in items:
-            research_db.save_retrieved_chunk(
-                item_id=it.id,
-                kind=it.kind,
-                document_id=it.document_id,
-                text_content=it.text,
-                score=it.score,
+        try:
+            research_db.save_session_retrieval_batch(
                 session_id=session_id,
-                agent_type=agent_type,
+                call_id=call_id,
+                items=items,
                 query=query,
+                strategy=args.strategy,
+                agent_type=agent_type,
             )
+        except Exception as exc:
+            research_db._logger.log(
+                (
+                    "[retrieve_artifacts] Failed to persist retrieval ledger "
+                    f"call_id={call_id} session_id={session_id}: {type(exc).__name__}: {exc}"
+                ),
+                level="warning",
+            )
+
+    artifacts: list[dict[str, Any]] = []
+    doc_ids: set[str] = set()
+    for row in normalized_rows:
+        kind = str(row.get("kind", "chunk"))
+        item_id = str(row.get("artifact_id") or "")
+        document_id = str(row.get("document_id") or "")
+        score_raw = row.get("score")
+        score = float(score_raw) if score_raw is not None else None
+        doc_ids.add(document_id)
+        content = _build_artifact_content(row, normalized=True)
+        artifact: dict[str, Any] = {
+            "kind": kind,
+            "id": item_id,
+            "document_id": document_id,
+            "score": score,
+            "content": content,
+        }
+        artifacts.append(artifact)
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     return {
@@ -126,6 +195,7 @@ def retrieve_artifacts(
             "strategy": args.strategy,
             "top_k": args.k,
             "document_ids": sorted(doc_ids),
+            "call_id": call_id,
         },
     }
 
@@ -159,6 +229,7 @@ def build_retrieve_artifacts_tool(
     return {
         "name": "retrieve_artifacts",
         "schema": schema,
+        "output_schema": OUTPUT_SCHEMA,
         "handler": _handler,
         "prompt_snippet": (
             "Tool available: `retrieve_artifacts(query, k, strategy)`.\n"

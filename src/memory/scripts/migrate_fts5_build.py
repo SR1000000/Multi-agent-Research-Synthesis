@@ -4,8 +4,15 @@ import argparse
 import shutil
 import sqlite3
 from pathlib import Path
+import sys
 
 import sqlite_vec
+
+# Add project root to sys.path
+root = Path(__file__).resolve().parents[3]  # Goes up from scripts -> memory -> src -> project_root
+if str(root) not in sys.path:
+    sys.path.insert(0, str(root))
+from src.memory.research.schema import CREATE_INDEXES, CREATE_RETRIEVED_CHUNKS_TABLE
 
 
 def _build_search_text(contextualized_text: str | None, raw_value: str | None) -> str:
@@ -140,6 +147,14 @@ def _ensure_rowid_map_document_id(conn: sqlite3.Connection) -> None:
     )
 
 
+def _reset_retrieved_chunks(conn: sqlite3.Connection) -> None:
+    """Session retrieval log only: DROP and recreate from schema (all prior log rows lost)."""
+    conn.execute("DROP TABLE IF EXISTS retrieved_chunks")
+    conn.execute(CREATE_RETRIEVED_CHUNKS_TABLE)
+    for stmt in CREATE_INDEXES[-3:]:
+        conn.execute(stmt)
+
+
 def _validate_fts_consistency(conn: sqlite3.Connection) -> None:
     source_count = conn.execute(
         "SELECT COUNT(*) FROM artifact_search_source"
@@ -170,7 +185,7 @@ def _rebuild_artifact_search_index(conn: sqlite3.Connection) -> None:
     )
     artifact_rows.extend(
         conn.execute(
-            "SELECT id AS item_id, document_id, 'image' AS kind, contextualized_text, COALESCE(caption, storage_path) AS raw_value FROM images"
+            "SELECT id AS item_id, document_id, 'image' AS kind, contextualized_text, COALESCE(NULLIF(caption, ''), storage_path) AS raw_value FROM images"
         ).fetchall()
     )
 
@@ -210,6 +225,7 @@ def migrate(db_path: Path, create_backup: bool = True) -> None:
             current_version = _ensure_schema_version_table(conn)
             latest_version = _apply_column_migrations(conn, current_version)
             _ensure_rowid_map_document_id(conn)
+            _reset_retrieved_chunks(conn)
             _rebuild_artifact_search_index(conn)
 
         # Post-commit sanity check: validates persisted row counts after migration transaction.
@@ -221,7 +237,10 @@ def migrate(db_path: Path, create_backup: bool = True) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="One-time migration for research.db schema and FTS mapping."
+        description=(
+            "One-time migration for research.db schema and FTS mapping. "
+            "Also drops and recreates retrieved_chunks (session log only)."
+        )
     )
     parser.add_argument(
         "--db-path",

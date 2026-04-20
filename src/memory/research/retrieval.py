@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, Sequence
 
 from src.memory.research.document import build_search_text
 
 if TYPE_CHECKING:
     from src.memory.research.database import ResearchDatabase
+    from src.retriever import RetrievedItem
+
+
+class ArtifactKey(Protocol):
+    kind: str
+    id: str
+    document_id: str
+    score: float | None
 
 KNN_TEXT_CHUNKS_SQL = """
 WITH knn AS (
@@ -45,12 +53,35 @@ COUNT_ARTIFACT_SEARCH_ROWS_SQL = "SELECT COUNT(*) AS row_count FROM artifact_sea
 # `MATCH` executes against FTS index; `bm25()` provides rank score (lower is better).
 QUERY_ARTIFACT_SEARCH_SQL = """
 SELECT
-    item_id,
-    document_id,
-    kind,
-    search_text,
-    bm25(artifact_search_fts) AS score
+    artifact_search_fts.item_id,
+    artifact_search_fts.document_id,
+    artifact_search_fts.kind,
+    artifact_search_fts.search_text,
+    bm25(artifact_search_fts) AS score,
+    tc.text AS chunk_text,
+    tc.contextualized_text AS chunk_contextualized_text,
+    tbl.content AS table_content,
+    tbl.contextualized_text AS table_contextualized_text,
+    tbl.caption AS table_caption,
+    eq.text AS equation_text,
+    eq.contextualized_text AS equation_contextualized_text,
+    eq.caption AS equation_caption,
+    img.storage_path AS image_storage_path,
+    img.contextualized_text AS image_contextualized_text,
+    img.caption AS image_caption
 FROM artifact_search_fts
+LEFT JOIN text_chunks tc
+    ON artifact_search_fts.kind = 'chunk'
+    AND tc.id = artifact_search_fts.item_id
+LEFT JOIN tables tbl
+    ON artifact_search_fts.kind = 'table'
+    AND tbl.id = artifact_search_fts.item_id
+LEFT JOIN equations eq
+    ON artifact_search_fts.kind = 'equation'
+    AND eq.id = artifact_search_fts.item_id
+LEFT JOIN images img
+    ON artifact_search_fts.kind = 'image'
+    AND img.id = artifact_search_fts.item_id
 WHERE artifact_search_fts MATCH ?
 ORDER BY score
 LIMIT ?
@@ -115,7 +146,7 @@ def rebuild_artifact_search_index(db: ResearchDatabase) -> None:
     )
     artifact_rows.extend(
         db.connection.execute(
-            "SELECT id AS item_id, document_id, 'image' AS kind, contextualized_text, COALESCE(caption, storage_path) AS raw_value FROM images"
+            "SELECT id AS item_id, document_id, 'image' AS kind, contextualized_text, COALESCE(NULLIF(caption, ''), storage_path) AS raw_value FROM images"
         ).fetchall()
     )
 
@@ -156,55 +187,209 @@ def query_artifact_search(
     k: int,
 ) -> list[dict[str, Any]]:
     rows = db.connection.execute(QUERY_ARTIFACT_SEARCH_SQL, (query, k)).fetchall()
-    return [
-        {
-            "item_id": row["item_id"],
-            "document_id": row["document_id"],
-            "kind": row["kind"],
-            "search_text": row["search_text"],
-            "bm25_score": float(row["score"]) if row["score"] is not None else None,
-        }
-        for row in rows
-    ]
+    return [dict(row) for row in rows]
 
 
-def save_retrieved_chunk(
+_NORMALIZED_FROM_KEYS = """
+SELECT
+    k.rank AS rank,
+    k.kind AS kind,
+    k.artifact_id AS artifact_id,
+    k.document_id AS document_id,
+    k.score AS score,
+    CASE k.kind
+        WHEN 'chunk' THEN tc.text
+        WHEN 'table' THEN tbl.content
+        WHEN 'equation' THEN eq.text
+        WHEN 'image' THEN COALESCE(NULLIF(img.caption, ''), img.storage_path)
+    END AS text,
+    CASE k.kind
+        WHEN 'chunk' THEN tc.contextualized_text
+        WHEN 'table' THEN tbl.contextualized_text
+        WHEN 'equation' THEN eq.contextualized_text
+        WHEN 'image' THEN img.contextualized_text
+    END AS contextualized_text,
+    CASE k.kind
+        WHEN 'table' THEN tbl.caption
+        WHEN 'equation' THEN eq.caption
+        WHEN 'image' THEN img.caption
+        ELSE ''
+    END AS caption
+FROM keys k
+LEFT JOIN text_chunks tc ON k.kind = 'chunk' AND tc.id = k.artifact_id
+LEFT JOIN tables tbl ON k.kind = 'table' AND tbl.id = k.artifact_id
+LEFT JOIN equations eq ON k.kind = 'equation' AND eq.id = k.artifact_id
+LEFT JOIN images img ON k.kind = 'image' AND img.id = k.artifact_id
+"""
+
+
+def _normalized_rows_from_keys_sql(n: int) -> str:
+    placeholders = ",".join(["(?, ?, ?, ?, ?)"] * n)
+    return (
+        "WITH keys(rank, kind, artifact_id, document_id, score) AS (VALUES "
+        + placeholders
+        + ") "
+        + _NORMALIZED_FROM_KEYS
+        + " ORDER BY k.rank"
+    )
+
+
+def load_normalized_artifacts_for_keys(
     db: ResearchDatabase,
-    item_id: str,
-    kind: str,
-    document_id: str,
-    text_content: str,
-    score: float | None,
+    items: Sequence[ArtifactKey],
+) -> list[dict[str, Any]]:
+    if not items:
+        return []
+    batch_size = 180
+    normalized_rows: list[dict[str, Any]] = []
+    for start in range(0, len(items), batch_size):
+        batch = items[start : start + batch_size]
+        params: list[Any] = []
+        for offset, item in enumerate(batch):
+            params.extend(
+                [
+                    start + offset,
+                    item.kind,
+                    item.id,
+                    item.document_id,
+                    item.score,
+                ]
+            )
+        sql = _normalized_rows_from_keys_sql(len(batch))
+        rows = db.connection.execute(sql, params).fetchall()
+        normalized_rows.extend(dict(r) for r in rows)
+    return normalized_rows
+
+
+_LEDGER_KEYS_CALL = """
+WITH keys AS (
+    SELECT
+        s.rank AS rank,
+        s.kind AS kind,
+        s.artifact_id AS artifact_id,
+        s.document_id AS document_id,
+        s.score AS score
+    FROM retrieved_chunks s
+    WHERE s.session_id = ? AND s.call_id = ?
+)
+"""
+
+_LEDGER_KEYS_SESSION = """
+WITH keys AS (
+    SELECT
+        s.call_id AS call_id,
+        s.rank AS rank,
+        s.kind AS kind,
+        s.artifact_id AS artifact_id,
+        s.document_id AS document_id,
+        s.score AS score
+    FROM retrieved_chunks s
+    WHERE s.session_id = ?
+)
+"""
+
+_SESSION_OUTER_SELECT = """
+SELECT
+    k.call_id AS call_id,
+    k.rank AS rank,
+    k.kind AS kind,
+    k.artifact_id AS artifact_id,
+    k.document_id AS document_id,
+    k.score AS score,
+    CASE k.kind
+        WHEN 'chunk' THEN tc.text
+        WHEN 'table' THEN tbl.content
+        WHEN 'equation' THEN eq.text
+        WHEN 'image' THEN COALESCE(NULLIF(img.caption, ''), img.storage_path)
+    END AS text,
+    CASE k.kind
+        WHEN 'chunk' THEN tc.contextualized_text
+        WHEN 'table' THEN tbl.contextualized_text
+        WHEN 'equation' THEN eq.contextualized_text
+        WHEN 'image' THEN img.contextualized_text
+    END AS contextualized_text,
+    CASE k.kind
+        WHEN 'table' THEN tbl.caption
+        WHEN 'equation' THEN eq.caption
+        WHEN 'image' THEN img.caption
+        ELSE ''
+    END AS caption
+FROM keys k
+LEFT JOIN text_chunks tc ON k.kind = 'chunk' AND tc.id = k.artifact_id
+LEFT JOIN tables tbl ON k.kind = 'table' AND tbl.id = k.artifact_id
+LEFT JOIN equations eq ON k.kind = 'equation' AND eq.id = k.artifact_id
+LEFT JOIN images img ON k.kind = 'image' AND img.id = k.artifact_id
+ORDER BY k.call_id, k.rank, k.artifact_id
+"""
+
+
+def load_normalized_artifacts_for_call(
+    db: ResearchDatabase,
     session_id: str,
-    agent_type: str,
+    call_id: str,
+) -> list[dict[str, Any]]:
+    sql = _LEDGER_KEYS_CALL + _NORMALIZED_FROM_KEYS + " ORDER BY k.rank, k.artifact_id"
+    rows = db.connection.execute(sql, (session_id, call_id)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def load_normalized_artifacts_for_session(
+    db: ResearchDatabase,
+    session_id: str,
+) -> list[dict[str, Any]]:
+    sql = _LEDGER_KEYS_SESSION + _SESSION_OUTER_SELECT
+    rows = db.connection.execute(sql, (session_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_session_retrieval_batch(
+    db: ResearchDatabase,
+    session_id: str,
+    call_id: str,
+    items: Sequence[ArtifactKey],
     query: str,
+    strategy: str,
+    agent_type: str,
 ) -> None:
+    if not items:
+        return
+    sql = """
+        INSERT OR IGNORE INTO retrieved_chunks (
+            session_id, call_id, kind, artifact_id, document_id, text_content,
+            score, rank, strategy, agent_type, query, retrieved_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """
     with db.connection:
-        db.connection.execute(
-            """
-            INSERT OR REPLACE INTO retrieved_chunks
-            (id, kind, document_id, text_content, score, session_id, agent_type, query, retrieved_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """,
-            (
-                item_id,
-                kind,
-                document_id,
-                text_content,
-                score,
-                session_id,
-                agent_type,
-                query,
-            ),
-        )
-    db._logger.log(f"[ResearchDatabase] Saved retrieved chunk {item_id}")
+        for rank, item in enumerate(items):
+            db.connection.execute(
+                sql,
+                (
+                    session_id,
+                    call_id,
+                    item.kind,
+                    item.id,
+                    item.document_id,
+                    None,
+                    item.score,
+                    rank,
+                    strategy,
+                    agent_type,
+                    query,
+                ),
+            )
+    db._logger.log(
+        f"[ResearchDatabase] Saved {len(items)} retrieved rows call_id={call_id} session_id={session_id}"
+    )
 
 
 def load_retrieved_chunks(
     db: ResearchDatabase,
     session_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    sql = "SELECT id, kind, document_id, text_content, score FROM retrieved_chunks"
+    sql = (
+        "SELECT artifact_id AS id, kind, document_id, text_content, score, "
+        "call_id, session_id FROM retrieved_chunks"
+    )
     params: tuple[Any, ...] = ()
     if session_id:
         sql += " WHERE session_id = ?"
@@ -217,6 +402,8 @@ def load_retrieved_chunks(
             "document_id": row["document_id"],
             "text_content": row["text_content"],
             "score": row["score"],
+            "call_id": row["call_id"],
+            "session_id": row["session_id"],
         }
         for row in rows
     ]

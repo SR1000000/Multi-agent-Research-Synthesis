@@ -307,18 +307,23 @@ CREATE TABLE IF NOT EXISTS slide_review_events (
 );
 """
 
-# Agent retrieval call log (formerly in wip.db)
+# Agent retrieval call log: surrogate PK, per-call uniqueness, artifact_id = base-table id.
 CREATE_RETRIEVED_CHUNKS_TABLE = """
 CREATE TABLE IF NOT EXISTS retrieved_chunks (
-    id TEXT PRIMARY KEY,
-    kind TEXT NOT NULL,
-    document_id TEXT NOT NULL,
-    text_content TEXT NOT NULL,
-    score REAL,
-    retrieved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    row_id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT,
+    call_id TEXT,
+    kind TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    document_id TEXT NOT NULL,
+    text_content TEXT,
+    score REAL,
+    rank INTEGER,
+    strategy TEXT,
+    retrieved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     agent_type TEXT,
-    query TEXT
+    query TEXT,
+    UNIQUE(session_id, call_id, kind, artifact_id)
 );
 """
 
@@ -333,5 +338,8 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_equations_page_number ON equations(page_number);",
     "CREATE INDEX IF NOT EXISTS idx_text_chunks_document_id ON text_chunks(document_id);",
     "CREATE INDEX IF NOT EXISTS idx_fts_rowid_map_document_id ON fts_rowid_map(document_id);",
+    "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_session_id ON retrieved_chunks(session_id);",
+    "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_call_id ON retrieved_chunks(call_id);",
+    "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_session_call ON retrieved_chunks(session_id, call_id);",
     "CREATE INDEX IF NOT EXISTS idx_slide_review_events_session_cycle ON slide_review_events(session_id, cycle_number);",
 ]

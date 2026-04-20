@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import sqlite_vec
 
@@ -17,10 +17,13 @@ from src.memory.research.retrieval import (
     fetch_all_tables_for_retrieval as retrieval_fetch_all_tables_for_retrieval,
     fetch_all_text_chunks_for_retrieval as retrieval_fetch_all_text_chunks_for_retrieval,
     knn_text_chunks_by_embedding as retrieval_knn_text_chunks_by_embedding,
+    load_normalized_artifacts_for_call as retrieval_load_normalized_artifacts_for_call,
+    load_normalized_artifacts_for_keys as retrieval_load_normalized_artifacts_for_keys,
+    load_normalized_artifacts_for_session as retrieval_load_normalized_artifacts_for_session,
     load_retrieved_chunks as retrieval_load_retrieved_chunks,
     query_artifact_search as retrieval_query_artifact_search,
     rebuild_artifact_search_index as retrieval_rebuild_artifact_search_index,
-    save_retrieved_chunk as retrieval_save_retrieved_chunk,
+    save_session_retrieval_batch as retrieval_save_session_retrieval_batch,
 )
 from src.memory.research.schema import (
     CREATE_ARTIFACT_SEARCH_FTS_TABLE,
@@ -37,6 +40,9 @@ from src.memory.research.schema import (
     CREATE_TEXT_CHUNKS_TABLE,
     CREATE_TEXT_CHUNKS_VEC_TABLE,
 )
+
+if TYPE_CHECKING:
+    from src.retriever import RetrievedItem
 
 
 def load_sqlite_vec_extension(conn: sqlite3.Connection) -> None:
@@ -269,28 +275,37 @@ class ResearchDatabase(DatabaseProvider):
     def fetch_all_images_for_retrieval(self) -> list[dict[str, Any]]:
         return retrieval_fetch_all_images_for_retrieval(self)
 
-    def save_retrieved_chunk(
+    def save_session_retrieval_batch(
         self,
-        item_id: str,
-        kind: str,
-        document_id: str,
-        text_content: str,
-        score: float | None,
         session_id: str,
-        agent_type: str,
+        call_id: str,
+        items: list[RetrievedItem],
         query: str,
+        strategy: str,
+        agent_type: str,
     ) -> None:
-        return retrieval_save_retrieved_chunk(
+        return retrieval_save_session_retrieval_batch(
             self,
-            item_id=item_id,
-            kind=kind,
-            document_id=document_id,
-            text_content=text_content,
-            score=score,
-            session_id=session_id,
-            agent_type=agent_type,
-            query=query,
+            session_id,
+            call_id,
+            items,
+            query,
+            strategy,
+            agent_type,
         )
+
+    def load_normalized_artifacts_for_keys(
+        self, items: list[RetrievedItem]
+    ) -> list[dict[str, Any]]:
+        return retrieval_load_normalized_artifacts_for_keys(self, items)
+
+    def load_normalized_artifacts_for_call(
+        self, session_id: str, call_id: str
+    ) -> list[dict[str, Any]]:
+        return retrieval_load_normalized_artifacts_for_call(self, session_id, call_id)
+
+    def load_normalized_artifacts_for_session(self, session_id: str) -> list[dict[str, Any]]:
+        return retrieval_load_normalized_artifacts_for_session(self, session_id)
 
     def load_retrieved_chunks(self, session_id: str | None = None) -> list[dict[str, Any]]:
         return retrieval_load_retrieved_chunks(self, session_id)
