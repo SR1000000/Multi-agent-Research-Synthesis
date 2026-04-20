@@ -7,26 +7,9 @@ from typing import Any
 import sqlite_vec
 
 from src.logging.logger import AgentLogger
-from src.retriever.types import RetrievedItem
 from src.memory.provider.provider import DatabaseProvider
+from src.memory.research import document, slide
 from src.memory.research.config import DEFAULT_CONFIG, StorageConfig, TABLE_NAMES
-from src.memory.research import document
-from src.memory.research import slide
-from src.memory.research.schema import (
-    CREATE_ARTIFACT_SEARCH_FTS_TABLE,
-    CREATE_ARTIFACT_SEARCH_SOURCE_VIEW,
-    CREATE_ARTIFACT_SEARCH_TRIGGERS,
-    CREATE_DOCUMENTS_TABLE,
-    CREATE_EQUATIONS_TABLE,
-    CREATE_IMAGES_TABLE,
-    CREATE_INDEXES,
-    CREATE_PROTO_SLIDES_TABLE,
-    CREATE_RETRIEVED_CHUNKS_TABLE,
-    CREATE_SLIDE_REVIEW_EVENTS_TABLE,
-    CREATE_TABLES_TABLE,
-    CREATE_TEXT_CHUNKS_TABLE,
-    CREATE_TEXT_CHUNKS_VEC_TABLE,
-)
 from src.memory.research.retrieval import (
     ensure_artifact_search_index as retrieval_ensure_artifact_search_index,
     fetch_all_equations_for_retrieval as retrieval_fetch_all_equations_for_retrieval,
@@ -38,6 +21,21 @@ from src.memory.research.retrieval import (
     query_artifact_search as retrieval_query_artifact_search,
     rebuild_artifact_search_index as retrieval_rebuild_artifact_search_index,
     save_retrieved_chunk as retrieval_save_retrieved_chunk,
+)
+from src.memory.research.schema import (
+    CREATE_ARTIFACT_SEARCH_FTS_TABLE,
+    CREATE_ARTIFACT_SEARCH_SOURCE_VIEW,
+    CREATE_DOCUMENTS_TABLE,
+    CREATE_EQUATIONS_TABLE,
+    CREATE_FTS_ROWID_MAP_TABLE,
+    CREATE_IMAGES_TABLE,
+    CREATE_INDEXES,
+    CREATE_PROTO_SLIDES_TABLE,
+    CREATE_RETRIEVED_CHUNKS_TABLE,
+    CREATE_SLIDE_REVIEW_EVENTS_TABLE,
+    CREATE_TABLES_TABLE,
+    CREATE_TEXT_CHUNKS_TABLE,
+    CREATE_TEXT_CHUNKS_VEC_TABLE,
 )
 
 
@@ -122,11 +120,11 @@ class ResearchDatabase(DatabaseProvider):
             CREATE_TEXT_CHUNKS_VEC_TABLE.format(vec_dimensions=self.config.vec_dimensions),
             CREATE_ARTIFACT_SEARCH_SOURCE_VIEW,
             CREATE_ARTIFACT_SEARCH_FTS_TABLE,
+            CREATE_FTS_ROWID_MAP_TABLE,
             CREATE_PROTO_SLIDES_TABLE,
             CREATE_RETRIEVED_CHUNKS_TABLE,
             CREATE_SLIDE_REVIEW_EVENTS_TABLE,
         ]
-        statements.extend(CREATE_ARTIFACT_SEARCH_TRIGGERS)
         statements.extend(CREATE_INDEXES)
 
         with self._conn:
@@ -200,6 +198,9 @@ class ResearchDatabase(DatabaseProvider):
         with self._conn:
             for table in TABLE_NAMES:
                 self._conn.execute(f"DROP TABLE IF EXISTS {table}")
+            self._conn.execute("DROP TABLE IF EXISTS fts_rowid_map")
+            self._conn.execute("DROP TABLE IF EXISTS schema_version")
+            self._conn.execute("DROP TABLE IF EXISTS schema_migrations")
         self.setup()
 
     def document_exists(self, content_hash: str) -> bool:
@@ -219,6 +220,9 @@ class ResearchDatabase(DatabaseProvider):
 
     def get_table(self, table_id: str):
         return document.get_table(self, table_id)
+
+    def get_equation(self, equation_id: str):
+        return document.get_equation(self, equation_id)
 
     def get_chunks_for_dispatch(self, doc_id: str):
         return document.get_chunks_for_dispatch(self, doc_id)
@@ -267,14 +271,28 @@ class ResearchDatabase(DatabaseProvider):
 
     def save_retrieved_chunk(
         self,
-        item: RetrievedItem,
+        item_id: str,
+        kind: str,
+        document_id: str,
+        text_content: str,
+        score: float | None,
         session_id: str,
         agent_type: str,
         query: str,
     ) -> None:
-        return retrieval_save_retrieved_chunk(self, item, session_id, agent_type, query)
+        return retrieval_save_retrieved_chunk(
+            self,
+            item_id=item_id,
+            kind=kind,
+            document_id=document_id,
+            text_content=text_content,
+            score=score,
+            session_id=session_id,
+            agent_type=agent_type,
+            query=query,
+        )
 
-    def load_retrieved_chunks(self, session_id: str | None = None) -> list[RetrievedItem]:
+    def load_retrieved_chunks(self, session_id: str | None = None) -> list[dict[str, Any]]:
         return retrieval_load_retrieved_chunks(self, session_id)
 
     def rebuild_artifact_search_index(self) -> None:
@@ -283,5 +301,5 @@ class ResearchDatabase(DatabaseProvider):
     def ensure_artifact_search_index(self) -> None:
         return retrieval_ensure_artifact_search_index(self)
 
-    def query_artifact_search(self, query: str, k: int) -> list[RetrievedItem]:
+    def query_artifact_search(self, query: str, k: int) -> list[dict[str, Any]]:
         return retrieval_query_artifact_search(self, query, k)

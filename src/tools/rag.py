@@ -81,13 +81,38 @@ def retrieve_artifacts(
                     f"caption={image.caption or ''}\n"
                     f"storage_path={image.storage_path or ''}"
                 )
+        elif it.kind == "table":
+            table = research_db.get_table(it.id)
+            if table:
+                artifact["payload"] = {
+                    "content": table.content,
+                    "caption": table.title,
+                    "page": table.page,
+                }
+        elif it.kind == "equation":
+            equation = research_db.get_equation(it.id)
+            if equation:
+                artifact["payload"] = {
+                    "latex": equation.latex_or_text,
+                    "caption": equation.caption,
+                    "page": equation.page,
+                }
         artifacts.append(artifact)
 
     session_id = context.get("session_id")
     agent_type = context.get("agent_type", "writer")
     if session_id:
         for it in items:
-            research_db.save_retrieved_chunk(it, session_id, agent_type, query)
+            research_db.save_retrieved_chunk(
+                item_id=it.id,
+                kind=it.kind,
+                document_id=it.document_id,
+                text_content=it.text,
+                score=it.score,
+                session_id=session_id,
+                agent_type=agent_type,
+                query=query,
+            )
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     return {

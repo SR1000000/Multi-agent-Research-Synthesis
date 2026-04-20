@@ -54,7 +54,17 @@ class Retriever:
         q = (query or "").strip()
         if not q:
             return []
-        return self._db.query_artifact_search(q, k)
+        rows = self._db.query_artifact_search(q, k)
+        return [
+            RetrievedItem(
+                kind=row["kind"],
+                id=row["item_id"],
+                document_id=row["document_id"],
+                text=row["search_text"],
+                score=row["bm25_score"],
+            )
+            for row in rows
+        ]
 
     def rank(self, items: list[RetrievedItem]) -> list[RetrievedItem]:
         return items

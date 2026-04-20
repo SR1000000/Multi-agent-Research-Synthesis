@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from src.retriever.types import RetrievedItem
+from src.memory.research.document import build_search_text
 
 if TYPE_CHECKING:
     from src.memory.research.database import ResearchDatabase
@@ -96,34 +96,56 @@ def fetch_all_images_for_retrieval(db: ResearchDatabase) -> list[dict[str, Any]]
     return [dict(r) for r in rows]
 
 
-def select_retrieval_text(row: dict[str, Any], *fallback_keys: str) -> str:
-    contextualized = row.get("contextualized_text")
-    contextualized_clean = contextualized.strip() if isinstance(contextualized, str) else ""
-    fallback_values: list[str] = []
-    for key in fallback_keys:
-        value = row.get(key)
-        if isinstance(value, str) and value.strip():
-            fallback_values.append(value)
-    if contextualized_clean and fallback_values:
-        return f"{contextualized_clean}\n\n{fallback_values[0]}"
-    if contextualized_clean:
-        return contextualized_clean
-    if fallback_values:
-        return fallback_values[0]
-    return ""
-
-
 def rebuild_artifact_search_index(db: ResearchDatabase) -> None:
+    artifact_rows = []
+    artifact_rows.extend(
+        db.connection.execute(
+            "SELECT id AS item_id, document_id, 'chunk' AS kind, contextualized_text, text AS raw_value FROM text_chunks"
+        ).fetchall()
+    )
+    artifact_rows.extend(
+        db.connection.execute(
+            "SELECT id AS item_id, document_id, 'table' AS kind, contextualized_text, content AS raw_value FROM tables"
+        ).fetchall()
+    )
+    artifact_rows.extend(
+        db.connection.execute(
+            "SELECT id AS item_id, document_id, 'equation' AS kind, contextualized_text, text AS raw_value FROM equations"
+        ).fetchall()
+    )
+    artifact_rows.extend(
+        db.connection.execute(
+            "SELECT id AS item_id, document_id, 'image' AS kind, contextualized_text, COALESCE(caption, storage_path) AS raw_value FROM images"
+        ).fetchall()
+    )
+
     with db.connection:
+        db.connection.execute("DELETE FROM fts_rowid_map")
         db.connection.execute(DELETE_ALL_ARTIFACT_SEARCH_SQL)
-        db.connection.execute(INSERT_ALL_ARTIFACTS_FTS_SQL)
+        for row in artifact_rows:
+            search_text = build_search_text(
+                row["contextualized_text"],
+                row["raw_value"],
+            )
+            if not search_text:
+                continue
+            mapping_cursor = db.connection.execute(
+                "INSERT INTO fts_rowid_map(item_id, document_id, kind) VALUES (?, ?, ?)",
+                (row["item_id"], row["document_id"], row["kind"]),
+            )
+            rowid = mapping_cursor.lastrowid
+            db.connection.execute(
+                """
+                INSERT INTO artifact_search_fts(rowid, item_id, document_id, kind, search_text)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (rowid, row["item_id"], row["document_id"], row["kind"], search_text),
+            )
 
 
 def ensure_artifact_search_index(db: ResearchDatabase) -> None:
-    source_count_row = db.connection.execute(COUNT_ARTIFACT_ROWS_SQL).fetchone()
-    fts_count_row = db.connection.execute(COUNT_ARTIFACT_SEARCH_ROWS_SQL).fetchone()
-    source_count = int(source_count_row["row_count"] if source_count_row else 0)
-    fts_count = int(fts_count_row["row_count"] if fts_count_row else 0)
+    source_count = db.connection.execute("SELECT COUNT(*) FROM artifact_search_source").fetchone()[0]
+    fts_count = db.connection.execute("SELECT COUNT(*) FROM artifact_search_fts").fetchone()[0]
     if source_count != fts_count:
         rebuild_artifact_search_index(db)
 
@@ -132,23 +154,27 @@ def query_artifact_search(
     db: ResearchDatabase,
     query: str,
     k: int,
-) -> list[RetrievedItem]:
+) -> list[dict[str, Any]]:
     rows = db.connection.execute(QUERY_ARTIFACT_SEARCH_SQL, (query, k)).fetchall()
     return [
-        RetrievedItem(
-            kind=row["kind"],
-            id=row["item_id"],
-            document_id=row["document_id"],
-            text=row["search_text"],
-            score=float(row["score"]) if row["score"] is not None else None,
-        )
+        {
+            "item_id": row["item_id"],
+            "document_id": row["document_id"],
+            "kind": row["kind"],
+            "search_text": row["search_text"],
+            "bm25_score": float(row["score"]) if row["score"] is not None else None,
+        }
         for row in rows
     ]
 
 
 def save_retrieved_chunk(
     db: ResearchDatabase,
-    item: RetrievedItem,
+    item_id: str,
+    kind: str,
+    document_id: str,
+    text_content: str,
+    score: float | None,
     session_id: str,
     agent_type: str,
     query: str,
@@ -161,23 +187,23 @@ def save_retrieved_chunk(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
             (
-                item.id,
-                item.kind,
-                item.document_id,
-                item.text,
-                item.score,
+                item_id,
+                kind,
+                document_id,
+                text_content,
+                score,
                 session_id,
                 agent_type,
                 query,
             ),
         )
-    db._logger.log(f"[ResearchDatabase] Saved retrieved chunk {item.id}")
+    db._logger.log(f"[ResearchDatabase] Saved retrieved chunk {item_id}")
 
 
 def load_retrieved_chunks(
     db: ResearchDatabase,
     session_id: str | None = None,
-) -> list[RetrievedItem]:
+) -> list[dict[str, Any]]:
     sql = "SELECT id, kind, document_id, text_content, score FROM retrieved_chunks"
     params: tuple[Any, ...] = ()
     if session_id:
@@ -185,12 +211,12 @@ def load_retrieved_chunks(
         params = (session_id,)
     rows = db.connection.execute(sql, params).fetchall()
     return [
-        RetrievedItem(
-            id=row["id"],
-            kind=row["kind"],
-            document_id=row["document_id"],
-            text=row["text_content"],
-            score=row["score"],
-        )
+        {
+            "id": row["id"],
+            "kind": row["kind"],
+            "document_id": row["document_id"],
+            "text_content": row["text_content"],
+            "score": row["score"],
+        }
         for row in rows
     ]
