@@ -27,6 +27,7 @@ from .llama_parse_figures import (
     build_extracted_images,
     collect_figure_anchors,
     iter_layout_entries,
+    rescue_orphan_figure_entries,
     rewrite_markdown_images_and_tables,
 )
 
@@ -313,6 +314,9 @@ class LlamaParseBackend(OCRBackend):
         anchors = collect_figure_anchors(parse_result)
         layout_entries = iter_layout_entries(parse_result)
         assignments = assign_entries_to_anchors(anchors, layout_entries)
+        anchors, assignments = rescue_orphan_figure_entries(
+            parse_result, anchors, assignments, layout_entries
+        )
 
         def _dl(url: str) -> bytes:
             return _download_bytes_with_retry(

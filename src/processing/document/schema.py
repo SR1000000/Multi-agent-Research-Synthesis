@@ -22,7 +22,8 @@ class ExtractedImage:
         figure_number: Parsed figure index
         panel_index: 0-based panel order within the figure (geometry-sorted)
         panel_role: Optional spatial hint e.g. left, right
-        identity_signal: Which signal supplied figure identity (caption_item, markdown_alt, weak)
+        identity_signal: Which signal supplied figure identity (caption_item, markdown_alt, weak,
+            rescued_orphan, layout_only)
     """
     id: str
     """Unique artifact identifier (provider-prefixed, e.g., doc_lp_img_001)"""

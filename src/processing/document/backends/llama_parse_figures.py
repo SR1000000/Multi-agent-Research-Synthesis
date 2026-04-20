@@ -135,6 +135,16 @@ def _parse_figure_label(text: str) -> tuple[str | None, int | None]:
 _IMAGE_REF_PATTERN = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _HTML_TABLE_PATTERN = re.compile(r"(<table[\s\S]*?</table>)", re.IGNORECASE | re.DOTALL)
 
+# Geometry heuristics (PDF points, ~1pt ≈ 1/72 inch)
+_CAPTION_NEAREST_MAX_DIST_PX = 300.0
+"""Reject caption-labeled items whose center is farther than this from the anchor center."""
+
+_ASSIGN_REJECT_ABOVE_ANCHOR_GAP_PX = 100.0
+"""If a layout crop's bottom is this many px above the anchor top, skip distance-based match."""
+
+_RESCUE_CAPTION_MAX_GAP_PX = 200.0
+"""Max vertical gap (caption top minus entry bottom) for orphan layout rescue to a Figure N caption."""
+
 
 @dataclass
 class FigureAnchor:
@@ -183,6 +193,8 @@ def collect_caption_labeled_items(page_items: list[Any]) -> list[tuple[str, tupl
 def _nearest_caption_text(
     anchor_rect: tuple[float, float, float, float],
     candidates: list[tuple[str, tuple[float, float, float, float]]],
+    *,
+    max_dist: float | None = _CAPTION_NEAREST_MAX_DIST_PX,
 ) -> tuple[str, tuple[float, float, float, float] | None] | None:
     if not candidates:
         return None
@@ -193,7 +205,28 @@ def _nearest_caption_text(
         if d < best_d:
             best_d = d
             best = (txt, rect)
+    if best is None:
+        return None
+    if max_dist is not None and best_d > max_dist * max_dist:
+        return None
     return best
+
+
+def _horizontal_overlap_positive(
+    a: tuple[float, float, float, float], b: tuple[float, float, float, float]
+) -> bool:
+    ax1, bx1 = a[0] + a[2], b[0] + b[2]
+    return min(ax1, bx1) - max(a[0], b[0]) > 0.0
+
+
+def _entry_entirely_above_anchor_gap(
+    ent_rect: tuple[float, float, float, float],
+    anchor_rect: tuple[float, float, float, float],
+    gap_pt: float = _ASSIGN_REJECT_ABOVE_ANCHOR_GAP_PX,
+) -> bool:
+    entry_bottom = ent_rect[1] + ent_rect[3]
+    anchor_top = anchor_rect[1]
+    return entry_bottom < anchor_top - gap_pt
 
 
 def _find_mermaid_fence(page_items: list[Any], anchor_rect: tuple[float, float, float, float]) -> str:
@@ -342,6 +375,8 @@ def assign_entries_to_anchors(
         cov = _coverage_of_entry_inside_anchor(an.anchor_rect, ent.rect)
         if cov >= 0.45 or iou >= 0.08:
             return max(iou, cov)
+        if _entry_entirely_above_anchor_gap(ent.rect, an.anchor_rect):
+            return -1.0
         dist = _center_dist2(an.anchor_rect, ent.rect)
         return 1.0 / (1.0 + dist / 50000.0)
 
@@ -365,6 +400,8 @@ def assign_entries_to_anchors(
         for ai, an in enumerate(anchors):
             if an.page_number != ent.page:
                 continue
+            if _entry_entirely_above_anchor_gap(ent.rect, an.anchor_rect):
+                continue
             d = _center_dist2(an.anchor_rect, ent.rect)
             if d < best_d:
                 best_d = d
@@ -376,6 +413,78 @@ def assign_entries_to_anchors(
     for lst in assignments:
         lst.sort(key=lambda e: (e.rect[0], e.rect[1]))
     return assignments
+
+
+def rescue_orphan_figure_entries(
+    parse_result: Any,
+    anchors: list[FigureAnchor],
+    assignments: list[list[LayoutMetaEntry]],
+    layout_entries: list[LayoutMetaEntry],
+) -> tuple[list[FigureAnchor], list[list[LayoutMetaEntry]]]:
+    """
+    Attach unassigned layout crops to synthetic anchors when a Figure N caption sits
+    just below them (LlamaParse sometimes emits figure bodies as ``table`` items with
+    no ``![alt](url)``, so ``collect_figure_anchors`` never created an anchor).
+    """
+    assigned_idx: set[int] = set()
+    for lst in assignments:
+        for e in lst:
+            assigned_idx.add(e.index)
+
+    items_block = _attr(parse_result, "items")
+    item_pages = _attr(items_block, "pages") or []
+    page_to_items: dict[int, list[Any]] = {}
+    for page in item_pages:
+        pn = int(_attr(page, "page_number") or 0)
+        page_to_items[pn] = list(_attr(page, "items") or [])
+
+    new_anchors = list(anchors)
+    new_assignments = list(assignments)
+
+    for ent in sorted(layout_entries, key=lambda e: e.index):
+        if ent.index in assigned_idx:
+            continue
+        page_items = page_to_items.get(ent.page) or []
+        cap_items = collect_caption_labeled_items(page_items)
+        entry_bottom = ent.rect[1] + ent.rect[3]
+        ex0, ex1 = ent.rect[0], ent.rect[0] + ent.rect[2]
+        best: tuple[str, float] | None = None  # (caption_text, gap)
+        for txt, crect in cap_items:
+            _fl, fn = _parse_figure_label(txt)
+            if fn is None:
+                continue
+            cy = crect[1]
+            if cy <= entry_bottom:
+                continue
+            gap = cy - entry_bottom
+            if gap > _RESCUE_CAPTION_MAX_GAP_PX:
+                continue
+            if not _horizontal_overlap_positive(ent.rect, crect):
+                continue
+            if best is None or gap < best[1]:
+                best = (txt, gap)
+        if best is None:
+            continue
+        caption_text = best[0]
+        fl, fn = _parse_figure_label(caption_text)
+        synthetic = FigureAnchor(
+            page_number=ent.page,
+            alt="",
+            url=f"__layout_rescue_idx_{ent.index}__",
+            anchor_rect=ent.rect,
+            vlm_caption="",
+            mermaid_fence="",
+            source_caption=caption_text,
+            figure_label=fl,
+            figure_number=fn,
+            identity_signal="rescued_orphan",
+            from_image_item=False,
+        )
+        new_anchors.append(synthetic)
+        new_assignments.append([ent])
+        assigned_idx.add(ent.index)
+
+    return new_anchors, new_assignments
 
 
 def panel_role(n_panels: int, panel_index: int, rects: list[tuple[float, float, float, float]]) -> str | None:
