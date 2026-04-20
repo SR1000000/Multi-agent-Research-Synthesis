@@ -134,6 +134,14 @@ CREATE TABLE IF NOT EXISTS images (
     source_filename TEXT,
     confidence REAL,
     category TEXT,
+    vlm_caption TEXT,
+    mermaid TEXT,
+    figure_group_id TEXT,
+    figure_label TEXT,
+    figure_number INTEGER,
+    panel_index INTEGER,
+    panel_role TEXT,
+    identity_signal TEXT,
     FOREIGN KEY (document_id) REFERENCES documents(id)
 );
 """
