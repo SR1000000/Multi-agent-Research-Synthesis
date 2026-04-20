@@ -82,8 +82,8 @@ def save_document(db, result: ExtractionResult) -> None:
             db._conn.execute(
                 """
                 INSERT OR REPLACE INTO images
-                (id, document_id, mime_type, base64_data, storage_path, page_number, caption, contextualized_text)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, document_id, mime_type, base64_data, storage_path, page_number, caption, contextualized_text, bbox, source_filename, confidence, category)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     img.id,
@@ -94,6 +94,10 @@ def save_document(db, result: ExtractionResult) -> None:
                     img.page,
                     img.caption,
                     img.contextualized_text,
+                    json.dumps(img.bbox) if img.bbox else None,
+                    img.source_filename,
+                    img.confidence,
+                    img.category,
                 )
             )
 
@@ -192,6 +196,10 @@ def load_document(db, doc_id: str) -> ExtractionResult | None:
             caption=row["caption"] or "",
             storage_path=row["storage_path"],
             contextualized_text=row["contextualized_text"],
+            bbox=json.loads(row["bbox"]) if row["bbox"] else None,
+            source_filename=row["source_filename"],
+            confidence=row["confidence"],
+            category=row["category"],
         ) for row in img_rows
     ]
 
@@ -262,6 +270,10 @@ def get_image(db, image_id: str) -> ExtractedImage | None:
         caption=row["caption"] or "",
         storage_path=row["storage_path"],
         contextualized_text=row["contextualized_text"],
+        bbox=json.loads(row["bbox"]) if row["bbox"] else None,
+        source_filename=row["source_filename"],
+        confidence=row["confidence"],
+        category=row["category"],
     )
 
 

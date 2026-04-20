@@ -122,6 +122,17 @@ class ResearchDatabase(DatabaseProvider):
                     if "paper_metadata" not in doc_columns:
                         self._conn.execute("ALTER TABLE documents ADD COLUMN paper_metadata TEXT;")
 
+                image_columns = [info["name"] for info in self._conn.execute("PRAGMA table_info(images)").fetchall()]
+                if image_columns:
+                    if "bbox" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN bbox TEXT;")
+                    if "source_filename" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN source_filename TEXT;")
+                    if "confidence" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN confidence REAL;")
+                    if "category" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN category TEXT;")
+
                 slide_columns = [
                     info["name"] for info in self._conn.execute("PRAGMA table_info(proto_slides)").fetchall()
                 ]

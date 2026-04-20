@@ -24,6 +24,10 @@ class ExtractedImage:
     caption: str = ""
     storage_path: str | None = None
     contextualized_text: str | None = None
+    bbox: dict[str, Any] | None = None
+    source_filename: str | None = None
+    confidence: float | None = None
+    category: str | None = None
 
 
 @dataclass

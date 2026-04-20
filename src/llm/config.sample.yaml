@@ -11,6 +11,7 @@
 #
 # Current sample assumes free teir for Gemini, Ollama and OpenRouter.
 # Get available OpenRouter free models at https://openrouter.ai/collections/free-models (changes frequently).
+# See also https://github.com/mnfst/awesome-free-llm-apis (model lists likely outdated).  LiteLLM implements most of those.
 # A free OpenRouter account only gets 50 daily requests, adding minimum of 10 credits "verifies" your account and raises the daily limit to 1000 requests
 
 router:

@@ -130,6 +130,10 @@ CREATE TABLE IF NOT EXISTS images (
     page_number INTEGER,
     caption TEXT,
     contextualized_text TEXT,
+    bbox TEXT,
+    source_filename TEXT,
+    confidence REAL,
+    category TEXT,
     FOREIGN KEY (document_id) REFERENCES documents(id)
 );
 """

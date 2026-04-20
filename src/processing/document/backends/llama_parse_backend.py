@@ -45,6 +45,9 @@ _PARSE_KWARGS: dict[str, Any] = {
             "Render all mathematical equations in LaTeX notation. "
             "Inline equations: $equation$. Block/display equations: $$equation$$. "
             "For every figure or image, include its full caption verbatim. "
+            "CRITICAL: For every figure or diagram, you MUST include the original "
+            "Markdown image reference tag (e.g., ![caption](image)) immediately "
+            "before any Mermaid or HTML transcription you provide. Never omit the image tag."
             "For every table, include its full caption or title above the table. "
             "Preserve section headings exactly as they appear."
         ),
@@ -63,7 +66,7 @@ _PARSE_KWARGS: dict[str, Any] = {
                 "output_tables_as_markdown": False,
                 "merge_continued_tables": True,
             },
-            "inline_images": True,
+            #"inline_images": True,
             "annotate_links": True,
         },
         "extract_printed_page_number": True,
@@ -647,12 +650,12 @@ class LlamaParseBackend(OCRBackend):
             bbox          BBox | None    ← position on page
             size_bytes    int | None
 
-        Caption is NOT on ImagesContentMetadataImage — it lives on the
+        Caption and Confidence are NOT on ImagesContentMetadataImage — they live on the
         corresponding ImageItem in items.pages[*].items. We build a lookup
-        map from index → caption using the items tree first.
+        map from index → (caption, confidence) using the items tree first.
         """
         
-        caption_by_index: dict[int, str] = {}
+        meta_by_index: dict[int, dict[str, Any]] = {}
         items_block = _attr(parse_result, "items")
         item_pages = _attr(items_block, "pages") or []
         img_item_counter = 0  # items are 0-indexed globally in order
@@ -660,8 +663,14 @@ class LlamaParseBackend(OCRBackend):
             for item in (_attr(page, "items") or []):
                 if str(_attr(item, "type", "")).lower() == "image":
                     caption = str(_attr(item, "caption") or "").strip()
-                    if caption:
-                        caption_by_index[img_item_counter] = caption
+                    # Item bbox is a list of dicts with confidence
+                    item_bboxes = _attr(item, "bbox") or []
+                    confidence = _attr(item_bboxes[0], "confidence") if item_bboxes else None
+                    
+                    meta_by_index[img_item_counter] = {
+                        "caption": caption,
+                        "confidence": confidence
+                    }
                     img_item_counter += 1
 
         images_meta = _attr(parse_result, "images_content_metadata")
@@ -690,11 +699,16 @@ class LlamaParseBackend(OCRBackend):
             index: int = _attr(entry, "index", 0)
             filename: str = str(_attr(entry, "filename") or f"img_{index}.bin")
             mime_type: str = str(_attr(entry, "content_type") or "application/octet-stream")
+            raw_bbox = _attr(entry, "bbox")
+            bbox = _serialize_parse_payload(raw_bbox) if raw_bbox else None
 
             # Advance caption only when we move to a new page.
             page_num = _page_from_filename(filename)
+            confidence = None
             if page_num != last_caption_page:
-                caption = caption_by_index.get(caption_counter, "")
+                item_meta = meta_by_index.get(caption_counter, {})
+                caption = item_meta.get("caption", "")
+                confidence = item_meta.get("confidence")
                 caption_counter += 1
                 last_caption_page = page_num
             else:
@@ -729,6 +743,10 @@ class LlamaParseBackend(OCRBackend):
                 page=page_num,
                 caption=caption,
                 storage_path=storage_path,
+                bbox=bbox,
+                source_filename=filename,
+                confidence=confidence,
+                category=category,
             ))
 
         return extracted
