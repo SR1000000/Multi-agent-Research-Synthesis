@@ -1,6 +1,7 @@
 # Router group aliases: optional per-model-row ``model_name`` assigns a deployment to an alias
 # (default for ``providers`` is ``default_model_name``; for ``fallback_providers`` it is
 # ``fallback_model_name``). Use ``_call(..., model="writer")`` etc. to target an alias.
+# All models under ``fallback_providers`` without a ``model_name`` are implicitly considered "fallback" models.
 #
 # Example (commented):
 #   models:
@@ -20,11 +21,7 @@ router:
   fallbacks:
     - app: ["fallback"]
     - slides: ["fallback"]
-    - critic: ["fallback", "fallback_extra"]
-    # Planner: glm-5.1 -> qwen 3.5 -> nemotron 3 -> gemini 3.1 flash lite preview. No hop into ``fallback``.
-    - planner: ["planner_2"]
-    - planner_2: ["planner_3"]
-    - planner_3: ["planner_4"]
+    - critic: ["fallback", "app"]
     # - writer: ["fallback"]
     # - fast: ["fallback"]
 
@@ -40,10 +37,9 @@ router:
         - model: "gemini/gemini-3.1-flash-lite-preview"
           model_name: "slides"
           rpm: 15
-        # Fourth planner tier (LiteLLM group ``planner_4``); not used by ``app`` / ``slides``.
         - model: "gemini/gemini-3.1-flash-lite-preview"
-          model_name: "planner_4"
           rpm: 15
+          model_name: "fallback"
 
   # Note: splitting fallback_providers into *_high and *_rest allows us to control the
   # exact model-level fallback order across different providers (e.g. OpenRouter -> Ollama -> OpenRouter)
@@ -53,49 +49,49 @@ router:
       api_key: "os.environ/OPENROUTER_API_KEY"
       api_base: "os.environ/OPENROUTER_BASE_URL"
       models:
-        # Third planner tier (``planner_3``) and critic: Nemotron 3 Super; extra rows = same pool order for ``fallback``.
-        # Nemotron 3 and elephant-alpha store used prompts and completions for their own use.
+        # Planner Tier 2: Nemotron 3 Super
         - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
-          model_name: "planner_3"
+          model_name: "planner"
+          order: 2
+        # Planner Tier 3: Elephant Alpha
+        - model: "openrouter/elephant-alpha"
+          model_name: "planner"
+          order: 3
+        # Critic first preference
         - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
           model_name: "critic"
+
         - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
         - model: "openrouter/elephant-alpha"
-        - model: "openrouter/z-ai/glm-4.5-air:free"
 
     ollama_high:
       api_key: "os.environ/OLLAMA_API_KEY"
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
-        # First planner tier (``planner``); duplicate row keeps ``fallback`` pool order/contents.
-        - model: "ollama/glm-5.1:cloud"
-          model_name: "planner"
-        - model: "ollama/glm-5.1:cloud"
-        # Second planner tier (``planner_2``): Qwen 3.5
+        # Planner Tier 1: Qwen 3.5
         - model: "ollama/qwen3.5:397b-cloud"
-          model_name: "planner_2"
+          model_name: "planner"
+          order: 1
           timeout: 180
+          #- model: "ollama/glm-5.1:cloud"  # Often unavailable (524 error)
 
-    gemini_rest:
+    gemini_basic:
       api_key: "os.environ/GEMINI_API_KEY"
       models:
-        - model: "gemini/gemini-3.1-flash-lite-preview"
-          model_name: "fallback_extra"
-          rpm: 15
         - model: "gemini/gemma-4-31b-it"
           rpm: 15
 
-    ollama_rest:
+    ollama_basic:
       api_key: "os.environ/OLLAMA_API_KEY"
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
         - model: "ollama/gemma4:31b-cloud"
 
-    openrouter_rest:
-      api_key: "os.environ/OPENROUTER_API_KEY"
-      api_base: "os.environ/OPENROUTER_BASE_URL"
-      models:
-        - model: "openrouter/openai/gpt-oss-120b:free"  # Does not support structured output
+#    openrouter_basic:
+#      api_key: "os.environ/OPENROUTER_API_KEY"
+#      api_base: "os.environ/OPENROUTER_BASE_URL"
+#      models:
+#        - model: "openrouter/openai/gpt-oss-120b:free"  # Does not support structured output
 
   settings:
     num_retries: 2
@@ -103,3 +99,4 @@ router:
     cooldown_time: 30
     enable_pre_call_checks: true
     timeout: 120
+    routing_strategy: "usage-based-routing"
