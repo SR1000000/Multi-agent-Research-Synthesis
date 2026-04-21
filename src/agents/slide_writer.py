@@ -13,8 +13,9 @@ from typing import List, TypedDict
 
 from langgraph.types import Command
 
+from src.agents._image_utils import format_image_assets_block
 from src.agents.base import BaseLLMAgent, SLIDE_REWRITER_ROLE
-from src.memory.research.schema import ProtoSlide, make_slide_batch_model, slide_output_prompt_contract
+from src.memory.research.schema import ImageMetadata, ProtoSlide, make_slide_batch_model, slide_output_prompt_contract
 from src.memory.research.database import ResearchDatabase
 
 
@@ -110,7 +111,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         chunk_ids: list[str],
         slide_blueprints: list[dict],
         include_existing_slides: bool,
-    ) -> tuple[str, list[ProtoSlide]]:
+    ) -> tuple[str, list[ProtoSlide], list[ImageMetadata]]:
         with ResearchDatabase() as research_db:
             rows = []
             if chunk_ids:
@@ -129,9 +130,10 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
                     existing_slide = research_db.load_slide(slide_num)
                     if existing_slide is not None:
                         existing_slides.append(existing_slide)
+            image_metadatas = research_db.get_images_for_chunks(chunk_ids) if chunk_ids else []
 
         chunk_texts = _ordered_chunk_texts(rows, chunk_ids)
-        return "\n\n".join(chunk_texts), existing_slides
+        return "\n\n".join(chunk_texts), existing_slides, image_metadatas
 
     def _build_assignment_block(self, slide_blueprints: list[dict]) -> str:
         return "\n".join(
@@ -141,8 +143,14 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
             for i, bp in enumerate(slide_blueprints)
         )
 
-    def _base_prompt_parts(self, *, slide_count: int, combined_text: str) -> list[str]:
-        return [
+    def _base_prompt_parts(
+        self,
+        *,
+        slide_count: int,
+        combined_text: str,
+        image_metadatas: list[ImageMetadata],
+    ) -> list[str]:
+        parts: list[str] = [
             "",
             slide_output_prompt_contract(slide_count),
             "",
@@ -154,10 +162,12 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
             "- Choose the layout that best supports the evidence and intended narrative role.",
             "- Speaker notes should be professional, conversational, and cover the core bullets with added context.",
             "- Avoid academic jargon unless the original terminology is important to preserve.",
-            "",
-            "SOURCE MATERIAL (research chunks):",
-            combined_text,
         ]
+        image_block = format_image_assets_block(image_metadatas)
+        if image_block:
+            parts += ["", image_block]
+        parts += ["", "SOURCE MATERIAL (research chunks):", combined_text]
+        return parts
 
     def _build_user_prompt(
         self,
@@ -167,6 +177,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         combined_text: str,
         rewrite_instructions: str,
         existing_slides: list[ProtoSlide],
+        image_metadatas: list[ImageMetadata],
     ) -> str:
         raise NotImplementedError
 
@@ -231,7 +242,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
                     })
 
             slide_count = len(slide_blueprints)
-            combined_text, existing_slides = self._load_context(
+            combined_text, existing_slides, image_metadatas = self._load_context(
                 chunk_ids=chunk_ids,
                 slide_blueprints=slide_blueprints,
                 include_existing_slides=bool(rewrite_instructions.strip()),
@@ -242,6 +253,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
                 combined_text=combined_text,
                 rewrite_instructions=rewrite_instructions,
                 existing_slides=existing_slides,
+                image_metadatas=image_metadatas,
             )
             turns = [{"role": "user", "content": user_prompt}]
 
@@ -323,8 +335,9 @@ class InitialSlideWriterAgent(_BaseSlideWorkerAgent):
         combined_text: str,
         rewrite_instructions: str,
         existing_slides: list[ProtoSlide],
+        image_metadatas: list[ImageMetadata],
     ) -> str:
-        del rewrite_instructions, existing_slides
+        del rewrite_instructions
         blueprint_block = self._build_assignment_block(slide_blueprints)
         user_prompt_parts = [
             f"Return exactly ONE JSON object whose `slides` array contains exactly {slide_count} slide(s).\n",
@@ -338,6 +351,7 @@ class InitialSlideWriterAgent(_BaseSlideWorkerAgent):
         user_prompt_parts += self._base_prompt_parts(
             slide_count=slide_count,
             combined_text=combined_text,
+            image_metadatas=image_metadatas,
         )
         return "\n".join(user_prompt_parts)
 
@@ -354,6 +368,7 @@ class SlideRewriterAgent(_BaseSlideWorkerAgent):
         combined_text: str,
         rewrite_instructions: str,
         existing_slides: list[ProtoSlide],
+        image_metadatas: list[ImageMetadata],
     ) -> str:
         blueprint_block = self._build_assignment_block(slide_blueprints)
         existing_slides_block = "\n\n".join(
@@ -386,6 +401,7 @@ class SlideRewriterAgent(_BaseSlideWorkerAgent):
         user_prompt_parts += self._base_prompt_parts(
             slide_count=slide_count,
             combined_text=combined_text,
+            image_metadatas=image_metadatas,
         )
         return "\n".join(user_prompt_parts)
 

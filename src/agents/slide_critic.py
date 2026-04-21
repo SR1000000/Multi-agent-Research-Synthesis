@@ -7,6 +7,7 @@ from typing import Literal, TypedDict
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+from src.agents._image_utils import format_image_assets_block
 from src.agents.base import BaseLLMAgent, schema_prompt_contract
 from src.memory.research.database import ResearchDatabase
 from src.memory.research.schema import ProtoSlide
@@ -147,6 +148,9 @@ class SlideCriticAgent(BaseLLMAgent):
             if bp.get("slide_number") in set(slide_numbers)
         )
         slides_block = "\n\n".join(_format_slide(slide) for slide in slides) or "No slides found."
+        with ResearchDatabase() as research_db:
+            image_metadatas = research_db.get_images_for_chunks(state.get("chunk_ids", []))
+        image_block = format_image_assets_block(image_metadatas)
         return "\n".join(
             [
                 f"Cycle: {state['cycle_number']}",
@@ -162,6 +166,9 @@ class SlideCriticAgent(BaseLLMAgent):
                 "",
                 "SOURCE CHUNKS:",
                 chunks or "(none)",
+                "",
+                "AVAILABLE IMAGE ASSETS:",
+                image_block or "(none)",
                 "",
                 "Identify only significant issues that break grounding, clarity, coherence, or the review criteria. "
                 "If no changes are needed, set actionable=false and issues=[].",

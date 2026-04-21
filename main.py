@@ -390,6 +390,7 @@ def main() -> None:
                     db=db,
                     title=plan_title,
                     subtitle=plan_subtitle,
+                    object_store=object_store,
                 ).build()
                 print(f"\n[export] Presentation saved -> {out}")
             except ValueError as exc:

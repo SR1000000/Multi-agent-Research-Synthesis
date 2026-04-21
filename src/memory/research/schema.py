@@ -32,6 +32,15 @@ class BulletPoint(BaseModel):
         ]
 
 
+class ImageMetadata(BaseModel):
+    """Lightweight image fields for LLM prompts (no base64; export uses get_image)."""
+
+    id: str
+    caption: str = ""
+    vlm_caption: str = ""
+    aspect_ratio: Literal["landscape", "portrait", "square"] = "landscape"
+
+
 class SlideContent(BaseModel):
     title: str = Field(description="Punchy, active heading for the slide (e.g. 'Accuracy Jumps 40%' not 'Accuracy Results')")
     subtitle: Optional[str] = Field(default=None, description="Optional subtitle, primarily for title slides and major section openers")
@@ -39,9 +48,24 @@ class SlideContent(BaseModel):
     bullets: List[BulletPoint] = Field(description="3-5 structured bullet points for the slide body")
     speaker_notes: str = Field(description="Speaker notes in a professional, conversational tone — include context and nuance too detailed for the slide itself")
     media_id: Optional[str] = Field(default=None, description="Optional ID of an image or chart from research.db")
-    layout: Literal["title_slide", "title_and_body", "two_column", "big_number", "quote", "media_left", "media_right"] = Field(
+    layout: Literal[
+        "title_slide",
+        "title_and_body",
+        "two_column",
+        "big_number",
+        "quote",
+        "media_left",
+        "media_right",
+        "media_top",
+        "media_bottom",
+    ] = Field(
         default="title_and_body",
-        description="Slide layout: 'title_slide' for openers/dividers, 'title_and_body' for standard bullet slides, 'two_column' for comparisons, 'big_number' for stat callouts, 'quote' for direct quotations, 'media_left'/'media_right' when a figure or chart is the focus"
+        description=(
+            "Slide layout: 'title_slide' for openers/dividers, 'title_and_body' for standard bullet slides, "
+            "'two_column' for comparisons, 'big_number' for stat callouts, 'quote' for direct quotations, "
+            "'media_left'/'media_right' for portrait-oriented figures (image left or right of text), "
+            "'media_top'/'media_bottom' for landscape-oriented figures (image above or below text)"
+        ),
     )
     narrative_role: Literal["hook", "problem", "evidence", "insight", "transition", "call_to_action", "conclusion"] = Field(
         default="evidence",

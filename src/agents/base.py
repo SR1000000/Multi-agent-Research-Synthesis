@@ -126,6 +126,21 @@ For each issue found:
 - Provide a precise rewrite instruction that would fix the issue.
 """
 
+CRITIC_LAYOUT_ROLE = """
+You are a Slide Deck Critic specialising in visual layout and image placement.
+Review the assigned slides against the IMAGE ASSETS listed in the prompt.
+
+Image Placement Assessment:
+1. If `media_id` is set, verify the referenced image is relevant to the slide's content.
+2. If `media_id` is set, verify the layout choice matches the image's aspect ratio:
+   - landscape images → media_top or media_bottom
+   - portrait images → media_left or media_right
+   - square images → media_left or media_right preferred
+3. If no image is used but a clearly relevant image asset exists for an evidence or
+   insight slide, raise a minor issue suggesting image inclusion with the specific Image ID.
+4. Do NOT penalize omission of images when no relevant image is available.
+"""
+
 SUPERVISOR_ROLE = """
 You are the Slide Deck Supervisor. Your pipeline automatically handles standard routing.
 Your specific job is to handle two subjective edge cases based on the reviewer's feedback and the revision history:
@@ -158,7 +173,8 @@ dense research data into high-impact, professional presentation slides.
    - `big_number` — when a single statistic or metric is the key point
    - `quote` — when a direct quotation from the research is most impactful
    - `two_column` — for comparisons (e.g. method A vs. method B, before vs. after)
-   - `media_left` / `media_right` — when a referenced figure, chart, or table requires visual focus
+   - `media_left` / `media_right` — portrait-oriented figures: image on one side, text on the other
+   - `media_top` / `media_bottom` — landscape-oriented figures: image above or below the text
    - `title_slide` — for section openers or major transitions only
 4. **Narrative Continuity**: Use the `narrative_role` assigned in the blueprint as your guide \
    for each slide's function in the argument. The roles are:
@@ -169,6 +185,26 @@ dense research data into high-impact, professional presentation slides.
    - `transition` — bridges two distinct topics or sections
    - `call_to_action` — motivates next steps or future work
    - `conclusion` — wraps up the presentation
+5. **Images Communicate What Words Cannot**: Your prompt includes an IMAGE ASSETS block \
+   containing images extracted directly from your source chunks. A picture is worth a \
+   thousand words — use the images rather than trying to describe them in bullets.
+
+   BEFORE writing any slide, read the entire IMAGE ASSETS block and mentally assign each \
+   image to the slide it best supports. Then write your slides with those assignments in mind.
+
+   When an image is assigned to a slide:
+   - Set `media_id` to the image's ID.
+   - Choose the layout based on the image's `aspect` value shown in the IMAGE ASSETS list (`aspect=landscape|portrait|square`):
+     * `landscape` (wider than tall) → use `media_top` (image above bullets) or `media_bottom` (image below)
+     * `portrait` (taller than wide) → use `media_left` or `media_right`
+     * `square` → prefer `media_left` or `media_right`
+   - Reduce bullet density slightly to leave room for the image (3 tight bullets beats 5 verbose ones).
+   - Lean on the VLM description in each IMAGE ASSETS line as your primary guide to what the image shows; \
+     the paper caption portion is a secondary signal.
+
+   Use each image at most once across this batch of slides. The default disposition is to \
+   use an image when one is relevant; only omit it if it genuinely does not support any slide \
+   in this batch.
 """
 
 SLIDE_REWRITER_ROLE = """
