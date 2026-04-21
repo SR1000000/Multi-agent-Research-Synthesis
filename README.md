@@ -2,7 +2,7 @@
 
 LangGraph-coordinated pipeline that ingests one or more research PDFs and
 produces a PowerPoint presentation driven by parallel AI agents:
-**Planner → Plan Executor → Slide Writers → Critics → Supervisor** with iterative review cycles and fan-out/fan-in parallelism.
+**Planner → Slide Writers → Critics → Supervisor** with iterative review cycles and fan-out/fan-in parallelism. After the Planner produces a plan, the first parallel drafting wave begins; the Supervisor drives later parallel critic and rewrite waves.
 
 ## Setup
 
@@ -142,57 +142,34 @@ Use `--object-store local` to skip R2 entirely.
 ## Graph Flow
 
 ```
-START
+START (After document processing)
   └─► Planner
-        Loads all chunks from research.db
-        Detects section boundaries; builds section outline (S0, S1, ...)
-        Calls LLM → LLMPresentationPlan (thesis, slide blueprints, slide groups)
-        Validates LLM output; retries up to 2× on schema or label errors
-        Resolves section labels → source_chunk_ids in Python
-        Stores resolved PresentationPlan in state
+        Examines summarized chunks from research.db
+        Calls LLM → structured plan (thesis, audience, presentation length, slide assignments)
+        Stores resolved presentation plan in state
         │
         ▼
-      Plan Executor  ◄──────────────────────────────────────────────────────┐
-        Reads review.phase to dispatch the right fan-out                    │
-        │                                                                   │
-        │ phase = initial_write                                             │
-        ├─► Send × N groups                                                │
-        │     Slide Writer 1 → writes proto-slides → research.db            │
-        │     Slide Writer 2 → writes proto-slides → research.db            │
-        │     Slide Writer N → writes proto-slides → research.db            │
-        │   Fan-in: groups with 0 slides retried (up to 2×)                │
-        │   All groups written → phase = awaiting_supervisor → Supervisor   │
-        │                                                                   │
-        │ phase = critic_dispatch                                           │
-        ├─► Send × N groups                                                │
-        │     Critic 1 → grounding_consistency check → critic_results       │
-        │     Critic 2 → grounding_consistency check → critic_results       │
-        │     Critic N → grounding_consistency check → critic_results       │
-        │   Fan-in: all critics done → phase = awaiting_supervisor          │
-        │   → Supervisor                                                    │
-        │                                                                   │
-        │ phase = rewrite_dispatch                                          │
-        └─► Send × actionable groups                                       │
-              Slide Writer (rewrite) → updates proto-slides → research.db   │
-            Fan-in: all rewrites done → phase = awaiting_supervisor         │
-            → Supervisor                                                    │
-        │                                                                   │
-        ▼                                                                   │
-      Supervisor ─────────────────────────────────────────────────────────┘
-        Loads full slide_review_events from research.db (recurring fingerprints)
-        If no critic results yet → dispatch next critic cycle
-        If rewrites ran this cycle → dispatch follow-up critic cycle
+      First parallel drafting wave (one Slide Writer per group)
+        Slide Writer 1 → writes proto-slides → research.db
+        Slide Writer 2 → writes proto-slides → research.db
+        Slide Writer N → writes proto-slides → research.db
+        Fan-in: Slide Writers that produced no slides are retried (up to 2× per group)
+        │
+        ▼
+      Supervisor
+        Loads full review-event history from research.db (recurring fingerprints)
+        If no critic results yet → next critic cycle (parallel Critics per group)
+        If rewrites ran this cycle → follow-up critic cycle
         Else → LLM decision: accept / revise / replan
-          Guard overrides: critical issues force revise; no actionable forces accept;
-          at cycle cap (default 3) force replan
           │
-          ├─► accept → export_ready = True → END
-          │     PandocBuilder reads proto_slides → output/*.pptx
+          ├─► accept → ready for export → END
+          │     PandocBuilder reads proto-slides → output/*.pptx
           │
-          ├─► revise → build rewrite assignments with rewrite_instructions
-          │     phase = rewrite_dispatch → Plan Executor
+          ├─► revise → parallel Slide Writer rewrites for actionable groups
+          │     (then fan-in → Supervisor, then follow-up critics as above)
           │
-          └─► replan → goto Planner (cycle summary appended to state)
+          └─► replan → goto Planner to restart the process from the beginning
+                (cycle summary appended to state)
 ```
 
 ### Planner
@@ -200,34 +177,28 @@ START
 The Planner is a presentation architect, not a content writer. It:
 
 1. Detects section boundaries in each paper using Markdown heading analysis
-2. Builds a human-readable section outline with labels (`S0: Abstract`, `S3: Model Architecture`, ...)
-3. Calls the LLM — which works with section labels, never raw chunk IDs — to produce a `PresentationPlan` containing a thesis, per-slide blueprints (each with a `narrative_role` and `intent`), and agent groupings (2–7 slides per group)
-4. Validates the LLM output strictly; retries the full LLM call (up to 2 times) if any section label is invalid, any group is out of range, or any blueprint is empty
-5. Resolves section labels → concrete chunk IDs in Python code before storing the plan in state
+2. Builds a human-readable section outline with labels (for example S0: Abstract, S3: Model Architecture)
+3. Calls the language model — which works with section labels, never raw chunk IDs — to produce a presentation plan with a thesis, per-slide blueprints (narrative role and intent), and agent groupings (a few slides per group)
+4. Validates the model output strictly; retries the full call (up to 2 times) if any section label is invalid, any group is out of range, or any blueprint is empty
+5. Resolves section labels to concrete chunk IDs in code before storing the plan in state
 
-### Plan Executor
-
-The Plan Executor is a deterministic dispatcher with no LLM calls. It reads `review.phase` and `review.active_dispatch` to decide which fan-out to run next:
-
-- **`initial_write`**: fans out one `slide_writer` per `SlideGroup` via LangGraph's `Send()` API; re-dispatches groups that produced 0 slides (up to 2 retries per group); routes to Supervisor when all groups pass
-- **`critic_dispatch`**: fans out one `critic` per group; routes to Supervisor when all critics report back
-- **`rewrite_dispatch`**: fans out `slide_writer` (rewrite mode) per actionable group, carrying `rewrite_instructions`; routes to Supervisor when all rewrites complete
+Once the plan is stored, the run moves into the first parallel drafting wave (one Slide Writer per group). Retries for groups that produced no slides are handled on that entry path.
 
 ### Slide Writers
 
-Each Slide Writer receives the blueprints and chunk text for its assigned group. In **initial write** mode it drafts slides from scratch following the blueprint intent. In **rewrite** mode it receives the current proto-slides plus explicit rewrite instructions from the Supervisor and produces corrected versions. Both modes persist structured `ProtoSlide` records to `research.db`. Errors are caught without crashing the graph; the Plan Executor handles retry at the group level.
+Each Slide Writer receives the blueprints and chunk text for its assigned group. In **initial write** mode it drafts slides from scratch following the blueprint intent. In **rewrite** mode it receives the current proto-slides plus explicit rewrite instructions from the Supervisor and produces corrected versions. Both modes persist structured proto-slide records to `research.db`. Errors are caught without crashing the graph; empty groups can be retried as part of the drafting entry path after planning.
 
 ### Critics
 
-Each Critic evaluates one group of slides for `grounding_consistency` — whether slide content is supported by the source chunks. It returns a summary, an `actionable` flag, and a typed issue list (`critical` / `major` / `minor`) where every issue includes a concrete `rewrite_instruction`. Each issue is assigned a **fingerprint** (hash of scope + issue type + location) that the Supervisor uses to detect recurring problems across cycles. All events are persisted to `slide_review_events` in `research.db`.
+Each Critic evaluates one group of slides for **grounding consistency** — whether slide content is supported by the source chunks. It returns a summary, whether any issue requires action, and a typed issue list (critical / major / minor) where every issue includes a concrete rewrite instruction. Each issue gets a **fingerprint** (scope, issue type, and location) that the Supervisor uses to detect recurring problems across cycles. Events are persisted to `slide_review_events` in `research.db`.
 
 ### Supervisor
 
 The Supervisor is the session's decision-maker. It evaluates critic results after each fan-in:
 
-- **accept** → sets `export_ready = True`, graph exits to END and the PPTX is exported
-- **revise** → dispatches Slide Writer rewrites for every actionable group; a follow-up critic cycle runs automatically after rewrites complete
-- **replan** → routes back to Planner when the cycle cap is hit (default 3 cycles) or persistent critical issues remain unresolved
+- **accept** → marks the deck ready for export, graph exits to END and the PPTX is built
+- **revise** → launches parallel Slide Writer rewrites for every actionable group; a follow-up critic cycle runs automatically after rewrites complete
+- **replan** → returns to the Planner when the cycle cap is hit (default 3 cycles) or persistent critical issues remain unresolved
 
 ---
 
@@ -238,7 +209,7 @@ The Supervisor is the session's decision-maker. It evaluates critic results afte
 
 ### Validation Error Dumps
 
-When an LLM response fails Pydantic schema validation, the full error and offending JSON are written to `validation_errors/` (gitignored). The terminal shows a one-liner with the path. The folder is cleared at the start of every run.
+When an LLM response fails Pydantic schema validation, the full error and offending JSON are written to `validation_errors/` (git-ignored). The terminal shows a one-liner with the path. The folder is cleared at the start of every run.
 
 ```
 [validation] 3 error dump(s) written to validation_errors/

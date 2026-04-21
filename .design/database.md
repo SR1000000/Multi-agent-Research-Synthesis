@@ -1,58 +1,76 @@
 # Database Persistence Architecture
 
-This document describes the design of the database layer used to store extraction artifacts and intermediate synthesis state. The project utilizes a dual-database architecture to separate persistent research data from volatile session data.
+This document describes the SQLite layer used to cache ingested documents, store chunk embeddings for sqlite-vec, and hold intermediate slide-synthesis state.
 
 ## Overview
 
-The system uses two distinct SQLite databases located in the `data/` directory:
+The project uses a single SQLite database file, default path **`data/research.db`** (`StorageConfig` in `src/memory/research/config.py`). The same file holds:
 
-1.  **`research.db`**: A long-term storage for processed documents. It acts as a cache to avoid re-parsing expensive PDFs and provides vector search capabilities for the research agents.
-2.  **`proto_slides` in `research.db`**: A temporary workspace used during the slide synthesis pipeline. It stores "proto-slides" which are intermediate representations of presentation content before they are exported to PowerPoint.
+1. **Durable document cache** — parsed PDFs keyed by SHA-256 content hash so re-runs skip LlamaParse and re-embedding when the file is unchanged.
+2. **Synthesis workspace** — proto-slides and review events for a single LangGraph run, cleared when `main.py` starts.
 
-## Research Database (`research.db`)
+Connection setup loads the **sqlite-vec** extension (`load_sqlite_vec_extension` in `src/memory/research/database.py`) so the `text_chunks_vec` virtual table works. Journal mode defaults to **WAL** (`PRAGMA journal_mode=WAL`).
 
-The `research.db` uses `sqlite-vec` to provide native vector search within SQLite. It stores the full output of the `DocProcessor` pipeline.
+## Research database (`research.db`)
 
-### Schema Details
+Schema DDL and Pydantic models for slide JSON share `src/memory/research/schema.py`. Row shapes align with `src/processing/document/schema.py` (`ExtractionResult` and artifact dataclasses) when saving via `document.save_document`.
 
-The tables in `research.db` map to the models defined in `src.processing.document.schema`.
+### `documents`
 
--   **`documents`**: Tracks ingested files by `doc_id`. Stores the raw `markdown` representation, `page_count`, and `paper_metadata` (title, authors, etc.).
--   **`text_chunks`**: Stores semantic text blocks extracted from the document. Each chunk includes its original `text` and often a `contextualized_text` (LLM-augmented for better retrieval).
--   **`text_chunks_vec`**: A virtual table (using `sqlite-vec`) storing embeddings for each text chunk to support semantic search.
--   **`images`**: Stores image metadata, `caption`, and either `base64_data` or a `storage_path` (pointing to the Object Store).
--   **`tables`**: Stores extracted tables as HTML `content` along with rows/column counts and captions.
--   **`equations`**: Stores LaTeX or text representations of math equations found in the PDF.
+| Role |
+|------|
+| One row per ingested PDF. Primary key `id` is the `doc_id` used everywhere else. |
 
-### Automatic Caching
+Notable columns: `source_path`, `filename`, full-document `markdown`, `page_count`, `content_hash` (SHA-256 of file bytes), optional `run_id` / `schema` (extraction metadata), `paper_metadata` (JSON), `created_at`.
 
-Caching is handled automatically by `DocProcessor`. When a PDF is processed:
-1.  The file's SHA-256 `content_hash` is calculated.
-2.  The database is queried to see if a document with that hash already exists.
-3.  If found, the system loads the results directly from the database, skipping OCR and embedding steps.
+### `text_chunks`
 
-## Proto-Slides Workspace (`research.db`)
+Serialized chunks after splitting. Columns: `text`, `meta_data` (JSON, e.g. `chunk_index`, splitter name), optional `contextualized_text`. Optional `embedding_model` / `embedded_at` exist in DDL for future use; the current save path in `document.save_document` writes `id`, `document_id`, `text`, `meta_data`, `contextualized_text`.
 
-The `proto_slides` table in `research.db` is reset at the start of every execution of `main.py`. It serves as a shared workspace between the synthesis agents and the presentation builder while leaving the ingested document cache intact.
+### `text_chunks_vec` (sqlite-vec `vec0`)
 
-### Schema Details
+Virtual table: `chunk_id` (matches `text_chunks.id`), `embedding` (float vector, width `vec_dimensions`, default **768** from `VEC_DIMENSIONS` in `src/util.py`), and `source` (the string that was embedded — preferring `contextualized_text` when present, else `text`, consistent with `DocProcessor`).
 
--   **`proto_slides`**: 
-    -   `slide_number` (ID): The sequence position of the slide.
-    -   `content` (JSON): The structured slide content (title, bullet points, image descriptors).
-    -   `chunk_references` (JSON): A list of IDs linking back to the `text_chunks` in `research.db` that provided the evidence for this slide.
+Populated when ingestion supplies `chunk_embeddings` / `chunk_embedding_sources` on the `ExtractionResult`. Vectors with wrong dimension are skipped.
 
-## Inspecting the Databases
+### `images`
 
-The databases are standard SQLite files and can be inspected with any SQLite client.
+Figure and layout images linked by `document_id`. Stores `mime_type`, inline `base64_data` and/or `storage_path` (object store), `page_number`, captions, optional `contextualized_text`, JSON `bbox`, `source_filename`, `confidence`, `category`, `vlm_caption`, `mermaid`, and multi-panel fields (`figure_group_id`, `figure_label`, `figure_number`, `panel_index`, `panel_role`, `identity_signal`).
 
-**Recommendation:** Use [DB Browser for SQLite](https://sqlitebrowser.org/) or SQLite Viewer extension for VS Code.
+### `tables`
 
-1.  Open `data/research.db` to see indexed papers and their extracted media.
-2.  Open `data/research.db` and inspect the `proto_slides` table (while the agent is running or after the program finishes) to see the intermediate slide data being generated.
+HTML (or rich) table `content`, dimensions, `page_number`, and contextual fields. The `caption` column is used when loading as the table’s display title (`ExtractedTable.title`).
 
-## Technical Notes
+### `equations`
 
--   **Vector Search**: The project requires the `sqlite-vec` extension. This is handled automatically via the `sqlite-vec` Python package.
--   **WAL Mode**: Both databases use Write-Ahead Logging (`PRAGMA journal_mode=WAL`) for better performance and concurrency.
--   **Object Storage**: While metadata is in SQLite, actual image bytes may reside in a local directory or R2 bucket depending on the `--object-store` CLI flag, with the path stored in the `images` table.
+`text` (LaTeX or plain), `display_mode`, `page_number`, `caption`, `contextualized_text`.
+
+### Automatic caching
+
+`DocProcessor.process_document` hashes the PDF, calls `document_exists` / `load_document_by_hash` on a cache hit, and otherwise runs extraction, optional embedding, verification, then `save_document`.
+
+## Proto-slides workspace (`proto_slides`)
+
+Cleared at the start of each `main.py` run via `clear_proto_slides()` while the document tables above are left intact.
+
+| Column | Purpose |
+|--------|---------|
+| `slide_number` | Primary key; content slide index. |
+| `content` | JSON of structured slide body (`SlideContent` / `ProtoSlide`). |
+| `chunk_references` | JSON list of `text_chunks.id` values grounding the slide. |
+| `created_at`, `updated_at` | Timestamps. |
+| `previous_content`, `previous_chunk_references`, `previous_updated_at` | Prior revision snapshot for rewrites. |
+
+## Review audit (`slide_review_events`)
+
+Cleared with proto-slides at run start (`clear_slide_review_events()`). Records supervisor/critic decisions: `session_id`, `cycle_number`, `scope_type` / `scope_id`, `check_type`, optional `assignment_id`, `issue_code`, `severity`, `fingerprint`, `rewrite_instruction_summary`, `affected_slide_numbers`, `decision`, `created_at`.
+
+## Inspecting the database
+
+Use any SQLite client; load **sqlite-vec** if you query `text_chunks_vec` (same as the app). [DB Browser for SQLite](https://sqlitebrowser.org/) is a common choice.
+
+## Technical notes
+
+- **Vector dimension** must match `StorageConfig.vec_dimensions` and the embedder output (default 768 for sentence-transformers / MPNet-class models).
+- **Object storage**: Large or offloadable image bytes may live under `--object-store` (`local` or `r2`); `images.storage_path` holds the reference. Default `main.py` tries R2 then falls back to local.
+- **Migrations**: `ResearchDatabase.setup()` applies incremental `ALTER TABLE` for older DB files when new columns are added.
