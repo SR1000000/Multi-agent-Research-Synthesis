@@ -405,7 +405,7 @@ def get_images_for_chunks(db, chunk_ids: list[str]) -> list[ImageMetadata]:
         return []
 
     img_placeholders = ",".join(["?"] * len(ordered_ids))
-    img_rows = db._conn.execute(
+    img_rows = db.connection.execute(
         f"""
         SELECT id, caption, vlm_caption, bbox
         FROM images
