@@ -55,7 +55,6 @@ Key rendering details:
 | Slide title | Level-1 Markdown heading (`# Title`) |
 | Bullets | `-` list items |
 | Sub-bullets | Indented two spaces (`  - sub`) |
-| Bold emphasis | `bold_phrases` matched and wrapped as `**phrase**` |
 | Speaker notes | Pandoc fenced div (`::: notes` / `:::`) |
 | Slide separator | `---` horizontal rule |
 
@@ -97,25 +96,6 @@ Equations should only be included when they are central to the slide's `key_mess
 **Dependency**: `python-pptx>=1.0.0`
 
 This was the original export engine. It generates `.pptx` files directly using the `python-pptx` library with no intermediate Markdown step. It does not support LaTeX math rendering.
-
-### Layout Mapping
-
-The builder maps the generic `layout` literals from `SlideContent` to specific indices or names in a PowerPoint template:
-
-| Literal | PPTX Layout Mapping | Special Behavior |
-| :--- | :--- | :--- |
-| `title_slide` | "Title Slide" (Index 0) | Centers text, uses title placeholder |
-| `title_and_body` | "Title and Content" (Index 1) | Standard bullet list |
-| `two_column` | "Two Content" (Index 3) | Splits bullets across columns |
-| `big_number` | "Title and Content" | Increases font size of the first run |
-| `quote` | "Title and Content" | Italics and specific font sizing |
-| `media_left` | "Two Content" | Reserves left side for `media_id` placement |
-
-### Styling Logic
-
--   **Bold Emphasis**: Performs substring matching using `bold_phrases` to apply `run.font.bold = True` to specific segments of bullet text.
--   **Speaker Notes**: Content is written directly to the `notes_slide` of each generated slide.
--   **Fallbacks**: If a template is missing a named layout, the builder falls back to "Title and Content" (Index 1) to prevent crashes.
 
 ---
 

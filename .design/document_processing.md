@@ -1,105 +1,95 @@
 # Document Processing Design
 
-Detailed technical implementation of document ingestion, chunking, and artifact extraction.
+Technical description of PDF ingestion, chunking, artifact extraction, and how results feed the database and agents.
 
-## OCR Backend Architecture
+## OCR backend architecture
 
-The pipeline uses the **Strategy pattern** to decouple document extraction from any specific OCR library. All backends implement a single interface:
+The pipeline uses the **Strategy** pattern: each backend subclasses `OCRBackend` in `src/processing/document/backend_base.py` and implements `extract(source_pdf_path: str) -> ExtractionResult`.
 
-```python
-class OCRBackend(ABC):
-    @abstractmethod
-    def extract(self, source_pdf_path: str) -> ExtractionResult: ...
-```
+`DocProcessor` (`src/processing/document/processor.py`) resolves a string backend name through `get_ocr_backend`, which reads `BACKEND_REGISTRY`.
 
 ### Backend Registry
 
 `processor.py` maintains a `BACKEND_REGISTRY` mapping string keys to concrete backend classes:
 
-| Key | Class | Status | Requirements | Local Model Size | Processing Time (local)|
+| Key | Class | Status | Requirements | Local Model Size | Processing Time (local, cpu-only)|
 |------|------|--------|--------------|------------------|------------------------|
-| `"lighton"` | `LightOnOCRBackend` | ✅ Active (Too slow CPU inference (~4 mins per page)) | transformers>=5.0.0, pillow, pypdfium2| ~1 GB | after 10 minutes, only 2 pages |
-| `"docling"` | `DoclingBackend` | ✅ Active (has issues with subscripts in text)| docling>=2.70,<3.0 | 1.5-2 GB | 3 minutes |
-| `"chandra"` | `ChandraOCRBackend` | ✅ Active (Too slow CPU inference (~7 mins per page))| chandra-ocr[hf] | ~7GB | after 10 minutes, only 1 page |
-| `"glm"` | `GLMOCRBackend` | ✅ Active (Slow CPU inference (~2.5 mins per page)) | transformers>=5.0.0, pillow, pypdfium2 | ~1 GB | after 10 minutes, only 4 pages |
-| `"marker"` | `MarkerBackend` | ✅ Active (Default, high-accuracy PDF→markdown via surya OCR; extracts images, tables, math) | marker-pdf | ~8 GB | 14 minutes |
+| `"lighton"` | `LightOnOCRBackend` | ❌ Inactive (Too slow CPU inference (~4 mins per page)) | transformers>=5.0.0, pillow, pypdfium2| ~1 GB | after 10 minutes, only 2 pages |
+| `"docling"` | `DoclingBackend` | ❌ Inactive (has issues with subscripts in text)| docling>=2.70,<3.0 | 1.5-2 GB | 3 minutes |
+| `"chandra"` | `ChandraOCRBackend` | ❌ Inactive (Too slow CPU inference (~7 mins per page))| chandra-ocr[hf] | ~7GB | after 10 minutes, only 1 page |
+| `"glm"` | `GLMOCRBackend` | ❌ Inactive (Slow CPU inference (~2.5 mins per page)) | transformers>=5.0.0, pillow, pypdfium2 | ~1 GB | after 10 minutes, only 4 pages |
+| `"marker"` | `MarkerBackend` | ❌ Inactive (high-accuracy PDF→markdown via surya OCR; extracts images, tables, math) | marker-pdf | ~8 GB | 14 minutes |
 | `"llama_parse"` | `LlamaParseBackend` | ✅ Active (Cloud parser, high-accuracy tables & LaTeX, extracts layout images) | llama-cloud | N/A (Cloud) | ~25 seconds |
 
-`DocProcessor` accepts an optional `backend` parameter (string key or `OCRBackend` instance). It defaults to `"marker"`.  Marker is currently the best performing, Docling is the fastest, but has issues with subscripts in text.
+`processor.ARCHIVAL_BACKENDS` lists `docling`, `lighton`, `chandra`, `glm`, `marker`. Choosing one of these raises a clear error: older modules may still exist under `src/processing/document/backends/`, but they are **not** wired into `BACKEND_REGISTRY` in the current build.
 
-Note: some of the requirements are mutually exclusive (e.g. `docling` requires a specific `transformers` version less than 5, while LightOnOCR-2 is only implemented in `transformers` version 5 or later)
+### `DocProcessor` pipeline
 
+1. **Cache** — SHA-256 of the PDF; if `db.document_exists(hash)`, return `load_document_by_hash` (skips parse and embedding).
+2. **Extract** — `backend.extract(path)`; result gets `content_hash` and `run_id` as set by the backend / caller.
+3. **Contextualize** — optional `Contextualizer` (see `schema.py`); **`main.py` does not pass one**, so this step is unused in the default app.
+4. **Embed** — if an embedder is provided, each chunk is embedded using `contextualized_text` when non-empty, else `text`; vectors are stored on the `ExtractionResult` for DB persistence.
+5. **Verify** — `_common.verify_extraction_result` checks consistency.
+6. **Persist** — optional debug JSON dump via the logger; then `db.save_document` when a database is configured.
+
+Default backend is **`llama_parse`**.
 
 ### Adding a new backend
 
-1. Create a new module in `src/processing/document/backends/`.
-2. Subclass `OCRBackend` and implement `extract()` to return an `ExtractionResult`.
-3. Register the class in `processor.BACKEND_REGISTRY`.
-4. (Optional) Add a CLI flag in `main.py` (e.g. `--ocr-backend`) and pass the key to `DocProcessor(backend=...)`.
+1. Implement a module under `src/processing/document/backends/`.
+2. Subclass `OCRBackend` and implement `extract()`.
+3. Add the class to `BACKEND_REGISTRY` in `processor.py` (and extend `get_ocr_backend` if the constructor needs extra deps, as with `LlamaParseBackend`).
+4. Expose a `--processor` choice in `main.py` if it should be user-selectable.
 
-### File layout
+### File layout (current)
 
 ```
 src/processing/document/
-├── __init__.py              # Public re-exports for the document processing package
-├── _common.py               # Shared helpers: _slugify, build_artifact_references,
-│                            #   _verify_references_in_markdown (no OCR dependency)
-├── backend_base.py          # OCRBackend ABC — defines the extract() interface
+├── __init__.py
+├── _common.py              # Shared helpers; verify_extraction_result
+├── backend_base.py         # OCRBackend
 ├── backends/
-│   ├── __init__.py          # Guarded imports of all backends; defines __all__
-│   ├── chandra_backend.py   # ChandraOCRBackend — local HuggingFace inference
-│   │                        #   via InferenceManager(method="hf"); image extraction
-│   │                        #   from BatchOutputItem.images; PDF→PIL via load_file()
-│   ├── docling_backend.py   # Full Docling pipeline: parse → HybridChunk → images /
-│   │                        #   tables / equations → markdown annotation → manifest
-│   ├── lighton_backend.py   # LightOnOCR-2-1B-bbox: PDF→PIL via pypdfium2, per-page
-│   │                        #   inference, bbox-based image cropping, MarkdownChunker
-│   ├── marker_backend.py    # MarkerBackend — default. Uses marker-pdf PdfConverter;
-│   │                        #   extracts images as PIL→PNG→base64; parses HTML table
-│   │                        #   blocks from markdown; annotates LaTeX equations;
-│   │                        #   works on CPU, MPS, or CUDA (auto-detected).
-│   └── glm_backend.py       # GLMOCRBackend — local HuggingFace inference via AutoModelForCausalLM;
-│                            #   uses pypdfium2 for PDF→PIL conversion
-├── chunks.py                # MarkdownChunker — LangChain header-splitter + recursive
-│                            #   char fallback; produces list[ExtractedChunk]
-├── processor.py             # DocProcessor + BACKEND_REGISTRY factory; default backend
-│                            #   is "marker"; accepts string key or OCRBackend instance
-└── schema.py                # Shared dataclasses: ExtractedChunk, ExtractedImage,
-                             #   ExtractedTable, ExtractedEquation, ExtractionManifest,
-                             #   ExtractionResult, ArtifactReference
+│   ├── __init__.py         # Imports legacy backends if deps exist (not all registered)
+│   ├── llama_parse_backend.py
+│   ├── llama_parse_figures.py
+│   └── …                   # Other backend modules (archival / optional installs)
+├── processor.py            # DocProcessor, BACKEND_REGISTRY, get_ocr_backend
+└── schema.py               # ExtractedChunk, ExtractedImage, …, ExtractionResult
+
+src/processing/chunker/
+├── __init__.py             # get_text_chunker
+├── provider.py             # TextChunkerProvider
+├── semantic_text_splitter_chunker.py  # MarkdownSplitter / TextSplitter
+└── config.py
 ```
 
-## Multimodal Artifacts
+## LlamaParse behavior (summary)
 
-Each run ingests the PDF and writes artifacts to `artifacts/<doc>`, which includes:
+`LlamaParseBackend` calls LlamaCloud with structured options (tier, markdown/table settings, layout images, items + metadata expansions). It builds `PaperMetadata` from the markdown, rewrites image/table placeholders, runs figure grouping in `llama_parse_figures.py`, and fills `ExtractionResult` with markdown, images, tables, equations, and chunks.
 
-- `research.db`: SQLite database (located in `data/`) containing:
-    - `images`: Binary BLOBs of extracted pictures.
-    - `tables`: HTML representations of tables.
-    - `equations`: LaTeX or raw text formulas.
-    - `text_chunks`: Semantic markdown chunks with metadata.
-    - `manifest`: Index of document-artifact associations.
 
-### Artifact Content
 
-- `document.md`: Human-readable audit artifact. Not loaded into agent state. Any agent that needs the full annotated document can retrieve its path from the manifest and read it from disk.
-- `chunks.jsonl`: One JSON object per line, produced by Docling's `HybridChunker`. Each record contains raw text, contextualized text with heading breadcrumbs, ancestor headings, and associated captions.
-- `equations.jsonl`: Separate equation records for deterministic downstream processing.
-- `manifest.json`: Index of all extracted assets (images, tables, equations) and references mapping markdown tokens to concrete artifacts.
+## Text chunking
 
-## Document Chunking
+After full-document markdown is produced:
 
-Documents are split into semantically coherent, token-aware chunks using Docling's `HybridChunker`, which operates directly on the `DoclingDocument` object before any Markdown export. It respects document structure — chunks never break mid-sentence or mid-paragraph, and each chunk carries the full heading breadcrumb of the section it belongs to.
+- **`--text-splitter semantic` (default)** — `SemanticTextSplitterChunker` uses the `semantic-text-splitter` library (`MarkdownSplitter` for markdown).
+- **`--text-splitter none`** — `text_chunker` is `None`; the backend emits a **single** chunk (`splitter: none` in `meta_data`).
 
-> [!NOTE]
-> "Token indices sequence length is longer than the specified maximum sequence length for this model" is a documented false alarm in Docling's `HybridChunker`.
+`main.py` maps `--text-splitter` via `_TEXT_SPLITTER_ALIASES` and passes the chunker into `DocProcessor`.
 
-## Agent Integration
+## Multimodal artifacts and storage
+
+- **SQLite (`data/research.db`)** — See `database.md`: documents, chunks, vec table, images, tables, equations.
+- **Object store** — `LlamaParseBackend` can upload images through an `ObjectStoreProvider` (`LocalObjectStore` / `R2ObjectStore` from `main.py` `--object-store`), with paths recorded on `ExtractedImage.storage_path`.
+
+## Agent integration
 
 ### How agents use chunks
 
-The lead researcher receives a **chunk directory** (heading breadcrumbs only) to understand document structure. It selects relevant chunk indices based on keyword overlap with the query. The editor and critic nodes then receive only the `contextualized_text` of those selected chunks.
+- **Planner** (`src/agents/planner.py`) loads **all** chunks per document with `db.get_chunks_for_dispatch(doc_id)`, groups them into **sections** using heading heuristics on chunk text, and builds a presentation plan whose blueprints reference **chunk IDs** (not a separate keyword-scoring step).
+- **Slide writers / critics** load the referenced rows from `text_chunks` by ID and pass ordered text (preferring available `contextualized_text` where useful for prompts).
 
-### Extending to full RAG
+### Embeddings and retrieval
 
-The keyword scorer can be replaced with an embedding similarity search. By embedding the `contextualized_text` at ingestion time, retrieval can switch to vector similarity without altering the downstream agent logic.
+Chunks are embedded at ingestion for storage in `text_chunks_vec`. The current planner path is section-based over full chunk lists; swapping in embedding search later would mean querying `text_chunks_vec` (or similar) before planning instead of or in addition to full-chunk sectioning.
