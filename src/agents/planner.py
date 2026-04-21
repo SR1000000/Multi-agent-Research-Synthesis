@@ -375,8 +375,14 @@ def _validate_llm_plan(
 # ---------------------------------------------------------------------------
 
 class PlannerAgent(BaseLLMAgent):
-    def __init__(self) -> None:
-        super().__init__("planner")
+    def __init__(
+        self,
+        tools_for_agent: dict | None = None,
+    ):
+        super().__init__(
+            "planner",
+            tools_for_agent=tools_for_agent,
+        )
 
     def run(self, state: ResearchState) -> Command[Literal["plan_executor"]]:
         self._set_session_id(state)
@@ -524,5 +530,11 @@ class PlannerAgent(BaseLLMAgent):
         )
 
 
-def planner_node(state: ResearchState) -> Command:
-    return PlannerAgent().run(state)
+def planner_node(
+    state: ResearchState,
+    *,
+    tools_for_agent: dict | None = None,
+) -> Command:
+    return PlannerAgent(
+        tools_for_agent=tools_for_agent,
+    ).run(state)

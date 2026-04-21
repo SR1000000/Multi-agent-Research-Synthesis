@@ -25,6 +25,8 @@ from src.processing.embedder.provider import get_text_embedder
 from src.state import make_initial_review_state
 
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "output"
+from src.retriever import Retriever
+from src.tools.registry import build_tool_registry
 
 DEFAULT_QUERY      = "Explain this paper to an audience of laypeople"
 DEFAULT_SOURCE_PDF = "./.samples/Transformers.pdf"
@@ -169,6 +171,7 @@ def _process_document(
     logger: AgentLogger,
     db: Any,
     object_store: Any,
+    embedder: Any,
 ) -> tuple[Any, str]:
     pdf_path = Path(pdf_path_str)
     if not pdf_path.exists():
@@ -177,7 +180,7 @@ def _process_document(
         sys.exit(f"error: file does not have a .pdf extension: {pdf_path}")
 
     _t0 = time.perf_counter()
-    embedder = get_text_embedder()
+
     processor_backend = _PROCESSOR_BACKEND_ALIASES[args.processor]
     chunker_name      = _TEXT_SPLITTER_ALIASES[args.text_splitter]
 
@@ -245,6 +248,9 @@ def _build_initial_state(
         "slide_numbers":     [],
         "presentation_plan": None,
         "review":            make_initial_review_state(),
+        "retrieval_queries": [],
+        'tool_calls':       [],
+        'tool_results':     [],
         "slides_written":    [],
         "critic_results":    [],
         "review_summaries":  [],
@@ -307,6 +313,19 @@ def main() -> None:
         preprocessing_messages: list[str] = []
         seen_doc_ids: set[str] = set()
 
+        embedder = get_text_embedder()
+        retriever = Retriever(db, embedder)
+        
+        tool_registry = build_tool_registry(retriever=retriever, research_db=db)
+        agent_tool_allowlist = {
+            "slide_writer": ["retrieve_artifacts"],
+            "planner": [],
+            "critic": [],
+            "supervisor": [],
+            "parse_supervisor": [],
+            "research_to_slide": [],
+        }
+
         for pdf_path_str in args.pdf:
             artifacts, msg = _process_document(
                 pdf_path_str,
@@ -314,6 +333,7 @@ def main() -> None:
                 logger,
                 db,
                 object_store,
+                embedder,
             )
             preprocessing_messages.append(msg)
             if not artifacts:
@@ -342,7 +362,11 @@ def main() -> None:
             args, preprocessing_messages, doc_ids, paper_titles, session_id
         )
 
-        graph = build_graph()
+        graph = build_graph(
+            tool_registry=tool_registry,
+            agent_tool_allowlist=agent_tool_allowlist,
+        )
+        
         final_state = initial_state
         try:
             # Use streaming to capture the state at each step, allowing us to recover logs if a crash occurs.
