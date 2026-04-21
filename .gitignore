@@ -11,3 +11,4 @@ data/
 output/
 validation_errors/
 scratch/
+tests/

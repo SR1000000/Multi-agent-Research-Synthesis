@@ -15,6 +15,36 @@ from src.processing.document.schema import (
 )
 
 
+def _extracted_image_from_row(row) -> ExtractedImage:
+    """Build ExtractedImage from sqlite Row; tolerate older DB rows missing new columns."""
+    keys = row.keys()
+
+    def _col(name: str, default):
+        return row[name] if name in keys else default
+
+    return ExtractedImage(
+        id=row["id"],
+        mime_type=row["mime_type"],
+        base64_data=row["base64_data"] or "",
+        page=row["page_number"],
+        caption=row["caption"] or "",
+        storage_path=row["storage_path"],
+        contextualized_text=row["contextualized_text"],
+        bbox=json.loads(row["bbox"]) if row["bbox"] else None,
+        source_filename=row["source_filename"],
+        confidence=row["confidence"],
+        category=row["category"],
+        vlm_caption=_col("vlm_caption", "") or "",
+        mermaid=_col("mermaid", None),
+        figure_group_id=_col("figure_group_id", None),
+        figure_label=_col("figure_label", None),
+        figure_number=_col("figure_number", None),
+        panel_index=_col("panel_index", None),
+        panel_role=_col("panel_role", None),
+        identity_signal=_col("identity_signal", None),
+    )
+
+
 def _load_ordered_chunk_rows(db, doc_id):
     """Return chunk rows in document order, falling back to insertion order."""
     return db.connection.execute(
@@ -82,8 +112,9 @@ def save_document(db, result: ExtractionResult) -> None:
             db._conn.execute(
                 """
                 INSERT OR REPLACE INTO images
-                (id, document_id, mime_type, base64_data, storage_path, page_number, caption, contextualized_text)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, document_id, mime_type, base64_data, storage_path, page_number, caption, contextualized_text, bbox, source_filename, confidence, category,
+                 vlm_caption, mermaid, figure_group_id, figure_label, figure_number, panel_index, panel_role, identity_signal)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     img.id,
@@ -94,6 +125,18 @@ def save_document(db, result: ExtractionResult) -> None:
                     img.page,
                     img.caption,
                     img.contextualized_text,
+                    json.dumps(img.bbox) if img.bbox else None,
+                    img.source_filename,
+                    img.confidence,
+                    img.category,
+                    img.vlm_caption or "",
+                    img.mermaid,
+                    img.figure_group_id,
+                    img.figure_label,
+                    img.figure_number,
+                    img.panel_index,
+                    img.panel_role,
+                    img.identity_signal,
                 )
             )
 
@@ -183,17 +226,7 @@ def load_document(db, doc_id: str) -> ExtractionResult | None:
         return None
 
     img_rows = db._conn.execute("SELECT * FROM images WHERE document_id = ?", (doc_id,)).fetchall()
-    images = [
-        ExtractedImage(
-            id=row["id"],
-            mime_type=row["mime_type"],
-            base64_data=row["base64_data"] or "",
-            page=row["page_number"],
-            caption=row["caption"] or "",
-            storage_path=row["storage_path"],
-            contextualized_text=row["contextualized_text"],
-        ) for row in img_rows
-    ]
+    images = [_extracted_image_from_row(row) for row in img_rows]
 
     tbl_rows = db._conn.execute("SELECT * FROM tables WHERE document_id = ?", (doc_id,)).fetchall()
     tables = [
@@ -254,15 +287,7 @@ def get_image(db, image_id: str) -> ExtractedImage | None:
     row = db._conn.execute("SELECT * FROM images WHERE id = ?", (image_id,)).fetchone()
     if not row:
         return None
-    return ExtractedImage(
-        id=row["id"],
-        mime_type=row["mime_type"],
-        base64_data=row["base64_data"] or "",
-        page=row["page_number"],
-        caption=row["caption"] or "",
-        storage_path=row["storage_path"],
-        contextualized_text=row["contextualized_text"],
-    )
+    return _extracted_image_from_row(row)
 
 
 def get_table(db, table_id: str) -> ExtractedTable | None:

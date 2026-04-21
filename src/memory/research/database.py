@@ -122,6 +122,33 @@ class ResearchDatabase(DatabaseProvider):
                     if "paper_metadata" not in doc_columns:
                         self._conn.execute("ALTER TABLE documents ADD COLUMN paper_metadata TEXT;")
 
+                image_columns = [info["name"] for info in self._conn.execute("PRAGMA table_info(images)").fetchall()]
+                if image_columns:
+                    if "bbox" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN bbox TEXT;")
+                    if "source_filename" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN source_filename TEXT;")
+                    if "confidence" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN confidence REAL;")
+                    if "category" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN category TEXT;")
+                    if "vlm_caption" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN vlm_caption TEXT;")
+                    if "mermaid" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN mermaid TEXT;")
+                    if "figure_group_id" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN figure_group_id TEXT;")
+                    if "figure_label" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN figure_label TEXT;")
+                    if "figure_number" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN figure_number INTEGER;")
+                    if "panel_index" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN panel_index INTEGER;")
+                    if "panel_role" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN panel_role TEXT;")
+                    if "identity_signal" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN identity_signal TEXT;")
+
                 slide_columns = [
                     info["name"] for info in self._conn.execute("PRAGMA table_info(proto_slides)").fetchall()
                 ]
