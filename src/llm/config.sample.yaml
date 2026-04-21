@@ -1,6 +1,7 @@
 # Router group aliases: optional per-model-row ``model_name`` assigns a deployment to an alias
 # (default for ``providers`` is ``default_model_name``; for ``fallback_providers`` it is
 # ``fallback_model_name``). Use ``_call(..., model="writer")`` etc. to target an alias.
+# All models under ``fallback_providers`` without a ``model_name`` are implicitly considered "fallback" models.
 #
 # Example (commented):
 #   models:
@@ -8,6 +9,11 @@
 #       model_name: "app"
 #     - model: "gemini/gemini-2.5-flash"
 #       model_name: "writer"
+#
+# Current sample assumes free teir for Gemini, Ollama and OpenRouter.
+# Get available OpenRouter free models at https://openrouter.ai/collections/free-models (changes frequently).
+# See also https://github.com/mnfst/awesome-free-llm-apis (model lists likely outdated).  LiteLLM implements most of those.
+# A free OpenRouter account only gets 50 daily requests, adding minimum of 10 credits "verifies" your account and raises the daily limit to 1000 requests
 
 router:
   default_model_name: "app"
@@ -15,16 +21,25 @@ router:
   fallbacks:
     - app: ["fallback"]
     - slides: ["fallback"]
+    - critic: ["fallback", "app"]
     # - writer: ["fallback"]
     # - fast: ["fallback"]
 
   providers:
     gemini:
+      # Gemini Free tier store used prompts for their own use.
       api_key: "os.environ/GEMINI_API_KEY"
       models:
+        # ``default_model_name`` (``app``): Supervisor and any agent that omits ``model=``.
+        - model: "gemini/gemini-3.1-flash-lite-preview"
+          model_name: "app"
+          rpm: 15
         - model: "gemini/gemini-3.1-flash-lite-preview"
           model_name: "slides"
-          rpm: 20
+          rpm: 15
+        - model: "gemini/gemini-3.1-flash-lite-preview"
+          rpm: 15
+          model_name: "fallback"
 
   # Note: splitting fallback_providers into *_high and *_rest allows us to control the
   # exact model-level fallback order across different providers (e.g. OpenRouter -> Ollama -> OpenRouter)
@@ -34,32 +49,49 @@ router:
       api_key: "os.environ/OPENROUTER_API_KEY"
       api_base: "os.environ/OPENROUTER_BASE_URL"
       models:
-        - model: "openrouter/openai/gpt-oss-120b:free"
+        # Planner Tier 2: Nemotron 3 Super
+        - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+          model_name: "planner"
+          order: 2
+        # Planner Tier 3: Elephant Alpha
+        - model: "openrouter/elephant-alpha"
+          model_name: "planner"
+          order: 3
+        # Critic first preference
+        - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+          model_name: "critic"
+
+        - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+        - model: "openrouter/elephant-alpha"
 
     ollama_high:
       api_key: "os.environ/OLLAMA_API_KEY"
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
+        # Planner Tier 1: Qwen 3.5
         - model: "ollama/qwen3.5:397b-cloud"
+          model_name: "planner"
+          order: 1
+          timeout: 180
+          #- model: "ollama/glm-5.1:cloud"  # Often unavailable (524 error)
 
-    gemini_rest:
+    gemini_basic:
       api_key: "os.environ/GEMINI_API_KEY"
       models:
         - model: "gemini/gemma-4-31b-it"
           rpm: 15
 
-    ollama_rest:
+    ollama_basic:
       api_key: "os.environ/OLLAMA_API_KEY"
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
         - model: "ollama/gemma4:31b-cloud"
-          timeout: 180
 
-    openrouter_rest:
-      api_key: "os.environ/OPENROUTER_API_KEY"
-      api_base: "os.environ/OPENROUTER_BASE_URL"
-      models:
-        - model: "openrouter/openai/gpt-oss-20b:free"
+#    openrouter_basic:
+#      api_key: "os.environ/OPENROUTER_API_KEY"
+#      api_base: "os.environ/OPENROUTER_BASE_URL"
+#      models:
+#        - model: "openrouter/openai/gpt-oss-120b:free"  # Does not support structured output
 
   settings:
     num_retries: 2
@@ -67,3 +99,4 @@ router:
     cooldown_time: 30
     enable_pre_call_checks: true
     timeout: 120
+    routing_strategy: "usage-based-routing"

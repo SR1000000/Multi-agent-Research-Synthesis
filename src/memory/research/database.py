@@ -16,6 +16,7 @@ from .schema import (
     CREATE_IMAGES_TABLE,
     CREATE_INDEXES,
     CREATE_PROTO_SLIDES_TABLE,
+    CREATE_SLIDE_REVIEW_EVENTS_TABLE,
     CREATE_TABLES_TABLE,
     CREATE_TEXT_CHUNKS_TABLE,
     CREATE_TEXT_CHUNKS_VEC_TABLE,
@@ -103,6 +104,7 @@ class ResearchDatabase(DatabaseProvider):
             CREATE_TEXT_CHUNKS_TABLE,
             CREATE_TEXT_CHUNKS_VEC_TABLE.format(vec_dimensions=self.config.vec_dimensions),
             CREATE_PROTO_SLIDES_TABLE,
+            CREATE_SLIDE_REVIEW_EVENTS_TABLE,
         ]
         statements.extend(CREATE_INDEXES)
 
@@ -119,6 +121,55 @@ class ResearchDatabase(DatabaseProvider):
                         self._conn.execute("ALTER TABLE documents ADD COLUMN schema TEXT;")
                     if "paper_metadata" not in doc_columns:
                         self._conn.execute("ALTER TABLE documents ADD COLUMN paper_metadata TEXT;")
+
+                image_columns = [info["name"] for info in self._conn.execute("PRAGMA table_info(images)").fetchall()]
+                if image_columns:
+                    if "bbox" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN bbox TEXT;")
+                    if "source_filename" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN source_filename TEXT;")
+                    if "confidence" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN confidence REAL;")
+                    if "category" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN category TEXT;")
+                    if "vlm_caption" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN vlm_caption TEXT;")
+                    if "mermaid" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN mermaid TEXT;")
+                    if "figure_group_id" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN figure_group_id TEXT;")
+                    if "figure_label" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN figure_label TEXT;")
+                    if "figure_number" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN figure_number INTEGER;")
+                    if "panel_index" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN panel_index INTEGER;")
+                    if "panel_role" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN panel_role TEXT;")
+                    if "identity_signal" not in image_columns:
+                        self._conn.execute("ALTER TABLE images ADD COLUMN identity_signal TEXT;")
+
+                slide_columns = [
+                    info["name"] for info in self._conn.execute("PRAGMA table_info(proto_slides)").fetchall()
+                ]
+                if slide_columns:
+                    if "previous_content" not in slide_columns:
+                        self._conn.execute("ALTER TABLE proto_slides ADD COLUMN previous_content TEXT;")
+                    if "previous_chunk_references" not in slide_columns:
+                        self._conn.execute(
+                            "ALTER TABLE proto_slides ADD COLUMN previous_chunk_references TEXT;"
+                        )
+                    if "previous_updated_at" not in slide_columns:
+                        self._conn.execute("ALTER TABLE proto_slides ADD COLUMN previous_updated_at TEXT;")
+
+                review_event_columns = [
+                    info["name"]
+                    for info in self._conn.execute("PRAGMA table_info(slide_review_events)").fetchall()
+                ]
+                if review_event_columns and "affected_slide_numbers" not in review_event_columns:
+                    self._conn.execute(
+                        "ALTER TABLE slide_review_events ADD COLUMN affected_slide_numbers TEXT;"
+                    )
             except Exception as e:
                 self._logger.log(f"[ResearchDatabase] Schema migration error: {e}")
 
@@ -161,6 +212,15 @@ class ResearchDatabase(DatabaseProvider):
 
     def clear_proto_slides(self) -> None:
         return slide.clear_proto_slides(self)
+
+    def clear_slide_review_events(self) -> None:
+        return slide.clear_slide_review_events(self)
+
+    def save_review_event(self, **kwargs) -> None:
+        return slide.save_review_event(self, **kwargs)
+
+    def list_review_events(self, session_id: str) -> list[dict]:
+        return slide.list_review_events(self, session_id)
 
     @property
     def connection(self) -> sqlite3.Connection:

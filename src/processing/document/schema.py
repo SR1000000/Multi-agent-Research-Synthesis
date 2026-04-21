@@ -12,9 +12,18 @@ class ExtractedImage:
         mime_type: The MIME type of the image (e.g., image/png)
         base64_data: The raw base64 encoded string of the image
         page: 1-indexed page number where the image was found
-        caption: Extracted caption text associated with the figure (from ImageItem.caption)
+        caption: Paper/source caption (e.g. from LlamaParse caption-labeled text); stored as images.caption in DB
         storage_path: Path/URL where the image file is stored (local path or cloud URL)
         contextualized_text: Succinct context situated within the document
+        vlm_caption: Provider/VLM image description when distinct from paper caption (LlamaParse item.caption)
+        mermaid: Optional Mermaid transcription of the figure (same row as first panel only for multi-panel figures)
+        figure_group_id: Stable id shared by all panels of one figure
+        figure_label: Parsed label e.g. "Figure 2"
+        figure_number: Parsed figure index
+        panel_index: 0-based panel order within the figure (geometry-sorted)
+        panel_role: Optional spatial hint e.g. left, right
+        identity_signal: Which signal supplied figure identity (caption_item, markdown_alt, weak,
+            rescued_orphan, layout_only)
     """
     id: str
     """Unique artifact identifier (provider-prefixed, e.g., doc_lp_img_001)"""
@@ -24,6 +33,18 @@ class ExtractedImage:
     caption: str = ""
     storage_path: str | None = None
     contextualized_text: str | None = None
+    bbox: dict[str, Any] | None = None
+    source_filename: str | None = None
+    confidence: float | None = None
+    category: str | None = None
+    vlm_caption: str = ""
+    mermaid: str | None = None
+    figure_group_id: str | None = None
+    figure_label: str | None = None
+    figure_number: int | None = None
+    panel_index: int | None = None
+    panel_role: str | None = None
+    identity_signal: str | None = None
 
 
 @dataclass

@@ -22,6 +22,9 @@ def _render_slide(proto: ProtoSlide) -> str:
 
     parts.append(f"# {content.title}")
     parts.append("")
+    if content.subtitle:
+        parts.append(f"## {content.subtitle}")
+        parts.append("")
 
     for bullet in content.bullets:
         parts.extend(_render_bullet(bullet))
@@ -41,6 +44,9 @@ class PandocBuilder:
     Markdown (with LaTeX math support via the tex_math_dollars extension),
     and converts the result to a .pptx file using pypandoc.
 
+    The opening title slide is generated from the ``title`` and ``subtitle``
+    constructor arguments as YAML front matter; it is never stored in the DB.
+
     Bullet text may contain Markdown formatting and LaTeX math:
       - Inline math:  $E = mc^2$
       - Display math: $$\\text{Attention}(Q,K,V) = \\text{softmax}(...)V$$
@@ -50,19 +56,33 @@ class PandocBuilder:
     Usage::
 
         with ResearchDatabase() as db:
-            PandocBuilder(output_path=Path("output.pptx"), db=db).build()
+            PandocBuilder(
+                output_path=Path("output.pptx"),
+                db=db,
+                title="My Talk",
+                subtitle="An optional subtitle",
+            ).build()
     """
 
     _PANDOC_FORMAT = "markdown+tex_math_dollars"
 
-    def __init__(self, output_path: Path, db: ResearchDatabase) -> None:
+    def __init__(
+        self,
+        output_path: Path,
+        db: ResearchDatabase,
+        title: str = "",
+        subtitle: str = "",
+    ) -> None:
         self.output_path = Path(output_path)
         self._db = db
+        self._title = title
+        self._subtitle = subtitle
 
     def build(self) -> Path:
         """
         Loads all proto-slides from research.db in slide-number order, renders them
-        to Pandoc Markdown, and writes the presentation to self.output_path.
+        to Pandoc Markdown (prepending a YAML title slide from constructor metadata),
+        and writes the presentation to self.output_path.
         Returns the resolved path.
 
         Raises:
@@ -96,5 +116,19 @@ class PandocBuilder:
 
     def _render_markdown(self, slides: List[ProtoSlide]) -> str:
         """Renders the full deck as a Pandoc Markdown string."""
+        yaml_header = ""
+        if self._title:
+            title = self._title.replace('"', '\\"')
+            yaml_lines = ["---", f'title: "{title}"']
+            if self._subtitle:
+                subtitle = self._subtitle.replace('"', '\\"')
+                yaml_lines.append(f'subtitle: "{subtitle}"')
+            yaml_lines.append("---")
+            yaml_header = "\n".join(yaml_lines)
+
         blocks = [_render_slide(s) for s in slides]
-        return "\n\n---\n\n".join(blocks)
+        body = "\n\n---\n\n".join(blocks)
+
+        if yaml_header:
+            return f"{yaml_header}\n\n{body}" if body else yaml_header
+        return body

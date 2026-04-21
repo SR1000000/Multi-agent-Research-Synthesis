@@ -70,10 +70,18 @@ class PptxBuilder:
     Reads all ProtoSlide rows from a ResearchDatabase and renders them into a
     .pptx file at the given output path.
 
+    The opening title slide is generated from the ``title`` and ``subtitle``
+    constructor arguments; it is never stored in the DB.
+
     Usage::
 
         with ResearchDatabase() as db:
-            PptxBuilder(output_path=Path("output.pptx"), db=db).build()
+            PptxBuilder(
+                output_path=Path("output.pptx"),
+                db=db,
+                title="My Talk",
+                subtitle="An optional subtitle",
+            ).build()
     """
 
     # Maps SlideContent.layout literal → (pptx layout name, special mode)
@@ -87,16 +95,25 @@ class PptxBuilder:
         "media_right":    (_LAYOUT_TWO_CONTENT,       "media_placeholder"),
     }
 
-    def __init__(self, output_path: Path, db: ResearchDatabase) -> None:
+    def __init__(
+        self,
+        output_path: Path,
+        db: ResearchDatabase,
+        title: str = "",
+        subtitle: str = "",
+    ) -> None:
         self.output_path = Path(output_path)
         self._db = db
+        self._title = title
+        self._subtitle = subtitle
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def build(self) -> Path:
         """
-        Loads all proto-slides from research.db in slide-number order and writes
-        the presentation to self.output_path.  Returns the resolved path.
+        Loads all proto-slides from research.db in slide-number order, prepends
+        a title slide from constructor metadata, and writes the presentation to
+        self.output_path.  Returns the resolved path.
 
         Raises:
             ValueError: if no slides exist in the database.
@@ -113,6 +130,10 @@ class PptxBuilder:
         ]
 
         prs = Presentation()
+
+        if self._title:
+            self._add_title_slide(prs)
+
         for slide in slides:
             if slide is not None:
                 self._add_slide(prs, slide)
@@ -123,6 +144,13 @@ class PptxBuilder:
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
+    def _add_title_slide(self, prs: Presentation) -> None:
+        layout = self._pick_layout(prs, _LAYOUT_TITLE_SLIDE)
+        slide = prs.slides.add_slide(layout)
+        self._set_title(slide, self._title)
+        if self._subtitle:
+            self._set_subtitle(slide, self._subtitle)
+
     def _add_slide(self, prs: Presentation, proto: ProtoSlide) -> None:
         content: SlideContent = proto.content
         layout_name, mode = self._LAYOUT_MAP.get(
@@ -132,6 +160,7 @@ class PptxBuilder:
         slide = prs.slides.add_slide(layout)
 
         self._set_title(slide, content.title)
+        self._set_subtitle(slide, content.subtitle)
         self._set_body(slide, content, mode)
         self._set_speaker_notes(slide, content.speaker_notes)
 
@@ -148,6 +177,14 @@ class PptxBuilder:
         title_shape = slide.shapes.title
         if title_shape is not None:
             title_shape.text = title
+
+    def _set_subtitle(self, slide, subtitle: str | None) -> None:
+        if not subtitle:
+            return
+        for ph in slide.placeholders:
+            if ph.placeholder_format.idx == 1:
+                ph.text = subtitle
+                return
 
     def _set_body(self, slide, content: SlideContent, mode: str | None) -> None:
         """Finds the body/content placeholder and writes bullets into it."""

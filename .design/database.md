@@ -7,7 +7,7 @@ This document describes the design of the database layer used to store extractio
 The system uses two distinct SQLite databases located in the `data/` directory:
 
 1.  **`research.db`**: A long-term storage for processed documents. It acts as a cache to avoid re-parsing expensive PDFs and provides vector search capabilities for the research agents.
-2.  **`wip.db`**: A temporary workspace used during the slide synthesis pipeline. It stores "proto-slides" which are intermediate representations of presentation content before they are exported to PowerPoint.
+2.  **`proto_slides` in `research.db`**: A temporary workspace used during the slide synthesis pipeline. It stores "proto-slides" which are intermediate representations of presentation content before they are exported to PowerPoint.
 
 ## Research Database (`research.db`)
 
@@ -31,9 +31,9 @@ Caching is handled automatically by `DocProcessor`. When a PDF is processed:
 2.  The database is queried to see if a document with that hash already exists.
 3.  If found, the system loads the results directly from the database, skipping OCR and embedding steps.
 
-## WIP Database (`wip.db`)
+## Proto-Slides Workspace (`research.db`)
 
-The `wip.db` is reset at the start of every execution of `main.py`. It serves as a shared memory between the synthesis agents and the presentation builder.
+The `proto_slides` table in `research.db` is reset at the start of every execution of `main.py`. It serves as a shared workspace between the synthesis agents and the presentation builder while leaving the ingested document cache intact.
 
 ### Schema Details
 
@@ -49,7 +49,7 @@ The databases are standard SQLite files and can be inspected with any SQLite cli
 **Recommendation:** Use [DB Browser for SQLite](https://sqlitebrowser.org/) or SQLite Viewer extension for VS Code.
 
 1.  Open `data/research.db` to see indexed papers and their extracted media.
-2.  Open `data/wip.db` (while the agent is running or after the program finishes) to see the intermediate slide data being generated.
+2.  Open `data/research.db` and inspect the `proto_slides` table (while the agent is running or after the program finishes) to see the intermediate slide data being generated.
 
 ## Technical Notes
 
