@@ -31,7 +31,7 @@ from .llama_parse_figures import (
     rewrite_markdown_images_and_tables,
 )
 
-_TIER = "agentic"
+_TIER = "agentic"  # agentic_plus is the highest tier of LlamaParse, agentic is 4x cheaper (and roughly 4-6x faster)
 # Prefix embedded in every artifact ID produced by this backend.
 # Other backends should define their own prefix (e.g. "dl" for Docling)
 # so IDs remain self-describing and collision-free across providers.

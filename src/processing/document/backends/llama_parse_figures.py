@@ -114,9 +114,8 @@ def _coverage_of_entry_inside_anchor(
     ea = entry[2] * entry[3]
     return inter / ea if ea > 0 else 0.0
 
-
-_RE_FIGURE = re.compile(r"^(Figure\s*(\d+))\b", re.IGNORECASE)
-
+# "Figure 1", "FIGURE 2", "Fig. 3", "FIG. 4" (optional period after abbreviated Fig)
+_RE_FIGURE = re.compile(r"^((?:Figure|Fig\.?)\s*(\d+))\b", re.IGNORECASE)
 
 def _parse_figure_label(text: str) -> tuple[str | None, int | None]:
     if not text or not text.strip():
