@@ -16,6 +16,9 @@ from src.llm.llm import (
     current_session_id,
 )
 from src.logging.logger import AgentLogger
+from src.state import DeliveryPlan
+from src.tools.registry import execute_tool_call, get_tool_prompt_snippets, get_tool_schemas
+from src.tools.rag import format_tool_result_for_llm
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -88,6 +91,23 @@ exactly as shown. A slide may reference multiple sections or sections from diffe
 # ---------------------------------------------------------------------------
 # Critic & Supervisor role prompts
 # ---------------------------------------------------------------------------
+
+WRITER_ROLE = """
+You are a Synthesis Writer. Your job is to produce a concise, insightful
+summary that highlights the most important findings from the research by following a structured delivery plan
+
+A good synthesis:
+- Focuses on "Insights", "Understanding", and "Presentation" rather than raw "Data Dumps"
+- Starts every section with a clear, high-level summary statement
+- Uses logical bulleting and concise language suitable for a high-level briefing or presentation
+- Meets every Synthesis Goal defined in the plan
+- Follows all high-density formatting guidelines (e.g., 3-5 bullets, bold takeaways)
+
+If you are revising (revision history is provided):
+- Prioritize clarifying the synthesis and removing redundant details
+- Address every cycle-specific issue while preserving the core insights
+
+"""
 
 CRITIC_ROLE = """
 You are a Slide Deck Critic. Your job is to review assigned slides against the
@@ -258,11 +278,18 @@ AGENT_ROLES = {
 
 
 class BaseLLMAgent:
-    def __init__(self, role: str, *, log_display: str | None = None):
+    def __init__(
+        self,
+        role: str,
+        *,
+        log_display: str | None = None,
+        tools_for_agent: dict[str, dict[str, Any]] | None = None,
+    ):
         self.role = role
         self._log_display = log_display if log_display is not None else role
         self._logger = AgentLogger()
         self._last_model_used: str | None = None  # Used for logging validation errors
+        self._tools_for_agent = tools_for_agent or {}
         self._last_structured_output_metadata = StructuredOutputMetadata()
 
     def _set_session_id(self, state: dict) -> None:
@@ -294,6 +321,9 @@ class BaseLLMAgent:
             ]}
         """
         system_prompt = system_prompt_override or AGENT_ROLES[self.role]
+        snippets = get_tool_prompt_snippets(self._tools_for_agent)
+        if snippets:
+            system_prompt = f"{system_prompt}\n\n" + "\n\n".join(snippets)
         return [{'role': 'system', 'content': system_prompt}, *turns]
 
     def _call_raw(
@@ -503,24 +533,40 @@ class BaseLLMAgent:
     def _call(
         self,
         turns: list[dict],
+        *,
         schema: type[T] | None = None,
         max_retries: int = 2,
         model: str | None = None,
         llm_config_override: dict | None = None,
         system_prompt_override: str | None = None,
-    ) -> str | T:
+        use_tools: bool = False,
+        session_id: str | None = None,
+        max_tool_calls: int = 4,
+    ) -> str | T | dict[str, Any]:
         """
-        High-level call with optional Pydantic schema validation + correction retries.
+        Unified LLM entrypoint.
 
-        For text (no schema): one _call_raw, strip think blocks, return string.
-        For structured output:
-          1. Call _call_raw with schema (JSON mode).
-          2. Strip think blocks and code fences.
-          3. Attempt _heal_json to fix common envelope mistakes.
-          4. Validate with schema.model_validate_json.
-          5. On ValidationError, append a correction prompt and retry up to
-             max_retries times.
+        Modes:
+          - text: default
+          - structured: set ``schema=``
+          - tool loop: set ``use_tools=True``
+
+        Tool mode currently returns the legacy dict payload used by writer flows.
+        Structured output and tool mode are intentionally exclusive for now.
         """
+        if use_tools and schema is not None:
+            raise ValueError("Structured output with tool calls is not supported by BaseLLMAgent._call")
+
+        if use_tools:
+            return self._call_tools(
+                turns,
+                session_id=session_id,
+                max_tool_calls=max_tool_calls,
+                model=model,
+                llm_config_override=llm_config_override,
+                system_prompt_override=system_prompt_override,
+            )
+
         if schema is None:
             raw = self._call_raw(
                 turns,
@@ -538,3 +584,180 @@ class BaseLLMAgent:
             llm_config_override=llm_config_override,
             system_prompt_override=system_prompt_override,
         ).parsed
+
+    def _call_tools(
+        self,
+        turns: list[dict],
+        *,
+        session_id: str | None = None,
+        max_tool_calls: int = 4,
+        model: str | None = None,
+        llm_config_override: dict | None = None,
+        system_prompt_override: str | None = None,
+    ) -> dict[str, Any]:
+        if not self._tools_for_agent:
+            return {
+                "content": self._call(
+                    turns,
+                    model=model,
+                    llm_config_override=llm_config_override,
+                    system_prompt_override=system_prompt_override,
+                ),
+                "tool_calls": [],
+                "tool_results": [],
+                "retrieval_queries": [],
+            }
+
+        tools = get_tool_schemas(self._tools_for_agent)
+        if not tools:
+            return {
+                "content": self._call(
+                    turns,
+                    model=model,
+                    llm_config_override=llm_config_override,
+                    system_prompt_override=system_prompt_override,
+                ),
+                "tool_calls": [],
+                "tool_results": [],
+                "retrieval_queries": [],
+            }
+
+        messages = self._build_messages(turns, system_prompt_override=system_prompt_override)
+        override = dict(llm_config_override) if llm_config_override else {}
+        if model is not None:
+            override["model"] = model
+        llm = get_llm(llm_config_override=override if override else None)
+
+        tool_calls_used = 0
+        tool_call_log: list[dict[str, Any]] = []
+        tool_result_log: list[dict[str, Any]] = []
+        retrieval_queries: list[str] = []
+        
+        # ReAct loop: model can iteratively request tools; we execute calls, append
+        # tool outputs back into messages, and stop when no tool_calls are returned
+        # (or when max_tool_calls budget is reached for this turn).
+        while True:
+            token = current_agent_label.set(self._log_display)
+            try:
+                resp = llm.complete_with_tools(messages, tools=tools)
+            except LLMCallError as exc:
+                model_label = (
+                    f"{exc.model} ({exc.actual_model})" if exc.actual_model else exc.model
+                )
+                self._logger.log(
+                    f"[{self._log_display}] LLM call failed (model={model_label}): {exc}",
+                    level="error",
+                )
+                raise
+            finally:
+                current_agent_label.reset(token)
+
+            content = _strip_think_block(resp.get("content") or "")
+            tool_calls = resp.get("tool_calls") or []
+            if not tool_calls:
+                return {
+                    "content": content,
+                    "tool_calls": tool_call_log,
+                    "tool_results": tool_result_log,
+                    "retrieval_queries": retrieval_queries,
+                }
+
+            assistant_message: dict[str, Any] = {"role": "assistant", "content": content}
+            assistant_tool_calls: list[dict[str, Any]] = []
+            messages.append(assistant_message)
+
+            for call in tool_calls:
+                if tool_calls_used >= max_tool_calls:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": "Tool call limit reached. Continue without additional tool calls.",
+                        }
+                    )
+                    break
+
+                call_id = getattr(call, "id", None)
+                if call_id is None and isinstance(call, dict):
+                    call_id = call.get("id")
+                fn = getattr(call, "function", None)
+                if fn is None and isinstance(call, dict):
+                    fn = call.get("function")
+                fn = fn or {}
+                name = getattr(fn, "name", None)
+                if name is None and isinstance(fn, dict):
+                    name = fn.get("name")
+                arguments = getattr(fn, "arguments", None)
+                if arguments is None and isinstance(fn, dict):
+                    arguments = fn.get("arguments")
+                if not name:
+                    continue
+                
+                # Normalize and persist assistant tool_calls in message history so
+                # subsequent role="tool" messages have a valid parent call id.
+                assistant_tool_calls.append(
+                    {
+                        "id": call_id or f"tool_call_{tool_calls_used}",
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments or {}),
+                        },
+                    }
+                )
+
+                result = execute_tool_call(
+                    tools_for_agent=self._tools_for_agent,
+                    tool_name=name,
+                    arguments_raw=arguments,
+                    context={
+                        "session_id": session_id,
+                        "agent_type": self.role,
+                    },
+                )
+
+                tool_call_log.append(
+                    {
+                        "agent": self.role,
+                        "tool_name": name,
+                        "arguments": arguments if isinstance(arguments, dict) else (arguments or "{}"),
+                    }
+                )
+                tool_result_log.append(
+                    {
+                        "agent": self.role,
+                        "tool_name": name,
+                        "ok": bool(result.get("ok")),
+                        "error": result.get("error"),
+                        "payload": result,
+                    }
+                )
+                result_query = result.get("query")
+                if isinstance(result_query, str) and result_query.strip():
+                    retrieval_queries.append(result_query)
+
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id or f"tool_call_{tool_calls_used}",
+                        "name": name,
+                        "content": format_tool_result_for_llm(result),
+                    }
+                )
+                tool_calls_used += 1
+
+            if assistant_tool_calls:
+                assistant_message["tool_calls"] = assistant_tool_calls
+
+def _render_history(history: list[str], kind: str) -> str:
+    if not history:
+        return ''
+    lines = [f'PRIOR {kind.upper()} HISTORY — do not repeat these mistakes:']
+    for i, entry in enumerate(history):
+        lines.append(f'  Cycle {i + 1}: {entry}')
+    return '\n'.join(lines)
+
+
+def _plan_to_text(plan: DeliveryPlan | None) -> str:
+    if plan is None:
+        return '(no plan yet)'
+    return json.dumps(plan.model_dump(), indent=2)

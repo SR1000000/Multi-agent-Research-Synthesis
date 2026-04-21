@@ -9,7 +9,7 @@ agent wrapper based on whether rewrite instructions are present.
 from __future__ import annotations
 
 import json
-from typing import List, TypedDict
+from typing import Any, List, TypedDict
 
 from langgraph.types import Command
 
@@ -77,8 +77,13 @@ def _format_existing_slide(slide: ProtoSlide) -> str:
 # ---------------------------------------------------------------------------
 
 class _BaseSlideWorkerAgent(BaseLLMAgent):
-    def __init__(self, *, log_display: str | None = None):
-        super().__init__("slide_writer", log_display=log_display)
+    def __init__(
+        self,
+        *,
+        log_display: str | None = None,
+        tools_for_agent: dict[str, dict[str, Any]] | None = None,
+    ):
+        super().__init__("slide_writer", log_display=log_display, tools_for_agent=tools_for_agent)
 
     def _failure(
         self,
@@ -170,6 +175,52 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         parts += ["", "SOURCE MATERIAL (research chunks):", combined_text]
         return parts
 
+    def _build_retrieval_turns(
+        self,
+        *,
+        slide_blueprints: list[dict],
+        rewrite_instructions: str,
+        existing_slides: list[ProtoSlide],
+    ) -> list[dict]:
+        # Tool prompt snippets describe tool policy at the agent/system level.
+        # This separate user turn exists to make the first LLM call an explicit
+        # evidence-gathering step for the current slide assignment before the
+        # second structured slide-generation call.
+        assignment_block = self._build_assignment_block(slide_blueprints)
+        existing_slides_block = "\n\n".join(
+            _format_existing_slide(slide) for slide in existing_slides
+        )
+        prompt_parts = [
+            "Use the available retrieval tool to gather evidence for the assigned slides.",
+            "You must call `retrieve_artifacts` at least once before answering.",
+            "After finishing tool use, return a short evidence brief summarizing only the retrieved evidence that is most relevant to these slides.",
+            "",
+            "SLIDE ASSIGNMENTS:",
+            assignment_block,
+        ]
+        if rewrite_instructions.strip():
+            prompt_parts.extend(
+                [
+                    "",
+                    "REVISION CONTEXT:",
+                    "Reviewer rewrite instructions:",
+                    rewrite_instructions,
+                    "",
+                    "Current slide drafts:",
+                    existing_slides_block or "No existing drafts were found.",
+                ]
+            )
+        return [{"role": "user", "content": "\n".join(prompt_parts)}]
+
+    def _tool_payload_text(self, tool_results: list[dict[str, Any]]) -> str:
+        payloads: list[str] = []
+        for result in tool_results:
+            payload = result.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            payloads.append(json.dumps(payload, ensure_ascii=True))
+        return "\n\n".join(payloads)
+
     def _build_user_prompt(
         self,
         *,
@@ -194,22 +245,10 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         target_slide_numbers = state.get("target_slide_numbers", [])
         dispatch_id          = state.get("dispatch_id", "")
         assignment_id        = state.get("assignment_id", f"group-{group_idx}")
+        session_id           = state.get("session_id", "")
         tag                  = self._log_display
 
         try:
-            if not chunk_ids:
-                self._logger.log(f"[{tag}] No chunk_ids — skipping", level="warning")
-                return Command(update={
-                    "slides_written": [{
-                        "dispatch_id": dispatch_id,
-                        "assignment_id": assignment_id,
-                        "group_idx": group_idx,
-                        "count": 0,
-                        "target_slide_numbers": target_slide_numbers,
-                    }],
-                    "messages":       [f"[{tag}] Skipped (no chunks)"],
-                })
-
             if not slide_blueprints:
                 self._logger.log(f"[{tag}] No blueprints — skipping", level="warning")
                 return Command(update={
@@ -248,6 +287,42 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
                 slide_blueprints=slide_blueprints,
                 include_existing_slides=bool(rewrite_instructions.strip()),
             )
+            retrieval_turns = self._build_retrieval_turns(
+                slide_blueprints=slide_blueprints,
+                rewrite_instructions=rewrite_instructions,
+                existing_slides=existing_slides,
+            )
+            tool_call_out = self._call(
+                retrieval_turns,
+                use_tools=True,
+                session_id=session_id,
+                max_tool_calls=4,
+                model="slides",
+                system_prompt_override=self._system_prompt_override(),
+            )
+            # The tool loop above already gave the model the tool outputs once.
+            # We pass the full returned payloads into the second structured call
+            # because tool-use mode and schema mode are still separate paths.
+            combined_text = "\n\n".join(
+                part
+                for part in [self._tool_payload_text(tool_call_out["tool_results"]), tool_call_out["content"]]
+                if isinstance(part, str) and part.strip()
+            )
+            if not combined_text:
+                self._logger.log(f"[{tag}] No retrieved artifacts available for writing", level="warning")
+                return Command(update={
+                    "slides_written": [{
+                        "dispatch_id": dispatch_id,
+                        "assignment_id": assignment_id,
+                        "group_idx": group_idx,
+                        "count": 0,
+                        "target_slide_numbers": target_slide_numbers,
+                    }],
+                    "messages": [f"[{tag}] Skipped (no retrieved evidence)"],
+                    "tool_calls": tool_call_out["tool_calls"],
+                    "tool_results": tool_call_out["tool_results"],
+                    "retrieval_queries": tool_call_out["retrieval_queries"],
+                })
             user_prompt = self._build_user_prompt(
                 slide_count=slide_count,
                 slide_blueprints=slide_blueprints,
@@ -310,6 +385,9 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
                     "target_slide_numbers": target_slide_numbers,
                 }],
                 "messages":       [msg],
+                "retrieval_queries": tool_call_out["retrieval_queries"],
+                "tool_calls": tool_call_out["tool_calls"],
+                "tool_results": tool_call_out["tool_results"],
             })
 
         except Exception as e:
@@ -411,7 +489,14 @@ class SlideWriterAgent(InitialSlideWriterAgent):
     """Backward-compatible alias for the initial slide writer."""
 
 
-def slide_writer_node(state: SlideWriterDispatch) -> Command:
+def slide_writer_node(
+    state: SlideWriterDispatch,
+    *,
+    tools_for_agent: dict[str, dict[str, Any]] | None = None,
+) -> Command:
     rewrite_instructions = state.get("rewrite_instructions", "")
     agent_cls = SlideRewriterAgent if rewrite_instructions.strip() else InitialSlideWriterAgent
-    return agent_cls(log_display=_group_log_label(state)).run(state)
+    return agent_cls(
+        log_display=_group_log_label(state),
+        tools_for_agent=tools_for_agent,
+    ).run(state)

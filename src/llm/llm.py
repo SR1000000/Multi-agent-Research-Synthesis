@@ -441,6 +441,46 @@ class LiteLLMProvider:
         self.last_model_used = getattr(resp, "model", None) or kw["model"]
         return resp.choices[0].message.content or ""
 
+    def complete_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict[str, Any]],
+        **kwargs,
+    ) -> dict[str, Any]:
+        if self._router is None:
+            raise RuntimeError("Router not initialized; call init_from_config() from main.")
+
+        kw: dict[str, Any] = {
+            "model": (self.config.model or DEFAULT_MODEL_NAME).strip(),
+            "messages": messages,
+            "tools": tools,
+            **(self.config.litellm_params or {}),
+        }
+        t = kwargs.get("temperature", self.config.temperature)
+        mt = kwargs.get("max_tokens", self.config.max_tokens)
+        if t is not None:
+            kw["temperature"] = t
+        if mt is not None:
+            kw["max_tokens"] = mt
+
+        session_id = current_session_id.get()
+        if session_id:
+            existing_meta = kw.get("metadata") or {}
+            kw["metadata"] = {"session_id": session_id, **existing_meta}
+
+        try:
+            resp = self._router.completion(**kw)
+        except Exception as exc:
+            raise LLMCallError(kw["model"], exc) from None
+
+        self.last_model_used = getattr(resp, "model", None) or kw["model"]
+        message = resp.choices[0].message
+        content = getattr(message, "content", None) or ""
+        tool_calls = getattr(message, "tool_calls", None) or []
+        if not isinstance(tool_calls, list):
+            tool_calls = []
+        return {"content": content, "tool_calls": tool_calls}
+
 
 def get_llm(
     config: LLMConfig | None = None,

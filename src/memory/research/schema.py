@@ -229,6 +229,83 @@ CREATE VIRTUAL TABLE IF NOT EXISTS text_chunks_vec USING vec0(
 );
 """
 
+# Physical full-text index used by keyword retrieval.
+# FTS tokenizes and indexes only `search_text`. UNINDEXED fields are metadata payload.
+# Rows are synchronized by explicit Python calls in document.py.
+CREATE_ARTIFACT_SEARCH_FTS_TABLE = """
+CREATE VIRTUAL TABLE IF NOT EXISTS artifact_search_fts USING fts5(
+    item_id,
+    document_id,
+    kind,
+    search_text
+);
+"""
+
+# Mapping table to manage FTS rowids for reliable updates and deletes.
+CREATE_FTS_ROWID_MAP_TABLE = """
+CREATE TABLE IF NOT EXISTS fts_rowid_map (
+    item_id TEXT NOT NULL,
+    document_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    UNIQUE(item_id, kind)
+);
+"""
+
+# This is not an actual row store but just a view to normalize all searchable artifacts into one shape.
+# Retrieval text policy: concatenate contextualized + raw content when both exist.
+CREATE_ARTIFACT_SEARCH_SOURCE_VIEW = """
+CREATE VIEW IF NOT EXISTS artifact_search_source AS
+SELECT
+    id AS item_id,
+    document_id,
+    'chunk' AS kind,
+    CASE
+        WHEN NULLIF(contextualized_text, '') IS NOT NULL
+             AND NULLIF(text, '') IS NOT NULL
+            THEN contextualized_text || char(10) || char(10) || text
+        ELSE COALESCE(NULLIF(contextualized_text, ''), text)
+    END AS search_text
+FROM text_chunks
+UNION ALL
+SELECT
+    id AS item_id,
+    document_id,
+    'table' AS kind,
+    CASE
+        WHEN NULLIF(contextualized_text, '') IS NOT NULL
+             AND NULLIF(content, '') IS NOT NULL
+            THEN contextualized_text || char(10) || char(10) || content
+        ELSE COALESCE(NULLIF(contextualized_text, ''), content)
+    END AS search_text
+FROM tables
+UNION ALL
+SELECT
+    id AS item_id,
+    document_id,
+    'equation' AS kind,
+    CASE
+        WHEN NULLIF(contextualized_text, '') IS NOT NULL
+             AND NULLIF(text, '') IS NOT NULL
+            THEN contextualized_text || char(10) || char(10) || text
+        ELSE COALESCE(NULLIF(contextualized_text, ''), text)
+    END AS search_text
+FROM equations
+UNION ALL
+SELECT
+    id AS item_id,
+    document_id,
+    'image' AS kind,
+    CASE
+        WHEN NULLIF(contextualized_text, '') IS NOT NULL
+             AND NULLIF(COALESCE(NULLIF(caption, ''), storage_path), '') IS NOT NULL
+            THEN contextualized_text || char(10) || char(10) || COALESCE(NULLIF(caption, ''), storage_path)
+        ELSE COALESCE(NULLIF(contextualized_text, ''), NULLIF(caption, ''), storage_path)
+    END AS search_text
+FROM images;
+"""
+
+
 CREATE_PROTO_SLIDES_TABLE = """
 CREATE TABLE IF NOT EXISTS proto_slides (
     slide_number INTEGER PRIMARY KEY,
@@ -261,6 +338,26 @@ CREATE TABLE IF NOT EXISTS slide_review_events (
 );
 """
 
+# Agent retrieval call log: surrogate PK, per-call uniqueness, artifact_id = base-table id.
+CREATE_RETRIEVED_CHUNKS_TABLE = """
+CREATE TABLE IF NOT EXISTS retrieved_chunks (
+    row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    call_id TEXT,
+    kind TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    document_id TEXT NOT NULL,
+    text_content TEXT,
+    score REAL,
+    rank INTEGER,
+    strategy TEXT,
+    retrieved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    agent_type TEXT,
+    query TEXT,
+    UNIQUE(session_id, call_id, kind, artifact_id)
+);
+"""
+
 # Indexes for performance and filtering
 CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash);",
@@ -271,5 +368,9 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_equations_document_id ON equations(document_id);",
     "CREATE INDEX IF NOT EXISTS idx_equations_page_number ON equations(page_number);",
     "CREATE INDEX IF NOT EXISTS idx_text_chunks_document_id ON text_chunks(document_id);",
+    "CREATE INDEX IF NOT EXISTS idx_fts_rowid_map_document_id ON fts_rowid_map(document_id);",
+    "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_session_id ON retrieved_chunks(session_id);",
+    "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_call_id ON retrieved_chunks(call_id);",
+    "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_session_call ON retrieved_chunks(session_id, call_id);",
     "CREATE INDEX IF NOT EXISTS idx_slide_review_events_session_cycle ON slide_review_events(session_id, cycle_number);",
 ]
