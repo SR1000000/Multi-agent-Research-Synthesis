@@ -318,8 +318,8 @@ def main() -> None:
         
         tool_registry = build_tool_registry(retriever=retriever, research_db=db)
         agent_tool_allowlist = {
-            "writer": ["retrieve_artifacts"],
-            "planner": ["retrieve_artifacts"],
+            "slide_writer": ["retrieve_artifacts"],
+            "planner": [],
             "critic": [],
             "supervisor": [],
             "parse_supervisor": [],
@@ -363,7 +363,6 @@ def main() -> None:
         )
 
         graph = build_graph(
-            slides_mode=args.slides,
             tool_registry=tool_registry,
             agent_tool_allowlist=agent_tool_allowlist,
         )

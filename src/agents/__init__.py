@@ -6,12 +6,9 @@ from .slide_critic import critic_node
 from .supervisor import supervisor_node
 
 __all__ = [
-    # Active
     "planner_node",
     "plan_executor_node",
     "slide_writer_node",
     "critic_node",
     "supervisor_node",
-    # Dormant
-    "writer_node",
 ]

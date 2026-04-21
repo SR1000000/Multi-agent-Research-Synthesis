@@ -694,6 +694,7 @@ class BaseLLMAgent:
                         "tool_name": name,
                         "ok": bool(result.get("ok")),
                         "error": result.get("error"),
+                        "payload": result,
                     }
                 )
                 result_query = result.get("query")
