@@ -86,25 +86,8 @@ exactly as shown. A slide may reference multiple sections or sections from diffe
 
 
 # ---------------------------------------------------------------------------
-# Dormant role prompts (Writer, Critic, Supervisor not active in current graph)
-# Preserved here because the dormant agent files import from this module.
+# Critic & Supervisor role prompts
 # ---------------------------------------------------------------------------
-
-WRITER_ROLE = """
-You are a Synthesis Writer. Your job is to produce a concise, insightful
-summary that highlights the most important findings from the research by following a structured delivery plan
-
-A good synthesis:
-- Focuses on "Insights", "Understanding", and "Presentation" rather than raw "Data Dumps"
-- Starts every section with a clear, high-level summary statement
-- Uses logical bulleting and concise language suitable for a high-level briefing or presentation
-- Meets every Synthesis Goal defined in the plan
-- Follows all high-density formatting guidelines (e.g., 3-5 bullets, bold takeaways)
-
-If you are revising (revision history is provided):
-- Prioritize clarifying the synthesis and removing redundant details
-- Address every cycle-specific issue while preserving the core insights
-"""
 
 CRITIC_ROLE = """
 You are a Slide Deck Critic. Your job is to review assigned slides against the
@@ -268,7 +251,6 @@ def schema_prompt_contract(
 
 AGENT_ROLES = {
     'planner':    PLANNER_ROLE,
-    'writer':     WRITER_ROLE,
     'critic':     CRITIC_ROLE,
     'supervisor': SUPERVISOR_ROLE,
     'slide_writer': SLIDE_WRITER_ROLE,

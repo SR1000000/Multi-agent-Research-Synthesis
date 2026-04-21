@@ -69,11 +69,12 @@ router:
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
         # Planner Tier 1: Qwen 3.5
-        - model: "ollama/qwen3.5:397b-cloud"
+        - model: "ollama/qwen3.5:397b-cloud" # LiteLLM recommends ollama_chat but doesn't work, presumably that's local-only
           model_name: "planner"
           order: 1
           timeout: 180
           #- model: "ollama/glm-5.1:cloud"  # Often unavailable (524 error)
+        - model: "ollama/minimax-m2.7:cloud"
 
     gemini_basic:
       api_key: "os.environ/GEMINI_API_KEY"

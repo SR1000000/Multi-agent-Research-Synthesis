@@ -159,9 +159,10 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
             "- Do not default to a basic slide with exactly three flat bullets unless that structure is genuinely the clearest fit for the material.",
             "- Vary slide density based on the content: some slides should use 2 strong bullets, others 4-5 concise bullets, and others a few top-level bullets with supporting sub-bullets.",
             "- Use sub-bullets when they help unpack evidence, examples, caveats, or stepwise logic under a main claim.",
-            "- Choose the layout that best supports the evidence and intended narrative role.",
             "- Speaker notes should be professional, conversational, and cover the core bullets with added context.",
             "- Avoid academic jargon unless the original terminology is important to preserve.",
+            "- Only populate `media_id` when an image genuinely reinforces the slide's narrative intent. Do not force image inclusion; omit `media_id` (leave it null) if no available asset meaningfully supports the slide.",
+            "- Choose the layout that best supports the evidence and intended narrative role.",
         ]
         image_block = format_image_assets_block(image_metadatas)
         if image_block:

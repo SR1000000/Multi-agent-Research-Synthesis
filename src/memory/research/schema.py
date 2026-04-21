@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 from pydantic import AliasChoices, BaseModel, Field, create_model, field_validator
 
 
@@ -39,6 +39,13 @@ class ImageMetadata(BaseModel):
     caption: str = ""
     vlm_caption: str = ""
     aspect_ratio: Literal["landscape", "portrait", "square"] = "landscape"
+    bbox: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Bounding box on the source page when known (normalized or pixel coords "
+            "depending on ingest; keys may include x1/y1/x2/y2, width/height, etc.)."
+        ),
+    )
 
 
 class SlideContent(BaseModel):

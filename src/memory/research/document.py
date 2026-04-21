@@ -378,6 +378,7 @@ def get_images_for_chunks(db, chunk_ids: list[str]) -> list[ImageMetadata]:
                 caption=row["caption"] or "",
                 vlm_caption=vlm,
                 aspect_ratio=_image_aspect_ratio(bbox),
+                bbox=bbox,
             )
         )
     return out
