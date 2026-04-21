@@ -60,6 +60,45 @@ def _load_ordered_chunk_rows(db, doc_id):
     ).fetchall()
 
 
+
+def build_search_text(contextualized_text: str | None, raw_value: str | None) -> str:
+    """Build search text by concatenating contextualized and raw content with double newline separator."""
+    ctx = (contextualized_text or "").strip()
+    raw = (raw_value or "").strip()
+    if ctx and raw:
+        return f"{ctx}\n\n{raw}"
+    return ctx or raw
+
+
+def insert_fts_row(db, item_id: str, doc_id: str, kind: str, search_text: str) -> None:
+    """Insert a new row into the FTS index and mapping table."""
+    # Insert into mapping table to get an auto-assigned rowid
+    cursor = db._conn.execute(
+        "INSERT INTO fts_rowid_map(item_id, document_id, kind) VALUES (?, ?, ?)",
+        (item_id, doc_id, kind),
+    )
+    rowid = cursor.lastrowid
+    # Insert into FTS index using the assigned rowid
+    db._conn.execute(
+        """
+        INSERT INTO artifact_search_fts(rowid, item_id, document_id, kind, search_text)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (rowid, item_id, doc_id, kind, search_text),
+    )
+
+
+def delete_fts_rows_for_document(db, doc_id: str) -> None:
+    """Delete all FTS rows and mappings for a given document."""
+    db._conn.execute(
+        "DELETE FROM artifact_search_fts WHERE rowid IN (SELECT rowid FROM fts_rowid_map WHERE document_id = ?)",
+        (doc_id,),
+    )
+    db._conn.execute(
+        "DELETE FROM fts_rowid_map WHERE document_id = ?",
+        (doc_id,),
+    )
+
 def document_exists(db, content_hash: str) -> bool:
     """Returns True if a document with the given content hash already exists."""
     row = db._conn.execute(
@@ -84,10 +123,18 @@ def save_document(db, result: ExtractionResult) -> None:
     content_hash = result.content_hash
 
     with db._conn:
+        # Delete existing FTS rows for this document first
+        delete_fts_rows_for_document(db, doc_id)
+
+        # Clear existing artifact data
         db._conn.execute(
             "DELETE FROM text_chunks_vec WHERE chunk_id IN (SELECT id FROM text_chunks WHERE document_id = ?)",
             (doc_id,),
         )
+        db._conn.execute("DELETE FROM text_chunks WHERE document_id = ?", (doc_id,))
+        db._conn.execute("DELETE FROM images WHERE document_id = ?", (doc_id,))
+        db._conn.execute("DELETE FROM tables WHERE document_id = ?", (doc_id,))
+        db._conn.execute("DELETE FROM equations WHERE document_id = ?", (doc_id,))
 
         db._conn.execute(
             """
@@ -139,6 +186,10 @@ def save_document(db, result: ExtractionResult) -> None:
                     img.identity_signal,
                 )
             )
+            # Insert FTS row for this image
+            image_raw_value = img.caption or img.storage_path
+            search_text = build_search_text(img.contextualized_text, image_raw_value)
+            insert_fts_row(db, img.id, doc_id, 'image', search_text)
 
         for tbl in result.tables:
             db._conn.execute(
@@ -149,6 +200,9 @@ def save_document(db, result: ExtractionResult) -> None:
                 """,
                 (tbl.id, doc_id, tbl.content, tbl.page, tbl.title, tbl.contextualized_text, tbl.col_count, tbl.row_count)
             )
+            # Insert FTS row for this table
+            search_text = build_search_text(tbl.contextualized_text, tbl.content)
+            insert_fts_row(db, tbl.id, doc_id, 'table', search_text)
 
         for eq in result.equations:
             db._conn.execute(
@@ -167,6 +221,9 @@ def save_document(db, result: ExtractionResult) -> None:
                     eq.caption,
                 )
             )
+            # Insert FTS row for this equation
+            search_text = build_search_text(eq.contextualized_text, eq.latex_or_text)
+            insert_fts_row(db, eq.id, doc_id, 'equation', search_text)
 
         for chunk in result.source_chunks:
             db._conn.execute(
@@ -183,6 +240,9 @@ def save_document(db, result: ExtractionResult) -> None:
                     chunk.contextualized_text
                 )
             )
+            # Insert FTS row for this text chunk
+            search_text = build_search_text(chunk.contextualized_text, chunk.text)
+            insert_fts_row(db, chunk.id, doc_id, 'chunk', search_text)
 
         embs = result.chunk_embeddings
         sources = result.chunk_embedding_sources
@@ -217,7 +277,6 @@ def save_document(db, result: ExtractionResult) -> None:
                 f"chunk_embeddings={'set' if result.chunk_embeddings is not None else 'None'} "
                 f"chunk_embedding_sources={'set' if result.chunk_embedding_sources is not None else 'None'}"
             )
-
 
 def load_document(db, doc_id: str) -> ExtractionResult | None:
     """Loads an ExtractionResult from the database."""
@@ -303,6 +362,21 @@ def get_table(db, table_id: str) -> ExtractedTable | None:
         contextualized_text=row["contextualized_text"],
         col_count=row["col_count"],
         row_count=row["row_count"]
+    )
+
+
+def get_equation(db, equation_id: str) -> ExtractedEquation | None:
+    """Loads a specific equation from the database by its ID."""
+    row = db._conn.execute("SELECT * FROM equations WHERE id = ?", (equation_id,)).fetchone()
+    if not row:
+        return None
+    return ExtractedEquation(
+        id=row["id"],
+        latex_or_text=row["text"],
+        display_mode=row["display_mode"] or "block",
+        page=row["page_number"],
+        caption=row["caption"] or "",
+        contextualized_text=row["contextualized_text"]
     )
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 from langgraph.types import Command
 from pydantic import BaseModel, Field
@@ -108,24 +108,35 @@ class SlideCriticAgent(BaseLLMAgent):
     def __init__(self, *, log_display: str | None = None) -> None:
         super().__init__("critic", log_display=log_display)
 
-    def _load_chunks(self, chunk_ids: list[str]) -> str:
-        if not chunk_ids:
+    def _load_session_retrieval_log(self, session_id: str) -> str:
+        if not session_id:
             return ""
         with ResearchDatabase() as research_db:
-            placeholders = ",".join(["?"] * len(chunk_ids))
-            rows = research_db.connection.execute(
-                f"SELECT id, text, contextualized_text FROM text_chunks WHERE id IN ({placeholders})",
-                chunk_ids,
-            ).fetchall()
-        by_id = {row["id"]: row for row in rows}
-        ordered = []
-        for cid in chunk_ids:
-            row = by_id.get(cid)
-            if row is None:
-                continue
-            text = row["contextualized_text"] if row["contextualized_text"] else row["text"]
-            ordered.append(f"--- Chunk ID: {cid} ---\n{text}")
+            rows = research_db.load_normalized_artifacts_for_session(session_id)
+        ordered: list[str] = []
+        for row in rows:
+            ordered.append(self._format_retrieved_artifact(row))
         return "\n\n".join(ordered)
+
+    def _format_retrieved_artifact(self, row: dict[str, Any]) -> str:
+        kind = str(row.get("kind", "chunk"))
+        artifact_id = str(row.get("artifact_id") or "")
+        call_id = str(row.get("call_id") or "")
+        document_id = str(row.get("document_id") or "")
+        score = row.get("score")
+        contextualized = str(row.get("contextualized_text") or "").strip()
+        text = str(row.get("text") or "").strip()
+        caption = str(row.get("caption") or "").strip()
+        lines = [
+            f"--- Retrieved {kind} {artifact_id} (call_id={call_id}, doc={document_id}, score={score}) ---"
+        ]
+        if caption:
+            lines.append(f"caption: {caption}")
+        if contextualized:
+            lines.append(f"contextualized description: {contextualized}")
+        if text:
+            lines.append(f"value: {text}")
+        return "\n".join(lines)
 
     def _load_slides(self, slide_numbers: list[int]) -> list[ProtoSlide]:
         slides: list[ProtoSlide] = []
@@ -139,7 +150,7 @@ class SlideCriticAgent(BaseLLMAgent):
     def _build_user_prompt(self, state: CriticDispatch) -> str:
         slide_numbers = state.get("target_slide_numbers", [])
         slides = self._load_slides(slide_numbers)
-        chunks = self._load_chunks(state.get("chunk_ids", []))
+        retrieval_log = self._load_session_retrieval_log(state.get("session_id", ""))
         blueprints = state.get("slide_blueprints", [])
         blueprint_block = "\n".join(
             f"Slide {bp.get('slide_number')}: {bp.get('working_title', '')} — {bp.get('intent', '')}"
@@ -160,11 +171,12 @@ class SlideCriticAgent(BaseLLMAgent):
                 "CURRENT SLIDES:",
                 slides_block,
                 "",
-                "SOURCE CHUNKS:",
-                chunks or "(none)",
+                "IN-SESSION RETRIEVAL LOG:",
+                retrieval_log or "(none)",
                 "",
-                "Identify only significant issues that break grounding, clarity, coherence, or the review criteria. "
-                "If no changes are needed, set actionable=false and issues=[].",
+                "Review the slides against the document chunks retrieved by the writer. Treat that retrieved evidence as the source of truth for grounding checks.",
+                "If the retrieval log is missing support for a concrete claim on a slide, treat that as a grounding issue.",
+                "Identify only significant issues that break grounding, clarity, coherence, or the review criteria. If no changes are needed, set actionable=false and issues=[].",
                 "",
                 _critic_output_format(),
             ]
