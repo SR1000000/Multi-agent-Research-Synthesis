@@ -271,7 +271,7 @@ class ReviewState(TypedDict):
     last_issue_counts: dict[str, int]
     last_rewrites_required_by_assignment: dict[str, bool]
     last_failed_assignment_ids: List[str]
-    final_decision: Optional[Literal["accept", "replan"]]
+    final_decision: Optional[Literal["accept", "replan", "skipped"]]
     export_ready: bool
 
 
@@ -311,6 +311,7 @@ class ResearchState(TypedDict):
     # -- slide coordination --
     max_slides:    int
     slide_numbers: List[int]
+    skip_supervisor: bool  # When True, bypass critic/supervisor cycles after initial write
 
 
     # -- presentation plan (set by Planner, read by Plan Executor + Slide Writers) --

@@ -39,6 +39,7 @@ from src.memory.research.schema import (
     CREATE_TABLES_TABLE,
     CREATE_TEXT_CHUNKS_TABLE,
     CREATE_TEXT_CHUNKS_VEC_TABLE,
+    ImageMetadata,
 )
 
 if TYPE_CHECKING:
@@ -223,6 +224,9 @@ class ResearchDatabase(DatabaseProvider):
 
     def get_image(self, image_id: str):
         return document.get_image(self, image_id)
+
+    def get_images_for_chunks(self, chunk_ids: list[str]) -> list[ImageMetadata]:
+        return document.get_images_for_chunks(self, chunk_ids)
 
     def get_table(self, table_id: str):
         return document.get_table(self, table_id)

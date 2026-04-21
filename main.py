@@ -120,6 +120,12 @@ def _parse_args() -> argparse.Namespace:
         metavar="PATH",
         help="Directory where the generated PPTX will be written (default: %(default)s)",
     )
+    parser.add_argument(
+        "--skip-supervisor",
+        action="store_true",
+        default=False,
+        help="Skip supervisor/critic review cycles and export proto-slides directly via Pandoc",
+    )
     return parser.parse_args()
 
 
@@ -245,6 +251,7 @@ def _build_initial_state(
         "doc_ids":           doc_ids,
         "paper_titles":      paper_titles,
         "max_slides":        args.max_slides,
+        "skip_supervisor":   args.skip_supervisor,
         "slide_numbers":     [],
         "presentation_plan": None,
         "review":            make_initial_review_state(),
@@ -414,6 +421,7 @@ def main() -> None:
                     db=db,
                     title=plan_title,
                     subtitle=plan_subtitle,
+                    object_store=object_store,
                 ).build()
                 print(f"\n[export] Presentation saved -> {out}")
             except ValueError as exc:
