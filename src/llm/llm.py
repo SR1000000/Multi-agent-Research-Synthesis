@@ -314,7 +314,10 @@ def inline_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
             if "$ref" in node:
                 # $ref is always "#/$defs/ModelName"
                 ref_name = node["$ref"].split("/")[-1]
-                resolved = defs.get(ref_name, node)
+                resolved = defs.get(ref_name)
+                if resolved is None:
+                    # Return the node as-is if the reference cannot be resolved to avoid infinite recursion.
+                    return node
                 # Recursively resolve in case the target also has $refs
                 return _resolve(dict(resolved))
             return {k: _resolve(v) for k, v in node.items() if k != "$defs"}
