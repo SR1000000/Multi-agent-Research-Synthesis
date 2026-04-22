@@ -147,6 +147,8 @@ class ResearchDatabase(DatabaseProvider):
                         self._conn.execute("ALTER TABLE documents ADD COLUMN schema TEXT;")
                     if "paper_metadata" not in doc_columns:
                         self._conn.execute("ALTER TABLE documents ADD COLUMN paper_metadata TEXT;")
+                    if "document_context" not in doc_columns:
+                        self._conn.execute("ALTER TABLE documents ADD COLUMN document_context TEXT;")
 
                 image_columns = [info["name"] for info in self._conn.execute("PRAGMA table_info(images)").fetchall()]
                 if image_columns:

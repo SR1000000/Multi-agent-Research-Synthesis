@@ -8,12 +8,17 @@ from pathlib import Path
 
 from src.memory.research.schema import ImageMetadata
 from src.processing.document.schema import (
+    DocumentContext,
     ExtractionResult,
     ExtractedChunk,
     ExtractedEquation,
     ExtractedImage,
     ExtractedTable,
     PaperMetadata,
+)
+from src.processing.context.document import (
+    document_context_from_json_text,
+    document_context_to_json_text,
 )
 
 _IMG_TOKEN_RE = re.compile(r"\[\[img:([^\]]+)\]\]")
@@ -171,8 +176,8 @@ def save_document(db, result: ExtractionResult) -> None:
         db._conn.execute(
             """
             INSERT OR REPLACE INTO documents
-            (id, source_path, filename, markdown, page_count, content_hash, run_id, schema, paper_metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, source_path, filename, markdown, page_count, content_hash, run_id, schema, paper_metadata, document_context)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 doc_id,
@@ -184,6 +189,7 @@ def save_document(db, result: ExtractionResult) -> None:
                 result.run_id,
                 result.schema,
                 json.dumps(asdict(result.paper_metadata)) if result.paper_metadata else None,
+                document_context_to_json_text(result.document_context),
             )
         )
 
@@ -347,6 +353,7 @@ def load_document(db, doc_id: str) -> ExtractionResult | None:
     paper_metadata = None
     if doc_row["paper_metadata"]:
         paper_metadata = PaperMetadata(**json.loads(doc_row["paper_metadata"]))
+    document_context = document_context_from_json_text(doc_row["document_context"])
 
     chunk_rows = _load_ordered_chunk_rows(db, doc_id)
     source_chunks = [
@@ -370,6 +377,7 @@ def load_document(db, doc_id: str) -> ExtractionResult | None:
         run_id=doc_row["run_id"],
         schema=doc_row["schema"],
         paper_metadata=paper_metadata,
+        document_context=document_context,
     )
 
 

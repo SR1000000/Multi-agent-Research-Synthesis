@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ _VERSION = "latest"
 _PARSE_CREATE_MAX_ATTEMPTS = 3
 _PARSE_WAIT_MAX_ATTEMPTS = 3
 _PARSE_WAIT_BACKOFF_SECONDS = 2
+_PARSE_WAIT_HEARTBEAT_SECONDS = 15.0
 _IMAGE_DOWNLOAD_MAX_ATTEMPTS = 3
 _IMAGE_DOWNLOAD_BACKOFF_SECONDS = 2
 
@@ -286,10 +288,34 @@ class LlamaParseBackend(OCRBackend):
         self._text_chunker = text_chunker
         self._logger = logger or AgentLogger()
 
+    def _wait_parse_job_with_status(self, job_id: str) -> None:
+        """Call LlamaParse wait_for_completion while emitting periodic status (SDK has no progress callback)."""
+        stop = threading.Event()
+
+        def _heartbeat() -> None:
+            t0 = time.monotonic()
+            while not stop.wait(_PARSE_WAIT_HEARTBEAT_SECONDS):
+                elapsed = int(time.monotonic() - t0)
+                msg = (
+                    f"[LlamaParseBackend] Parse still in progress job_id={job_id} "
+                    f"elapsed={elapsed}s (waiting on LlamaCloud)…"
+                )
+                print(msg, flush=True)
+                self._logger.log(msg, level="info")
+
+        hb = threading.Thread(target=_heartbeat, name=f"llamaparse-wait-{job_id[:8]}", daemon=True)
+        hb.start()
+        try:
+            self._client.parsing.wait_for_completion(job_id)
+        finally:
+            stop.set()
+            hb.join(timeout=2.0)
+
     def extract(self, source_pdf_path: str) -> ExtractionResult:
         source = Path(source_pdf_path)
         doc_id = source.stem
 
+        self._logger.log(f"[LlamaParseBackend] Starting extract path={source}", level="info")
         parse_result, run_id = self._parse_with_retry(str(source))
         dump_path = self._logger.dump_json_artifact(
             file_name=f"llamaparse_raw_{doc_id}.json",
@@ -387,7 +413,10 @@ class LlamaParseBackend(OCRBackend):
                     try:
                         if not job_id:
                             raise RuntimeError("LlamaParse create did not return job id.")
-                        self._client.parsing.wait_for_completion(job_id)
+                        self._wait_parse_job_with_status(job_id)
+                        done_msg = f"[LlamaParseBackend] Parse job finished job_id={job_id}, fetching result…"
+                        print(done_msg, flush=True)
+                        self._logger.log(done_msg, level="info")
                         result = self._client.parsing.get(job_id, expand=_PARSE_EXPAND)
                         return result, job_id
                     except Exception as exc:
