@@ -32,10 +32,8 @@ router:
       models:
         # ``default_model_name`` (``app``): Supervisor and any agent that omits ``model=``.
         - model: "gemini/gemini-3.1-flash-lite-preview"
-          model_name: "app"
-          rpm: 15
-        - model: "gemini/gemini-3.1-flash-lite-preview"
           model_name: "slides"
+          model_name: "app"
           rpm: 15
         - model: "gemini/gemini-3.1-flash-lite-preview"
           model_name: "context"
@@ -44,7 +42,6 @@ router:
           
         - model: "gemini/gemini-3.1-flash-lite-preview"
           rpm: 15
-          model_name: "fallback"
 
   # Note: splitting fallback_providers into *_high and *_rest allows us to control the
   # exact model-level fallback order across different providers (e.g. OpenRouter -> Ollama -> OpenRouter)
@@ -85,13 +82,12 @@ router:
         - model: "ollama/minimax-m2.7:cloud"
         #- model: "ollama/glm-5.1:cloud"  # Often unavailable (524 error)
 
-    mistral:
+    mistral_high:
       api_key: "os.environ/MISTRAL_API_KEY"
       models:
         - model: "mistral/mistral-large-latest"  # 1 RPS
           model_name: "critic"
           order: 1
-
         - model: "mistral/mistral-large-latest"  # 1 RPS, vision-capable
         - model: "mistral/magistral-medium-2508"  # Reasoning. Does it support structured output?
           rpm: 20
@@ -101,28 +97,51 @@ router:
       models:
         - model: "groq/openai/gpt-oss-120b"   # 8K TPM input might be too restrictive
         - model: "groq/llama-3.3-70b-versatile" # 12K TPM
+    
+    mistral_basic:
+      api_key: "os.environ/MISTRAL_API_KEY"
+      models:      
+        - model: "mistral/mistral-medium-latest"
+          model_name: "context"
+        - model: "mistral/mistral-small-latest"
+          model_name: "context"
+
 
     gemini_basic:
       api_key: "os.environ/GEMINI_API_KEY"
       models:
         - model: "gemini/gemma-4-31b-it"
-          model_name: "none"
+          model_name: "context"
+          rpm: 15
+          
+        - model: "gemini/gemma-4-31b-it"
           rpm: 15
 
     ollama_basic:
       api_key: "os.environ/OLLAMA_API_KEY"
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
-        - model: "ollama/kimi-k2.6:cloud"
-          model_name: "none"
-
         - model: "ollama/gemma4:31b-cloud"
 
-#    openrouter_basic:
-#      api_key: "os.environ/OPENROUTER_API_KEY"
-#      api_base: "os.environ/OPENROUTER_BASE_URL"
-#      models:
-#        - model: "openrouter/openai/gpt-oss-120b:free"  # Lots of validation errors, json_schema support?
+    openrouter_basic:
+      api_key: "os.environ/OPENROUTER_API_KEY"
+      api_base: "os.environ/OPENROUTER_BASE_URL"
+      models:
+        - model: "openrouter/google/gemma-4-26b-a4b-it:free"
+          model_name: "context"
+        - model: "openrouter/google/gemma-4-31b-it:free"
+          model_name: "context"
+        - model: "openrouter/google/gemma-3-4b-it:free"
+          model_name: "context"
+        - model: "openrouter/google/gemma-3-12b-it:free"
+          model_name: "context"
+        - model: "openrouter/google/gemma-3-27b-it:free"
+          model_name: "context"
+        - model: "openrouter/nvidia/llama-nemotron-embed-vl-1b-v2:free"
+          model_name: "context"
+        - model: "openrouter/nvidia/nemotron-nano-12b-v2-vl:free"
+          model_name: "context"
+        #- model: "openrouter/openai/gpt-oss-120b:free"  # Lots of validation errors, json_schema support?
 
   settings:
     num_retries: 1
