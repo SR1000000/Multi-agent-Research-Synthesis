@@ -22,7 +22,7 @@ from src.processing.export.pandoc_builder import PandocBuilder
 from src.processing.chunker import get_text_chunker
 from src.processing.document import DocProcessor
 from src.processing.embedder.provider import get_text_embedder
-from src.state import make_initial_review_state
+from src.state import MAX_CYCLES, make_initial_review_state
 
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "output"
 from src.retriever import Retriever
@@ -104,6 +104,12 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=15,
         help="Soft target for number of slides (Planner may adjust based on content density; default: %(default)s)",
+    )
+    parser.add_argument(
+        "--max-cycles",
+        type=int,
+        default=MAX_CYCLES,
+        help="Maximum number of critic/rewrite cycles (default: %(default)s)",
     )
 
     parser.add_argument(
@@ -254,7 +260,7 @@ def _build_initial_state(
         "skip_supervisor":   args.skip_supervisor,
         "slide_numbers":     [],
         "presentation_plan": None,
-        "review":            make_initial_review_state(),
+        "review":            make_initial_review_state(max_cycles=args.max_cycles),
         "retrieval_queries": [],
         'tool_calls':       [],
         'tool_results':     [],
@@ -379,7 +385,7 @@ def main() -> None:
             # Use streaming to capture the state at each step, allowing us to recover logs if a crash occurs.
             for event in graph.stream(
                 initial_state,
-                config={"callbacks": callbacks},
+                config={"callbacks": callbacks, "recursion_limit": 100},
                 stream_mode="values",
             ):
                 final_state = event
