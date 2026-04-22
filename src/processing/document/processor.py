@@ -79,7 +79,7 @@ class DocProcessor:
         self._document_contextualizer = document_contextualizer
         self._embedder = embedder
 
-    def process_document(self, source_path: str) -> ExtractionResult | None:
+    async def process_document(self, source_path: str) -> ExtractionResult | None:
         """
         Full pipeline: check cache → extract → contextualize → embed → store.
         Returns ExtractionResult on success, None on failure.
@@ -109,7 +109,7 @@ class DocProcessor:
                     if self._contextualizer and (chunks_todo or artifacts_todo):
                         self._logger.log("[DocProcessor] Re-contextualizing cached document…", level="info")
                         previous_sources = self._get_embedding_sources(cached)
-                        cached = self._contextualizer.contextualize(cached)
+                        cached = await self._contextualizer.contextualize(cached)
                         self._logger.log("[DocProcessor] Re-contextualization finished", level="info")
                         updated_cached = True
                         current_sources = self._get_embedding_sources(cached)
@@ -151,7 +151,7 @@ class DocProcessor:
                     f"[DocProcessor] Contextualizing backlog chunks={len(chunks_todo)} artifacts={len(artifacts_todo)}…",
                     level="info",
                 )
-                result = self._contextualizer.contextualize(result)
+                result = await self._contextualizer.contextualize(result)
                 self._logger.log("[DocProcessor] Contextualization finished", level="info")
 
             if self._document_contextualizer:

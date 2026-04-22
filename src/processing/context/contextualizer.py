@@ -69,7 +69,7 @@ class Contextualizer:
             self._image_uploader = ImageUploader(object_store)
         self._multimodal_disabled = False
 
-    def contextualize(self, result: ExtractionResult) -> ExtractionResult:
+    async def contextualize(self, result: ExtractionResult) -> ExtractionResult:
         try:
             markdown = result.markdown
 
@@ -94,7 +94,7 @@ class Contextualizer:
                 if not a.contextualized_text
             ]
 
-            self._process_items_in_batches(
+            await self._process_items_in_batches(
                 chunks_todo,
                 artifacts_todo,
                 markdown,
@@ -108,7 +108,7 @@ class Contextualizer:
             )
             return result
 
-    def _process_items_in_batches(
+    async def _process_items_in_batches(
         self,
         chunks_todo: list[ExtractedChunk],
         artifacts_todo: list[Any],
@@ -127,7 +127,7 @@ class Contextualizer:
             all_text_items = text_items + other_artifacts
             text_batches = self._create_batches(all_text_items, self.config.batch_size)
 
-            def process_text_batch(batch, batch_idx):
+            async def process_text_batch(batch):
                 # Skip items with deterministic fallbacks instead of sending empty requests.
                 batch_requests: list[tuple[Any, list[dict]]] = []
                 for item in batch:
@@ -151,7 +151,7 @@ class Contextualizer:
                 if not batch_requests:
                     return
 
-                results = self._llm.batch_complete(
+                results = await self._llm.batch_complete(
                     [payload for _, payload in batch_requests],
                 )
 
@@ -168,7 +168,7 @@ class Contextualizer:
 
             for i, batch in enumerate(text_batches):
                 try:
-                    process_text_batch(batch, i)
+                    await process_text_batch(batch)
                 except Exception as exc:
                     self._logger.log(f"Text batch contextualization failed: {exc}", level="error")
 
@@ -176,14 +176,14 @@ class Contextualizer:
         if multimodal_items and not self._multimodal_disabled:
             multimodal_batches = self._create_batches(multimodal_items, self.config.batch_size)
 
-            def process_multimodal_batch(batch, batch_idx):
+            async def process_multimodal_batch(batch):
                 payloads = []
                 for item in batch:
                     text_before, text_after = self._find_surrounding_chunks(item.page, source_chunks)
                     payload = self._build_multimodal_payload(item, markdown, text_before, text_after)
                     payloads.append(payload)
 
-                results = self._llm.batch_complete(
+                results = await self._llm.batch_complete(
                     payloads
                 )
 
@@ -198,7 +198,7 @@ class Contextualizer:
 
             for i, batch in enumerate(multimodal_batches):
                 try:
-                    process_multimodal_batch(batch, i)
+                    await process_multimodal_batch(batch)
                 except Exception as exc:
                     self._logger.log(f"Image batch contextualization failed: {exc}", level="error")
 
@@ -233,7 +233,18 @@ class Contextualizer:
             },
             {
                 "role": "user",
-                "content": f"Here is the chunk we want to situate within the whole document.\n<chunk>\n{chunk.text}\n</chunk>\n\nProvide a succinct context in 1 paragraph, no more than 5 sentences, describing this chunk's specific position and role within the document for the purposes of improving search retrieval. Answer only with the succinct context and nothing else."
+                "content": (
+                    "Here is the chunk we want to situate within the whole document.\n"
+                    f"<chunk>\n{chunk.text}\n</chunk>\n\n"
+                    "Provide a succinct context in 1 paragraph, no more than 5 sentences, "
+                    "describing this chunk's specific position and role within the document "
+                    "for the purposes of improving search retrieval. Answer only with the "
+                    "succinct context and nothing else. \nExample: original_chunk = "
+                    "\"The company's revenue grew by 3% over the previous quarter.\" "
+                    "contextualized_chunk = \"This chunk is from an SEC filing on ACME corp's "
+                    "performance in Q2 2023; the previous quarter's revenue was $314 million. "
+                    "The company's revenue grew by 3% over the previous quarter.\""
+                )
             }
         ]
 

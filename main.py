@@ -1,3 +1,4 @@
+import asyncio
 import argparse
 import os
 import re
@@ -206,7 +207,7 @@ def _process_document(
         logger=logger,
         object_store=object_store,
     )
-    artifacts = processor.process_document(str(pdf_path))
+    artifacts = asyncio.run(processor.process_document(str(pdf_path)))
 
     _pdf_elapsed = time.perf_counter() - _t0
 

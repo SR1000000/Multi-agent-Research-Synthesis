@@ -442,7 +442,7 @@ class LiteLLMProvider:
         self.last_model_used = getattr(resp, "model", None) or kw["model"]
         return resp.choices[0].message.content or ""
 
-    def batch_complete(
+    async def batch_complete(
         self,
         messages_batch: list[list[dict]],
         **kwargs,
@@ -470,12 +470,10 @@ class LiteLLMProvider:
         alias = (self.config.model or DEFAULT_MODEL_NAME).strip()
 
         try:
-            responses = asyncio.run(
-                self._router.abatch_completion_one_model_multiple_requests(
-                    model=alias,
-                    messages=messages_batch,
-                    **kw,
-                )
+            responses = await self._router.abatch_completion_one_model_multiple_requests(
+                model=alias,
+                messages=messages_batch,
+                **kw,
             )
         except Exception as exc:
             raise LLMCallError(alias, exc) from None
