@@ -89,6 +89,8 @@ def save_review_event(
     assignment_id: str | None = None,
     issue_code: str | None = None,
     severity: str | None = None,
+    location: str | None = None,
+    description: str | None = None,
     fingerprint: str | None = None,
     rewrite_instruction_summary: str | None = None,
     affected_slide_numbers: list[int] | None = None,
@@ -112,12 +114,14 @@ def save_review_event(
                 assignment_id,
                 issue_code,
                 severity,
+                location,
+                description,
                 fingerprint,
                 rewrite_instruction_summary,
                 affected_slide_numbers,
                 decision
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -128,6 +132,8 @@ def save_review_event(
                 assignment_id,
                 issue_code,
                 severity,
+                location,
+                description,
                 fingerprint,
                 rewrite_instruction_summary,
                 affected_json,
@@ -159,7 +165,7 @@ def list_review_events(db, session_id: str) -> list[dict]:
     rows = db._conn.execute(
         """
         SELECT session_id, cycle_number, scope_type, scope_id, check_type,
-               assignment_id, issue_code, severity, fingerprint,
+               assignment_id, issue_code, severity, location, description, fingerprint,
                rewrite_instruction_summary, affected_slide_numbers, decision, created_at
         FROM slide_review_events
         WHERE session_id = ?

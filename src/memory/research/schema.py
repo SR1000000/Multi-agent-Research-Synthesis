@@ -330,6 +330,8 @@ CREATE TABLE IF NOT EXISTS slide_review_events (
     assignment_id TEXT,
     issue_code TEXT,
     severity TEXT,
+    location TEXT,
+    description TEXT,
     fingerprint TEXT,
     rewrite_instruction_summary TEXT,
     affected_slide_numbers TEXT,

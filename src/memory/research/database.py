@@ -192,10 +192,19 @@ class ResearchDatabase(DatabaseProvider):
                     info["name"]
                     for info in self._conn.execute("PRAGMA table_info(slide_review_events)").fetchall()
                 ]
-                if review_event_columns and "affected_slide_numbers" not in review_event_columns:
-                    self._conn.execute(
-                        "ALTER TABLE slide_review_events ADD COLUMN affected_slide_numbers TEXT;"
-                    )
+                if review_event_columns:
+                    if "affected_slide_numbers" not in review_event_columns:
+                        self._conn.execute(
+                            "ALTER TABLE slide_review_events ADD COLUMN affected_slide_numbers TEXT;"
+                        )
+                    if "location" not in review_event_columns:
+                        self._conn.execute(
+                            "ALTER TABLE slide_review_events ADD COLUMN location TEXT;"
+                        )
+                    if "description" not in review_event_columns:
+                        self._conn.execute(
+                            "ALTER TABLE slide_review_events ADD COLUMN description TEXT;"
+                        )
             except Exception as e:
                 self._logger.log(f"[ResearchDatabase] Schema migration error: {e}")
         retrieval_ensure_artifact_search_index(self)

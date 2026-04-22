@@ -137,6 +137,24 @@ def _build_rewrite_assignments(*, plan, results: list[dict], cycle_number: int) 
                 for cid in bp.source_chunk_ids
             )
         )
+        issues = result.get("issues", [])
+        valid_group_slides = set(result.get("target_slide_numbers", []))
+        
+        all_have_slide_numbers = bool(issues) and all(
+            issue.get("affected_slide_numbers") for issue in issues
+        )
+        
+        if all_have_slide_numbers:
+            affected = list(dict.fromkeys(
+                n for issue in issues for n in issue["affected_slide_numbers"]
+                if n in valid_group_slides
+            ))
+            # Fallback if the critic only hallucinated out-of-bounds slide numbers
+            if not affected:
+                affected = result.get("target_slide_numbers", [])
+        else:
+            affected = result.get("target_slide_numbers", [])
+
         assignments.append(
             {
                 "assignment_id": f"rewrite-{result['assignment_id']}",
@@ -147,7 +165,7 @@ def _build_rewrite_assignments(*, plan, results: list[dict], cycle_number: int) 
                 "group_idx": result["group_idx"],
                 "chunk_ids": chunk_ids,
                 "slide_blueprints": [bp.model_dump() for bp in group.slide_blueprints],
-                "target_slide_numbers": result.get("target_slide_numbers", []),
+                "target_slide_numbers": affected,
                 "rewrite_instructions": result.get("rewrite_instructions", ""),
             }
         )
