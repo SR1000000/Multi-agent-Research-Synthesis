@@ -284,7 +284,7 @@ WITH keys AS (
         s.document_id AS document_id,
         s.score AS score
     FROM retrieved_chunks s
-    WHERE s.session_id = ?
+    WHERE s.session_id = ? AND s.plan_generation = ?
 )
 """
 
@@ -336,9 +336,29 @@ def load_normalized_artifacts_for_call(
 def load_normalized_artifacts_for_session(
     db: ResearchDatabase,
     session_id: str,
+    plan_generation: int | None = None,
 ) -> list[dict[str, Any]]:
-    sql = _LEDGER_KEYS_SESSION + _SESSION_OUTER_SELECT
-    rows = db.connection.execute(sql, (session_id,)).fetchall()
+    if plan_generation is None:
+        # Backward compatible: all ledger rows for the session (all plan generations).
+        sql = """
+        WITH keys AS (
+            SELECT
+                s.call_id AS call_id,
+                s.rank AS rank,
+                s.kind AS kind,
+                s.artifact_id AS artifact_id,
+                s.document_id AS document_id,
+                s.score AS score
+            FROM retrieved_chunks s
+            WHERE s.session_id = ?
+        )
+        """
+        params: tuple = (session_id,)
+    else:
+        sql = _LEDGER_KEYS_SESSION
+        params = (session_id, plan_generation)
+    sql = sql + _SESSION_OUTER_SELECT
+    rows = db.connection.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -350,14 +370,15 @@ def save_session_retrieval_batch(
     query: str,
     strategy: str,
     agent_type: str,
+    plan_generation: int = 0,
 ) -> None:
     if not items:
         return
     sql = """
         INSERT OR IGNORE INTO retrieved_chunks (
             session_id, call_id, kind, artifact_id, document_id, text_content,
-            score, rank, strategy, agent_type, query, retrieved_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            score, rank, strategy, agent_type, query, plan_generation, retrieved_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     """
     with db.connection:
         for rank, item in enumerate(items):
@@ -375,6 +396,7 @@ def save_session_retrieval_batch(
                     strategy,
                     agent_type,
                     query,
+                    plan_generation,
                 ),
             )
     db._logger.log(

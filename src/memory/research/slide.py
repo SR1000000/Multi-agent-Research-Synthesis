@@ -78,17 +78,32 @@ def clear_slide_review_events(db) -> None:
         db._conn.execute("DELETE FROM slide_review_events")
 
 
+def delete_slides_not_in(db, slide_numbers: list[int]) -> None:
+    """Deletes proto-slides whose slide_number is not in the given list."""
+    if not slide_numbers:
+        return
+    with db._conn:
+        placeholders = ",".join("?" * len(slide_numbers))
+        db._conn.execute(
+            f"DELETE FROM proto_slides WHERE slide_number NOT IN ({placeholders})",
+            slide_numbers,
+        )
+
+
 def save_review_event(
     db,
     *,
     session_id: str,
     cycle_number: int,
+    plan_generation: int = 0,
     scope_type: str,
     scope_id: str,
     check_type: str,
     assignment_id: str | None = None,
     issue_code: str | None = None,
     severity: str | None = None,
+    location: str | None = None,
+    description: str | None = None,
     fingerprint: str | None = None,
     rewrite_instruction_summary: str | None = None,
     affected_slide_numbers: list[int] | None = None,
@@ -106,28 +121,34 @@ def save_review_event(
             INSERT INTO slide_review_events (
                 session_id,
                 cycle_number,
+                plan_generation,
                 scope_type,
                 scope_id,
                 check_type,
                 assignment_id,
                 issue_code,
                 severity,
+                location,
+                description,
                 fingerprint,
                 rewrite_instruction_summary,
                 affected_slide_numbers,
                 decision
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
                 cycle_number,
+                plan_generation,
                 scope_type,
                 scope_id,
                 check_type,
                 assignment_id,
                 issue_code,
                 severity,
+                location,
+                description,
                 fingerprint,
                 rewrite_instruction_summary,
                 affected_json,
@@ -155,18 +176,33 @@ def _row_affected_slide_numbers(row: sqlite3.Row) -> list[int] | None:
     return out or None
 
 
-def list_review_events(db, session_id: str) -> list[dict]:
-    rows = db._conn.execute(
-        """
-        SELECT session_id, cycle_number, scope_type, scope_id, check_type,
-               assignment_id, issue_code, severity, fingerprint,
-               rewrite_instruction_summary, affected_slide_numbers, decision, created_at
-        FROM slide_review_events
-        WHERE session_id = ?
-        ORDER BY cycle_number ASC, id ASC
-        """,
-        (session_id,),
-    ).fetchall()
+def list_review_events(
+    db, session_id: str, plan_generation: int | None = None
+) -> list[dict]:
+    if plan_generation is not None:
+        rows = db._conn.execute(
+            """
+            SELECT session_id, cycle_number, plan_generation, scope_type, scope_id, check_type,
+                   assignment_id, issue_code, severity, location, description, fingerprint,
+                   rewrite_instruction_summary, affected_slide_numbers, decision, created_at
+            FROM slide_review_events
+            WHERE session_id = ? AND plan_generation = ?
+            ORDER BY cycle_number ASC, id ASC
+            """,
+            (session_id, plan_generation),
+        ).fetchall()
+    else:
+        rows = db._conn.execute(
+            """
+            SELECT session_id, cycle_number, plan_generation, scope_type, scope_id, check_type,
+                   assignment_id, issue_code, severity, location, description, fingerprint,
+                   rewrite_instruction_summary, affected_slide_numbers, decision, created_at
+            FROM slide_review_events
+            WHERE session_id = ?
+            ORDER BY cycle_number ASC, id ASC
+            """,
+            (session_id,),
+        ).fetchall()
     result: list[dict] = []
     for row in rows:
         d = dict(row)

@@ -19,6 +19,7 @@ from src.state import (
 
 
 class CriticDispatch(TypedDict):
+    plan_generation: int
     dispatch_id: str
     assignment_id: str
     cycle_number: int
@@ -109,11 +110,15 @@ class SlideCriticAgent(BaseLLMAgent):
     def __init__(self, *, log_display: str | None = None) -> None:
         super().__init__("critic", log_display=log_display)
 
-    def _load_session_retrieval_log(self, session_id: str) -> str:
+    def _load_session_retrieval_log(
+        self, session_id: str, plan_generation: int | None = None
+    ) -> str:
         if not session_id:
             return ""
         with ResearchDatabase() as research_db:
-            rows = research_db.load_normalized_artifacts_for_session(session_id)
+            rows = research_db.load_normalized_artifacts_for_session(
+                session_id, plan_generation=plan_generation
+            )
         ordered: list[str] = []
         for row in rows:
             ordered.append(self._format_retrieved_artifact(row))
@@ -151,7 +156,10 @@ class SlideCriticAgent(BaseLLMAgent):
     def _build_user_prompt(self, state: CriticDispatch) -> str:
         slide_numbers = state.get("target_slide_numbers", [])
         slides = self._load_slides(slide_numbers)
-        retrieval_log = self._load_session_retrieval_log(state.get("session_id", ""))
+        plan_gen = int(state.get("plan_generation", 0))
+        retrieval_log = self._load_session_retrieval_log(
+            state.get("session_id", ""), plan_generation=plan_gen
+        )
         blueprints = state.get("slide_blueprints", [])
         blueprint_block = "\n".join(
             f"Slide {bp.get('slide_number')}: {bp.get('working_title', '')} — {bp.get('intent', '')}"
@@ -215,6 +223,8 @@ class SlideCriticAgent(BaseLLMAgent):
 
     def run(self, state: CriticDispatch) -> Command:
         self._set_session_id(state)
+        self._set_plan_generation(state)
+        plan_gen = int(state.get("plan_generation", 0))
         prompt = self._build_user_prompt(state)
         result: CriticOutput = self._call(
             [{"role": "user", "content": prompt}],
@@ -240,10 +250,24 @@ class SlideCriticAgent(BaseLLMAgent):
                     "rewrite_instruction": issue.rewrite_instruction,
                 }
             )
+        def _fmt_instruction(issue: dict) -> str:
+            slide_nums = issue.get("affected_slide_numbers") or []
+            loc = issue.get("location", "").strip()
+            
+            context_parts = []
+            if slide_nums:
+                context_parts.append(f"Slide(s) {', '.join(str(n) for n in slide_nums)}")
+            if loc and loc.lower() not in ("none", "n/a", "general", "all"):
+                context_parts.append(f"Location: {loc}")
+                
+            prefix = f"[{' | '.join(context_parts)}] " if context_parts else ""
+            return f"- {prefix}{issue['rewrite_instruction']}"
+
         rewrite_instructions = "\n".join(
-            f"- {issue['rewrite_instruction']}" for issue in issues if issue["rewrite_instruction"].strip()
+            _fmt_instruction(issue) for issue in issues if issue["rewrite_instruction"].strip()
         )
         critic_result: CriticResultRecord = {
+            "plan_generation": plan_gen,
             "dispatch_id": state["dispatch_id"],
             "assignment_id": state["assignment_id"],
             "cycle_number": state["cycle_number"],
@@ -266,12 +290,15 @@ class SlideCriticAgent(BaseLLMAgent):
                 research_db.save_review_event(
                     session_id=state["session_id"],
                     cycle_number=state["cycle_number"],
+                    plan_generation=plan_gen,
                     scope_type=state["scope_type"],
                     scope_id=state["scope_id"],
                     check_type=state["check_type"],
                     assignment_id=state["assignment_id"],
                     issue_code=issue["issue_code"],
                     severity=issue["severity"],
+                    location=issue["location"],
+                    description=issue["description"],
                     fingerprint=issue["fingerprint"],
                     rewrite_instruction_summary=issue["rewrite_instruction"],
                     affected_slide_numbers=issue.get("affected_slide_numbers") or None,
@@ -280,6 +307,7 @@ class SlideCriticAgent(BaseLLMAgent):
                 research_db.save_review_event(
                     session_id=state["session_id"],
                     cycle_number=state["cycle_number"],
+                    plan_generation=plan_gen,
                     scope_type=state["scope_type"],
                     scope_id=state["scope_id"],
                     check_type=state["check_type"],

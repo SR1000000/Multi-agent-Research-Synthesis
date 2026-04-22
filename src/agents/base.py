@@ -1,5 +1,6 @@
 import json
 import time
+from contextvars import ContextVar
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any, TypeVar
@@ -21,6 +22,9 @@ from src.tools.registry import execute_tool_call, get_tool_prompt_snippets, get_
 from src.tools.rag import format_tool_result_for_llm
 
 T = TypeVar("T", bound=BaseModel)
+
+# Propagated from slide writer / critic dispatch state so RAG can tag retrieval rows by plan.
+current_plan_generation: ContextVar[int] = ContextVar("current_plan_generation", default=0)
 
 
 @dataclass
@@ -302,6 +306,14 @@ class BaseLLMAgent:
         sid = state.get("session_id") if isinstance(state, dict) else None
         if sid:
             current_session_id.set(sid)
+
+    def _set_plan_generation(self, state: dict) -> None:
+        """Tag tool execution with the active presentation plan generation (replan epoch)."""
+        if not isinstance(state, dict):
+            return
+        g = state.get("plan_generation")
+        if g is not None:
+            current_plan_generation.set(int(g))
 
     def _build_messages(
         self,
@@ -712,6 +724,7 @@ class BaseLLMAgent:
                     context={
                         "session_id": session_id,
                         "agent_type": self.role,
+                        "plan_generation": current_plan_generation.get(),
                     },
                 )
 
