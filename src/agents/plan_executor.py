@@ -9,6 +9,7 @@ from __future__ import annotations
 from langgraph.graph import END
 from langgraph.types import Command, Send
 
+from src.memory.research.database import ResearchDatabase
 from src.state import PresentationPlan, ResearchState, SlideGroup
 
 MAX_RETRIES_PER_GROUP = 2
@@ -41,6 +42,7 @@ def _build_slide_writer_send(
     group: SlideGroup,
     group_idx: int,
     session_id: str,
+    plan_generation: int = 0,
     rewrite_instructions: str = "",
     target_slide_numbers: list[int] | None = None,
 ) -> Send:
@@ -49,6 +51,7 @@ def _build_slide_writer_send(
         {
             "dispatch_id":        dispatch_id,
             "assignment_id":      assignment_id,
+            "plan_generation":   plan_generation,
             "chunk_ids":          _group_chunk_ids(group),
             "slide_blueprints":   _blueprints_as_dicts(group),
             "group_idx":          group_idx,
@@ -65,6 +68,7 @@ def _build_critic_send(*, dispatch_id: str, session_id: str, assignment: dict) -
         {
             "dispatch_id": dispatch_id,
             "assignment_id": assignment["assignment_id"],
+            "plan_generation": assignment["plan_generation"],
             "cycle_number": assignment["cycle_number"],
             "session_id": session_id,
             "check_type": assignment["check_type"],
@@ -114,6 +118,7 @@ class PlanExecutorAgent:
         slides_written:    list[dict]               = state.get("slides_written", [])
         critic_results:    list[dict]               = state.get("critic_results", [])
         review = dict(state.get("review") or {})
+        plan_generation = int(review.get("plan_generation", 0))
 
         if presentation_plan is None:
             raise ValueError("[PlanExecutor] No presentation_plan in state.")
@@ -124,6 +129,13 @@ class PlanExecutorAgent:
         active_dispatch = review.get("active_dispatch")
 
         if phase == "initial_write" and active_dispatch is None:
+            new_slide_numbers = [
+                bp.slide_number
+                for group in groups
+                for bp in group.slide_blueprints
+            ]
+            with ResearchDatabase() as research_db:
+                research_db.delete_slides_not_in(new_slide_numbers)
             self._logger.log(
                 f"[PlanExecutor] Initial dispatch — {len(groups)} group(s)"
             )
@@ -144,6 +156,7 @@ class PlanExecutorAgent:
                         group=group,
                         group_idx=idx,
                         session_id=session_id,
+                        plan_generation=plan_generation,
                     )
                 )
 
@@ -155,6 +168,7 @@ class PlanExecutorAgent:
                         "dispatch_id": dispatch_id,
                         "kind": "initial_write",
                         "cycle_number": 0,
+                        "plan_generation": plan_generation,
                         "expected_assignment_ids": [f"initial-g{idx}" for idx in range(len(groups))],
                     },
                 }
@@ -162,7 +176,13 @@ class PlanExecutorAgent:
             return Command(update={"review": review}, goto=sends)
 
         if phase == "initial_write" and active_dispatch is not None:
-            relevant = [entry for entry in slides_written if entry.get("dispatch_id") == active_dispatch["dispatch_id"]]
+            ag = active_dispatch.get("plan_generation", 0)
+            relevant = [
+                entry
+                for entry in slides_written
+                if entry.get("dispatch_id") == active_dispatch["dispatch_id"]
+                and entry.get("plan_generation", 0) == ag
+            ]
             if len(relevant) < len(active_dispatch["expected_assignment_ids"]):
                 return Command(update={})
             counts_by_group: dict[int, list[int]] = {}
@@ -188,6 +208,7 @@ class PlanExecutorAgent:
                                 group=groups[idx],
                                 group_idx=idx,
                                 session_id=session_id,
+                                plan_generation=ag,
                             )
                         )
                     else:
@@ -228,6 +249,7 @@ class PlanExecutorAgent:
                             "dispatch_id": dispatch_id,
                             "kind": "critic",
                             "cycle_number": review.get("cycle_number", 0),
+                            "plan_generation": plan_generation,
                             "expected_assignment_ids": [assignment["assignment_id"] for assignment in assignments],
                         },
                     }
@@ -235,9 +257,12 @@ class PlanExecutorAgent:
                 return Command(update={"review": review}, goto=sends)
 
             if active_dispatch:
+                adg = active_dispatch.get("plan_generation", 0)
                 relevant_results = [
-                    result for result in critic_results
+                    result
+                    for result in critic_results
                     if result.get("dispatch_id") == active_dispatch["dispatch_id"]
+                    and result.get("plan_generation", 0) == adg
                 ]
                 if len(relevant_results) < len(active_dispatch["expected_assignment_ids"]):
                     return Command(update={})
@@ -269,6 +294,7 @@ class PlanExecutorAgent:
                             group=groups[group_idx],
                             group_idx=group_idx,
                             session_id=session_id,
+                            plan_generation=plan_generation,
                             rewrite_instructions=assignment.get("rewrite_instructions", ""),
                             target_slide_numbers=assignment.get("target_slide_numbers", []),
                         )
@@ -280,6 +306,7 @@ class PlanExecutorAgent:
                             "dispatch_id": dispatch_id,
                             "kind": "rewrite",
                             "cycle_number": review.get("cycle_number", 0),
+                            "plan_generation": plan_generation,
                             "expected_assignment_ids": [assignment["assignment_id"] for assignment in assignments],
                         },
                     }
@@ -287,9 +314,12 @@ class PlanExecutorAgent:
                 return Command(update={"review": review}, goto=sends)
 
             if active_dispatch:
+                adg = active_dispatch.get("plan_generation", 0)
                 relevant_writes = [
-                    entry for entry in slides_written
+                    entry
+                    for entry in slides_written
                     if entry.get("dispatch_id") == active_dispatch["dispatch_id"]
+                    and entry.get("plan_generation", 0) == adg
                 ]
                 if len(relevant_writes) < len(active_dispatch["expected_assignment_ids"]):
                     return Command(update={})

@@ -25,6 +25,7 @@ from src.memory.research.database import ResearchDatabase
 
 class SlideWriterDispatch(TypedDict):
     """State payload delivered to each slide_writer node via Send()."""
+    plan_generation: int
     dispatch_id:            str
     assignment_id:          str
     chunk_ids:             List[str]   # group-wide union passed to the writer as shared working context
@@ -89,6 +90,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         self,
         error: Exception,
         *,
+        plan_generation: int,
         dispatch_id: str,
         assignment_id: str,
         group_idx: int,
@@ -100,6 +102,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         err_msg = f"[{tag}] FAILED: {err_str}"
         return Command(update={
             "slides_written": [{
+                "plan_generation": plan_generation,
                 "dispatch_id": dispatch_id,
                 "assignment_id": assignment_id,
                 "group_idx": group_idx,
@@ -238,6 +241,8 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
 
     def run(self, state: SlideWriterDispatch) -> Command:
         self._set_session_id(state)
+        self._set_plan_generation(state)
+        plan_generation      = int(state.get("plan_generation", 0))
         chunk_ids            = state.get("chunk_ids", [])
         slide_blueprints     = state.get("slide_blueprints", [])
         group_idx            = state.get("group_idx", 0)
@@ -253,6 +258,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
                 self._logger.log(f"[{tag}] No blueprints — skipping", level="warning")
                 return Command(update={
                     "slides_written": [{
+                        "plan_generation": plan_generation,
                         "dispatch_id": dispatch_id,
                         "assignment_id": assignment_id,
                         "group_idx": group_idx,
@@ -272,6 +278,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
                     self._logger.log(f"[{tag}] No matching target slides — skipping", level="warning")
                     return Command(update={
                         "slides_written": [{
+                            "plan_generation": plan_generation,
                             "dispatch_id": dispatch_id,
                             "assignment_id": assignment_id,
                             "group_idx": group_idx,
@@ -312,6 +319,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
                 self._logger.log(f"[{tag}] No retrieved artifacts available for writing", level="warning")
                 return Command(update={
                     "slides_written": [{
+                        "plan_generation": plan_generation,
                         "dispatch_id": dispatch_id,
                         "assignment_id": assignment_id,
                         "group_idx": group_idx,
@@ -378,6 +386,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
 
             return Command(update={
                 "slides_written": [{
+                    "plan_generation": plan_generation,
                     "dispatch_id": dispatch_id,
                     "assignment_id": assignment_id,
                     "group_idx": group_idx,
@@ -393,6 +402,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         except Exception as e:
             return self._failure(
                 e,
+                plan_generation=plan_generation,
                 dispatch_id=dispatch_id,
                 assignment_id=assignment_id,
                 group_idx=group_idx,

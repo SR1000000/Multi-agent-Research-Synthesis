@@ -205,6 +205,7 @@ class PresentationPlan(BaseModel):
 
 
 class ReviewAssignment(TypedDict):
+    plan_generation: int
     assignment_id: str
     cycle_number: int
     check_type: ReviewCheckType
@@ -221,10 +222,12 @@ class ActiveDispatch(TypedDict):
     dispatch_id: str
     kind: ReviewDispatchKind
     cycle_number: int
+    plan_generation: int
     expected_assignment_ids: List[str]
 
 
 class SlideWriteRecord(TypedDict):
+    plan_generation: int
     dispatch_id: str
     assignment_id: str
     group_idx: int
@@ -244,6 +247,7 @@ class CriticIssueRecord(TypedDict):
 
 
 class CriticResultRecord(TypedDict):
+    plan_generation: int
     dispatch_id: str
     assignment_id: str
     cycle_number: int
@@ -259,6 +263,7 @@ class CriticResultRecord(TypedDict):
 
 
 class ReviewCycleSummary(TypedDict):
+    plan_generation: int
     cycle_number: int
     issue_counts: dict[str, int]
     decision: str
@@ -269,6 +274,7 @@ class ReviewCycleSummary(TypedDict):
 class ReviewState(TypedDict):
     phase: ReviewPhase
     cycle_number: int
+    plan_generation: int
     max_cycles: int
     dispatch_counter: int
     active_dispatch: Optional[ActiveDispatch]
@@ -287,6 +293,7 @@ def make_initial_review_state(*, max_cycles: int = MAX_CYCLES) -> ReviewState:
     return {
         "phase": "initial_write",
         "cycle_number": 0,
+        "plan_generation": 0,
         "max_cycles": max_cycles,
         "dispatch_counter": 0,
         "active_dispatch": None,

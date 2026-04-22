@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from src.memory.research.database import ResearchDatabase
 from src.agents.base import BaseLLMAgent
-from src.state import MAX_CYCLES, ResearchState, ReviewAssignment
+from src.state import MAX_CYCLES, ResearchState, ReviewAssignment, make_initial_review_state
 
 
 # ---------------------------------------------------------------------------
@@ -81,12 +81,15 @@ def _all_actionable_issues_are_persistent_minor(
     return saw_issue
 
 
-def _build_group_assignments(*, plan, cycle_number: int) -> list[ReviewAssignment]:
+def _build_group_assignments(
+    *, plan, cycle_number: int, plan_generation: int
+) -> list[ReviewAssignment]:
     assignments: list[ReviewAssignment] = []
     for idx, group in enumerate(plan.slide_groups):
         target_slide_numbers = [bp.slide_number for bp in group.slide_blueprints]
         assignments.append(
             {
+                "plan_generation": plan_generation,
                 "assignment_id": f"critic-c{cycle_number}-g{idx}",
                 "cycle_number": cycle_number,
                 "check_type": "grounding_consistency",
@@ -126,7 +129,9 @@ def _short_reasoning(text: str, max_len: int = 240) -> str:
     return one_line[: max_len - 1] + "…"
 
 
-def _build_rewrite_assignments(*, plan, results: list[dict], cycle_number: int) -> list[ReviewAssignment]:
+def _build_rewrite_assignments(
+    *, plan, results: list[dict], cycle_number: int, plan_generation: int
+) -> list[ReviewAssignment]:
     assignments: list[ReviewAssignment] = []
     for result in results:
         group = plan.slide_groups[result["group_idx"]]
@@ -157,6 +162,7 @@ def _build_rewrite_assignments(*, plan, results: list[dict], cycle_number: int) 
 
         assignments.append(
             {
+                "plan_generation": plan_generation,
                 "assignment_id": f"rewrite-{result['assignment_id']}",
                 "cycle_number": cycle_number,
                 "check_type": result["check_type"],
@@ -184,17 +190,21 @@ class SupervisorAgent(BaseLLMAgent):
             raise ValueError("[Supervisor] No presentation_plan in state.")
 
         cycle_number = review.get("cycle_number", 0)
+        plan_generation = review.get("plan_generation", 0)
         phase = review.get("phase", "awaiting_supervisor")
         critic_results = [
             result
             for result in state.get("critic_results", [])
             if result.get("cycle_number") == cycle_number
+            and result.get("plan_generation", 0) == plan_generation
         ]
         severity_counts = _severity_counts(critic_results)
         rewrites_required = _rewrite_map(critic_results)
         history = []
         with ResearchDatabase() as research_db:
-            history = research_db.list_review_events(state["session_id"])
+            history = research_db.list_review_events(
+                state["session_id"], plan_generation=plan_generation
+            )
         recurring = {}
         for event in history:
             fingerprint = event.get("fingerprint")
@@ -218,6 +228,7 @@ class SupervisorAgent(BaseLLMAgent):
             if cycle_number >= review.get("max_cycles", MAX_CYCLES) and review.get("last_rewrite_assignment_ids"):
                 review.update({"final_decision": "accept", "export_ready": True, "phase": "complete"})
                 summary = {
+                    "plan_generation": plan_generation,
                     "cycle_number": cycle_number,
                     "issue_counts": review.get("last_issue_counts", {"critical": 0, "major": 0, "minor": 0}),
                     "decision": "accept",
@@ -237,7 +248,9 @@ class SupervisorAgent(BaseLLMAgent):
                     goto=END,
                 )
 
-            assignments = _build_group_assignments(plan=plan, cycle_number=next_cycle)
+            assignments = _build_group_assignments(
+                plan=plan, cycle_number=next_cycle, plan_generation=plan_generation
+            )
             review.update(
                 {
                     "cycle_number": next_cycle,
@@ -265,6 +278,7 @@ class SupervisorAgent(BaseLLMAgent):
             if cycle_number >= review.get("max_cycles", MAX_CYCLES):
                 review.update({"final_decision": "accept", "export_ready": True, "phase": "complete"})
                 summary = {
+                    "plan_generation": plan_generation,
                     "cycle_number": cycle_number,
                     "issue_counts": severity_counts,
                     "decision": "accept",
@@ -285,7 +299,9 @@ class SupervisorAgent(BaseLLMAgent):
                 )
 
             next_cycle = cycle_number + 1
-            assignments = _build_group_assignments(plan=plan, cycle_number=next_cycle)
+            assignments = _build_group_assignments(
+                plan=plan, cycle_number=next_cycle, plan_generation=plan_generation
+            )
             review.update(
                 {
                     "cycle_number": next_cycle,
@@ -298,6 +314,7 @@ class SupervisorAgent(BaseLLMAgent):
                 }
             )
             summary = {
+                "plan_generation": plan_generation,
                 "cycle_number": cycle_number,
                 "issue_counts": severity_counts,
                 "decision": "revise",
@@ -360,6 +377,7 @@ class SupervisorAgent(BaseLLMAgent):
 
 
         summary = {
+            "plan_generation": plan_generation,
             "cycle_number": cycle_number,
             "issue_counts": severity_counts,
             "decision": decision,
@@ -383,17 +401,21 @@ class SupervisorAgent(BaseLLMAgent):
         )
 
         if decision == "replan":
-            review.update({"final_decision": "replan", "export_ready": False, "phase": "complete"})
-            updates["review"] = review
+            old_plan_generation = review.get("plan_generation", 0)
             with ResearchDatabase() as research_db:
                 research_db.save_review_event(
                     session_id=state["session_id"],
                     cycle_number=cycle_number,
+                    plan_generation=old_plan_generation,
                     scope_type="deck",
                     scope_id="deck",
                     check_type="grounding_consistency",
                     decision="replan",
                 )
+            new_review = make_initial_review_state(max_cycles=review.get("max_cycles", MAX_CYCLES))
+            new_review["dispatch_counter"] = review.get("dispatch_counter", 0)
+            new_review["plan_generation"] = old_plan_generation + 1
+            updates["review"] = new_review
             return Command(update=updates, goto="planner")
 
         if decision == "accept":
@@ -403,6 +425,7 @@ class SupervisorAgent(BaseLLMAgent):
                 research_db.save_review_event(
                     session_id=state["session_id"],
                     cycle_number=cycle_number,
+                    plan_generation=plan_generation,
                     scope_type="deck",
                     scope_id="deck",
                     check_type="grounding_consistency",
@@ -414,6 +437,7 @@ class SupervisorAgent(BaseLLMAgent):
             plan=plan,
             results=actionable_results,
             cycle_number=cycle_number,
+            plan_generation=plan_generation,
         )
         self._logger.log(
             f"[supervisor] dispatch {len(rewrite_assignments)} slide rewriter(s): "

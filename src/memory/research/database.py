@@ -205,6 +205,60 @@ class ResearchDatabase(DatabaseProvider):
                         self._conn.execute(
                             "ALTER TABLE slide_review_events ADD COLUMN description TEXT;"
                         )
+                    if "plan_generation" not in review_event_columns:
+                        self._conn.execute(
+                            "ALTER TABLE slide_review_events "
+                            "ADD COLUMN plan_generation INTEGER NOT NULL DEFAULT 0;"
+                        )
+
+                rc_columns = [
+                    info["name"]
+                    for info in self._conn.execute("PRAGMA table_info(retrieved_chunks)").fetchall()
+                ]
+                if rc_columns and "plan_generation" not in rc_columns:
+                    self._conn.execute("ALTER TABLE retrieved_chunks RENAME TO retrieved_chunks_old;")
+                    self._conn.execute(CREATE_RETRIEVED_CHUNKS_TABLE)
+                    self._conn.execute(
+                        """
+                        INSERT INTO retrieved_chunks (
+                            row_id, session_id, call_id, kind, artifact_id, document_id, text_content,
+                            score, rank, strategy, retrieved_at, agent_type, query, plan_generation
+                        )
+                        SELECT
+                            row_id, session_id, call_id, kind, artifact_id, document_id, text_content,
+                            score, rank, strategy, retrieved_at, agent_type, query, 0
+                        FROM retrieved_chunks_old;
+                        """
+                    )
+                    self._conn.execute("DROP TABLE retrieved_chunks_old;")
+                    for idx_sql in (
+                        "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_session_id "
+                        "ON retrieved_chunks(session_id);",
+                        "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_call_id "
+                        "ON retrieved_chunks(call_id);",
+                        "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_session_call "
+                        "ON retrieved_chunks(session_id, call_id);",
+                    ):
+                        self._conn.execute(idx_sql)
+
+                # Per-plan columns must exist before these indexes (migrations add columns on old DBs).
+                sre_columns = [
+                    info["name"]
+                    for info in self._conn.execute("PRAGMA table_info(slide_review_events)").fetchall()
+                ]
+                if sre_columns and "plan_generation" in sre_columns:
+                    self._conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_slide_review_events_session_plan "
+                        "ON slide_review_events(session_id, plan_generation);"
+                    )
+                rcc_columns = [
+                    info["name"] for info in self._conn.execute("PRAGMA table_info(retrieved_chunks)").fetchall()
+                ]
+                if rcc_columns and "plan_generation" in rcc_columns:
+                    self._conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_session_plan "
+                        "ON retrieved_chunks(session_id, plan_generation);"
+                    )
             except Exception as e:
                 self._logger.log(f"[ResearchDatabase] Schema migration error: {e}")
         retrieval_ensure_artifact_search_index(self)
@@ -264,8 +318,13 @@ class ResearchDatabase(DatabaseProvider):
     def save_review_event(self, **kwargs) -> None:
         return slide.save_review_event(self, **kwargs)
 
-    def list_review_events(self, session_id: str) -> list[dict]:
-        return slide.list_review_events(self, session_id)
+    def list_review_events(
+        self, session_id: str, plan_generation: int | None = None
+    ) -> list[dict]:
+        return slide.list_review_events(self, session_id, plan_generation=plan_generation)
+
+    def delete_slides_not_in(self, slide_numbers: list[int]) -> None:
+        return slide.delete_slides_not_in(self, slide_numbers)
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -296,6 +355,7 @@ class ResearchDatabase(DatabaseProvider):
         query: str,
         strategy: str,
         agent_type: str,
+        plan_generation: int = 0,
     ) -> None:
         return retrieval_save_session_retrieval_batch(
             self,
@@ -305,6 +365,7 @@ class ResearchDatabase(DatabaseProvider):
             query,
             strategy,
             agent_type,
+            plan_generation=plan_generation,
         )
 
     def load_normalized_artifacts_for_keys(
@@ -317,8 +378,12 @@ class ResearchDatabase(DatabaseProvider):
     ) -> list[dict[str, Any]]:
         return retrieval_load_normalized_artifacts_for_call(self, session_id, call_id)
 
-    def load_normalized_artifacts_for_session(self, session_id: str) -> list[dict[str, Any]]:
-        return retrieval_load_normalized_artifacts_for_session(self, session_id)
+    def load_normalized_artifacts_for_session(
+        self, session_id: str, plan_generation: int | None = None
+    ) -> list[dict[str, Any]]:
+        return retrieval_load_normalized_artifacts_for_session(
+            self, session_id, plan_generation=plan_generation
+        )
 
     def load_retrieved_chunks(self, session_id: str | None = None) -> list[dict[str, Any]]:
         return retrieval_load_retrieved_chunks(self, session_id)

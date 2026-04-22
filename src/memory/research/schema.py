@@ -324,6 +324,7 @@ CREATE TABLE IF NOT EXISTS slide_review_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
     cycle_number INTEGER NOT NULL,
+    plan_generation INTEGER NOT NULL DEFAULT 0,
     scope_type TEXT NOT NULL,
     scope_id TEXT NOT NULL,
     check_type TEXT NOT NULL,
@@ -356,7 +357,8 @@ CREATE TABLE IF NOT EXISTS retrieved_chunks (
     retrieved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     agent_type TEXT,
     query TEXT,
-    UNIQUE(session_id, call_id, kind, artifact_id)
+    plan_generation INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(session_id, call_id, kind, artifact_id, plan_generation)
 );
 """
 
