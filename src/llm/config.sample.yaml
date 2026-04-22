@@ -37,6 +37,10 @@ router:
         - model: "gemini/gemini-3.1-flash-lite-preview"
           model_name: "slides"
           rpm: 15
+        - model: "gemini/gemini-3.1-flash-lite-preview"
+          model_name: "context"
+          order: 1
+          rpm: 15
           
         - model: "gemini/gemini-3.1-flash-lite-preview"
           rpm: 15
@@ -102,10 +106,7 @@ router:
       api_key: "os.environ/GEMINI_API_KEY"
       models:
         - model: "gemini/gemma-4-31b-it"
-          model_name: "image"
-          rpm: 15
-
-        - model: "gemini/gemma-4-31b-it"
+          model_name: "none"
           rpm: 15
 
     ollama_basic:
@@ -113,7 +114,7 @@ router:
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
         - model: "ollama/kimi-k2.6:cloud"
-          model_name: "image"
+          model_name: "none"
 
         - model: "ollama/gemma4:31b-cloud"
 
