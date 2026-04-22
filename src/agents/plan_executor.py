@@ -194,8 +194,22 @@ class PlanExecutorAgent:
                         exhausted_messages.append(_exhausted_group_message(groups[idx], idx))
                 if retries:
                     return Command(update={"messages": exhausted_messages}, goto=retries)
-            review.update({"phase": "awaiting_supervisor", "active_dispatch": None})
             total_slides = sum(max(counts_by_group.get(idx, [0])) for idx in range(len(groups)))
+            if state.get("skip_supervisor"):
+                review.update(
+                    {
+                        "phase": "complete",
+                        "active_dispatch": None,
+                        "export_ready": True,
+                        "final_decision": "skipped",
+                    }
+                )
+                msg = (
+                    f"[PlanExecutor] Initial write complete (supervisor skipped). "
+                    f"Total slides written: {total_slides}"
+                )
+                return Command(update={"review": review, "messages": [msg]}, goto=END)
+            review.update({"phase": "awaiting_supervisor", "active_dispatch": None})
             msg = f"[PlanExecutor] Initial write complete. Total slides written: {total_slides}"
             return Command(update={"review": review, "messages": [msg]}, goto="supervisor")
 

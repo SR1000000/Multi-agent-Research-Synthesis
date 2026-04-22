@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 import struct
 from dataclasses import asdict
 from pathlib import Path
 
+from src.memory.research.schema import ImageMetadata
 from src.processing.document.schema import (
     DocumentContext,
     ExtractionResult,
@@ -18,6 +20,36 @@ from src.processing.context.document import (
     document_context_from_json_text,
     document_context_to_json_text,
 )
+
+_IMG_TOKEN_RE = re.compile(r"\[\[img:([^\]]+)\]\]")
+
+
+def _parse_img_refs_from_text(text: str) -> list[str]:
+    return _IMG_TOKEN_RE.findall(text or "")
+
+
+def _image_aspect_ratio(bbox: dict | None) -> str:
+    if not bbox:
+        return "landscape"
+    w = bbox.get("width")
+    if w is None:
+        w = bbox.get("x2", 0) - bbox.get("x1", bbox.get("x", 0))
+    h = bbox.get("height")
+    if h is None:
+        h = bbox.get("y2", 0) - bbox.get("y1", bbox.get("y", 0))
+    try:
+        fw = float(w)
+        fh = float(h)
+    except (TypeError, ValueError):
+        return "landscape"
+    if fw <= 0 or fh <= 0:
+        return "landscape"
+    ratio = fw / fh
+    if ratio > 1.2:
+        return "landscape"
+    if ratio < 0.83:
+        return "portrait"
+    return "square"
 
 
 def _extracted_image_from_row(row) -> ExtractedImage:
@@ -347,6 +379,76 @@ def load_document(db, doc_id: str) -> ExtractionResult | None:
         paper_metadata=paper_metadata,
         document_context=document_context,
     )
+
+
+def get_images_for_chunks(db, chunk_ids: list[str]) -> list[ImageMetadata]:
+    """
+    Return ImageMetadata for images explicitly referenced by [[img:ID]] tokens
+    in chunk text. Only rows with embeddable data (storage_path or base64) are returned.
+    Order follows first-seen token order when walking chunk_ids in caller order.
+    """
+    if not chunk_ids:
+        return []
+
+    placeholders = ",".join(["?"] * len(chunk_ids))
+    rows = db._conn.execute(
+        f"SELECT id, text, contextualized_text FROM text_chunks WHERE id IN ({placeholders})",
+        chunk_ids,
+    ).fetchall()
+    rows_by_id = {row["id"]: row for row in rows}
+
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+    for cid in chunk_ids:
+        row = rows_by_id.get(cid)
+        if row is None:
+            continue
+        for token_source in (row["text"] or "", row["contextualized_text"] or ""):
+            for img_id in _parse_img_refs_from_text(token_source):
+                if img_id not in seen:
+                    seen.add(img_id)
+                    ordered_ids.append(img_id)
+
+    if not ordered_ids:
+        return []
+
+    img_placeholders = ",".join(["?"] * len(ordered_ids))
+    img_rows = db.connection.execute(
+        f"""
+        SELECT id, caption, vlm_caption, bbox
+        FROM images
+        WHERE id IN ({img_placeholders})
+          AND (
+            storage_path IS NOT NULL
+            OR (base64_data IS NOT NULL AND base64_data != '')
+          )
+        """,
+        ordered_ids,
+    ).fetchall()
+    by_img_id = {r["id"]: r for r in img_rows}
+
+    out: list[ImageMetadata] = []
+    for img_id in ordered_ids:
+        row = by_img_id.get(img_id)
+        if row is None:
+            db._logger.log(
+                f"[get_images_for_chunks] Skipping image id={img_id!r}: not in DB or not embeddable",
+                level="warning",
+            )
+            continue
+        bbox = json.loads(row["bbox"]) if row["bbox"] else None
+        keys = row.keys()
+        vlm = (row["vlm_caption"] or "") if "vlm_caption" in keys else ""
+        out.append(
+            ImageMetadata(
+                id=row["id"],
+                caption=row["caption"] or "",
+                vlm_caption=vlm,
+                aspect_ratio=_image_aspect_ratio(bbox),
+                bbox=bbox,
+            )
+        )
+    return out
 
 
 def get_image(db, image_id: str) -> ExtractedImage | None:

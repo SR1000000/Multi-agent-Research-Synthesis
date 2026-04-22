@@ -7,6 +7,7 @@ from typing import Any, Literal, TypedDict
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+from src.agents._image_utils import format_image_assets_block
 from src.agents.base import BaseLLMAgent, schema_prompt_contract
 from src.memory.research.database import ResearchDatabase
 from src.memory.research.schema import ProtoSlide
@@ -158,6 +159,28 @@ class SlideCriticAgent(BaseLLMAgent):
             if bp.get("slide_number") in set(slide_numbers)
         )
         slides_block = "\n\n".join(_format_slide(slide) for slide in slides) or "No slides found."
+        chunk_ids = state.get("chunk_ids", [])
+        baseline_chunks_block = ""
+        with ResearchDatabase() as research_db:
+            image_metadatas = research_db.get_images_for_chunks(chunk_ids)
+            if chunk_ids:
+                placeholders = ",".join(["?"] * len(chunk_ids))
+                rows = research_db.connection.execute(
+                    f"SELECT id, text, contextualized_text FROM text_chunks "
+                    f"WHERE id IN ({placeholders})",
+                    chunk_ids,
+                ).fetchall()
+                
+                rows_by_id = {row["id"]: row for row in rows}
+                ordered_texts = []
+                for chunk_id in chunk_ids:
+                    row = rows_by_id.get(chunk_id)
+                    if row:
+                        text = row["contextualized_text"] if row["contextualized_text"] else row["text"]
+                        ordered_texts.append(f"--- Chunk ID: {row['id']} ---\n{text}")
+                baseline_chunks_block = "\n\n".join(ordered_texts)
+
+        image_block = format_image_assets_block(image_metadatas)
         return "\n".join(
             [
                 f"Cycle: {state['cycle_number']}",
@@ -171,11 +194,19 @@ class SlideCriticAgent(BaseLLMAgent):
                 "CURRENT SLIDES:",
                 slides_block,
                 "",
-                "IN-SESSION RETRIEVAL LOG:",
+                "BASELINE SOURCE MATERIAL (Provided to writer):",
+                baseline_chunks_block or "(none)",
+                "",
+                "IN-SESSION RETRIEVAL LOG (Dynamically gathered by writer):",
                 retrieval_log or "(none)",
                 "",
-                "Review the slides against the document chunks retrieved by the writer. Treat that retrieved evidence as the source of truth for grounding checks.",
-                "If the retrieval log is missing support for a concrete claim on a slide, treat that as a grounding issue.",
+                "AVAILABLE IMAGE ASSETS:",
+                image_block or "(none)",
+                "",
+                "Identify only significant issues that break grounding, clarity, coherence, or the review criteria. "
+                "If no changes are needed, set actionable=false and issues=[].",
+                "Review the slides against the BASELINE SOURCE MATERIAL and IN-SESSION RETRIEVAL LOG. Treat this combined evidence as the source of truth for grounding checks.",
+                "If the combined evidence is missing support for a concrete claim on a slide, treat that as a grounding issue.",
                 "Identify only significant issues that break grounding, clarity, coherence, or the review criteria. If no changes are needed, set actionable=false and issues=[].",
                 "",
                 _critic_output_format(),

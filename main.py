@@ -26,6 +26,7 @@ from src.processing.embedder.provider import get_text_embedder
 from src.processing.context.contextualizer import Contextualizer, ContextConfig
 from src.processing.context.document import DocumentContextualizer, DocumentContextConfig
 from src.state import make_initial_review_state
+from src.state import MAX_CYCLES, make_initial_review_state
 
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "output"
 from src.retriever import Retriever
@@ -108,6 +109,12 @@ def _parse_args() -> argparse.Namespace:
         default=15,
         help="Soft target for number of slides (Planner may adjust based on content density; default: %(default)s)",
     )
+    parser.add_argument(
+        "--max-cycles",
+        type=int,
+        default=MAX_CYCLES,
+        help="Maximum number of critic/rewrite cycles (default: %(default)s)",
+    )
 
     parser.add_argument(
         "--object-store",
@@ -122,6 +129,12 @@ def _parse_args() -> argparse.Namespace:
         default=str(DEFAULT_OUTPUT_DIR),
         metavar="PATH",
         help="Directory where the generated PPTX will be written (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--skip-supervisor",
+        action="store_true",
+        default=False,
+        help="Skip supervisor/critic review cycles and export proto-slides directly via Pandoc",
     )
     return parser.parse_args()
 
@@ -259,9 +272,10 @@ def _build_initial_state(
         "doc_ids":           doc_ids,
         "paper_titles":      paper_titles,
         "max_slides":        args.max_slides,
+        "skip_supervisor":   args.skip_supervisor,
         "slide_numbers":     [],
         "presentation_plan": None,
-        "review":            make_initial_review_state(),
+        "review":            make_initial_review_state(max_cycles=args.max_cycles),
         "retrieval_queries": [],
         'tool_calls':       [],
         'tool_results':     [],
@@ -386,7 +400,7 @@ def main() -> None:
             # Use streaming to capture the state at each step, allowing us to recover logs if a crash occurs.
             for event in graph.stream(
                 initial_state,
-                config={"callbacks": callbacks},
+                config={"callbacks": callbacks, "recursion_limit": 100},
                 stream_mode="values",
             ):
                 final_state = event
@@ -428,6 +442,7 @@ def main() -> None:
                     db=db,
                     title=plan_title,
                     subtitle=plan_subtitle,
+                    object_store=object_store,
                 ).build()
                 print(f"\n[export] Presentation saved -> {out}")
             except ValueError as exc:

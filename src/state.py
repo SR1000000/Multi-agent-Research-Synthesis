@@ -2,9 +2,17 @@ import operator
 from typing import Annotated, TypedDict, List, Optional, Literal, Dict, Any
 from pydantic import BaseModel, Field
 
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
 # Persisted / planned content slides are numbered 1..N. The opening title slide is
 # not stored; it is added at export from presentation_plan.title/subtitle.
 FIRST_CONTENT_SLIDE_NUMBER = 1
+
+MAX_CYCLES = 2
 
 
 class ErrorRecord(TypedDict):
@@ -271,11 +279,11 @@ class ReviewState(TypedDict):
     last_issue_counts: dict[str, int]
     last_rewrites_required_by_assignment: dict[str, bool]
     last_failed_assignment_ids: List[str]
-    final_decision: Optional[Literal["accept", "replan"]]
+    final_decision: Optional[Literal["accept", "replan", "skipped"]]
     export_ready: bool
 
 
-def make_initial_review_state(*, max_cycles: int = 3) -> ReviewState:
+def make_initial_review_state(*, max_cycles: int = MAX_CYCLES) -> ReviewState:
     return {
         "phase": "initial_write",
         "cycle_number": 0,
@@ -311,6 +319,7 @@ class ResearchState(TypedDict):
     # -- slide coordination --
     max_slides:    int
     slide_numbers: List[int]
+    skip_supervisor: bool  # When True, bypass critic/supervisor cycles after initial write
 
 
     # -- presentation plan (set by Planner, read by Plan Executor + Slide Writers) --

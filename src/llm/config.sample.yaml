@@ -52,28 +52,33 @@ router:
         # Planner Tier 2: Nemotron 3 Super
         - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
           model_name: "planner"
-          order: 2
+          order: 1
         # Planner Tier 3: Elephant Alpha
-        - model: "openrouter/elephant-alpha"
+        - model: "openrouter/inclusionai/ling-2.6-flash:free"   # Iffy structured output, constantly fails validation
           model_name: "planner"
           order: 3
         # Critic first preference
         - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
           model_name: "critic"
+          order: 2
 
         - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
-        - model: "openrouter/elephant-alpha"
 
     ollama_high:
       api_key: "os.environ/OLLAMA_API_KEY"
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
         # Planner Tier 1: Qwen 3.5
-        - model: "ollama/qwen3.5:397b-cloud"
+        - model: "ollama/qwen3.5:397b-cloud" # LiteLLM recommends ollama_chat but doesn't work, presumably that's local-only
+          timeout: 240  # Increased from 180, Qwen 3.5 is slow
           model_name: "planner"
-          order: 1
-          timeout: 180
+          order: 2
           #- model: "ollama/glm-5.1:cloud"  # Often unavailable (524 error)
+        - model: "ollama/minimax-m2.7:cloud"
+          model_name: "critic"
+          order: 1
+
+        - model: "ollama/minimax-m2.7:cloud"
 
     gemini_basic:
       api_key: "os.environ/GEMINI_API_KEY"

@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from src.memory.research.database import ResearchDatabase
 from src.agents.base import BaseLLMAgent
-from src.state import ResearchState, ReviewAssignment
+from src.state import MAX_CYCLES, ResearchState, ReviewAssignment
 
 
 # ---------------------------------------------------------------------------
@@ -197,17 +197,17 @@ class SupervisorAgent(BaseLLMAgent):
         # launch or relaunch a critic cycle, not attempt acceptance from stale state.
         if not critic_results:
             next_cycle = max(1, cycle_number + 1)
-            if cycle_number >= review.get("max_cycles", 3) and review.get("last_rewrite_assignment_ids"):
-                review.update({"final_decision": "replan", "export_ready": False, "phase": "complete"})
+            if cycle_number >= review.get("max_cycles", MAX_CYCLES) and review.get("last_rewrite_assignment_ids"):
+                review.update({"final_decision": "accept", "export_ready": True, "phase": "complete"})
                 summary = {
                     "cycle_number": cycle_number,
                     "issue_counts": review.get("last_issue_counts", {"critical": 0, "major": 0, "minor": 0}),
-                    "decision": "replan",
-                    "routing": "planner",
+                    "decision": "accept",
+                    "routing": "END",
                     "rewrites_required_by_assignment": review.get("last_rewrites_required_by_assignment", {}),
                 }
                 self._logger.log(
-                    "[supervisor] replan: max critic cycles reached while rewrites were still pending "
+                    "[supervisor] accept: max critic cycles reached while rewrites were still pending; exporting partial deck "
                     f"(cycle {cycle_number})"
                 )
                 return Command(
@@ -216,7 +216,7 @@ class SupervisorAgent(BaseLLMAgent):
                         "review_summaries": [summary],
                         "messages": [json.dumps({"supervisor_cycle_summary": summary}, sort_keys=True)],
                     },
-                    goto="planner",
+                    goto=END,
                 )
 
             assignments = _build_group_assignments(plan=plan, cycle_number=next_cycle)
@@ -244,17 +244,17 @@ class SupervisorAgent(BaseLLMAgent):
         # If rewrites already ran for this cycle, the next step is another critic pass
         # over the updated slides rather than acceptance based on stale critic findings.
         if review.get("last_rewrite_assignment_ids"):
-            if cycle_number >= review.get("max_cycles", 3):
-                review.update({"final_decision": "replan", "export_ready": False, "phase": "complete"})
+            if cycle_number >= review.get("max_cycles", MAX_CYCLES):
+                review.update({"final_decision": "accept", "export_ready": True, "phase": "complete"})
                 summary = {
                     "cycle_number": cycle_number,
                     "issue_counts": severity_counts,
-                    "decision": "replan",
-                    "routing": "planner",
+                    "decision": "accept",
+                    "routing": "END",
                     "rewrites_required_by_assignment": rewrites_required,
                 }
                 self._logger.log(
-                    f"[supervisor] replan: max cycles after rewrite pass (cycle {cycle_number}, "
+                    f"[supervisor] accept: max cycles reached after rewrite pass; exporting partial deck (cycle {cycle_number}, "
                     f"counts={severity_counts})"
                 )
                 return Command(
@@ -263,7 +263,7 @@ class SupervisorAgent(BaseLLMAgent):
                         "review_summaries": [summary],
                         "messages": [json.dumps({"supervisor_cycle_summary": summary}, sort_keys=True)],
                     },
-                    goto="planner",
+                    goto=END,
                 )
 
             next_cycle = cycle_number + 1
@@ -301,7 +301,7 @@ class SupervisorAgent(BaseLLMAgent):
             )
 
         actionable_results = [r for r in critic_results if r.get("actionable")]
-        max_cycles = review.get("max_cycles", 3)
+        max_cycles = review.get("max_cycles", MAX_CYCLES)
 
         user = "\n".join(
             [
@@ -339,8 +339,7 @@ class SupervisorAgent(BaseLLMAgent):
                 decision = "revise"
         elif decision == "revise" and not actionable_results:
             decision = "accept"
-        if decision == "revise" and at_cycle_cap:
-            decision = "replan"
+
 
         summary = {
             "cycle_number": cycle_number,

@@ -93,6 +93,8 @@ class PptxBuilder:
         "quote":          (_LAYOUT_TITLE_AND_CONTENT, "quote"),
         "media_left":     (_LAYOUT_TWO_CONTENT,       "media_placeholder"),
         "media_right":    (_LAYOUT_TWO_CONTENT,       "media_placeholder"),
+        "media_top":      (_LAYOUT_TWO_CONTENT,       "media_placeholder"),
+        "media_bottom":   (_LAYOUT_TWO_CONTENT,       "media_placeholder"),
     }
 
     def __init__(
