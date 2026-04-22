@@ -300,13 +300,79 @@ def _heal_json(raw: str, schema: type[BaseModel]) -> str:
     return raw
 
 
+def inline_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
+    """Resolve all JSON Schema $ref pointers and remove $defs.
+
+    Pydantic generates $defs + $ref for nested models. Groq (and some other
+    providers) reject schemas containing $defs/$ref, so we inline every
+    reference before sending the schema to the provider.
+    """
+    defs = schema.get("$defs", {})
+
+    def _resolve(node: Any) -> Any:
+        if isinstance(node, dict):
+            if "$ref" in node:
+                # $ref is always "#/$defs/ModelName"
+                ref_name = node["$ref"].split("/")[-1]
+                resolved = defs.get(ref_name, node)
+                # Recursively resolve in case the target also has $refs
+                return _resolve(dict(resolved))
+            return {k: _resolve(v) for k, v in node.items() if k != "$defs"}
+        if isinstance(node, list):
+            return [_resolve(item) for item in node]
+        return node
+
+    return _resolve(schema)
+
+
+def enforce_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Patch every object node in an inlined schema for strict-mode compatibility.
+
+    Groq (and OpenAI strict mode) require:
+      - ``additionalProperties: false`` on every object
+      - Every key in ``properties`` must appear in ``required``
+
+    Pydantic's ``model_json_schema()`` omits both, so this pass adds them.
+    Fields with a ``default`` value are kept in ``required`` — strict mode
+    does not allow optional fields, but the model will still emit a value.
+    """
+    def _patch(node: Any) -> Any:
+        if isinstance(node, list):
+            return [_patch(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+
+        # Recurse first so nested objects are patched before we inspect them
+        patched: dict[str, Any] = {k: _patch(v) for k, v in node.items()}
+
+        if patched.get("type") == "object" and "properties" in patched:
+            props = patched["properties"]
+            # All declared properties must be required in strict mode
+            existing_required: list[str] = list(patched.get("required") or [])
+            all_keys = list(props.keys())
+            merged_required = existing_required + [k for k in all_keys if k not in existing_required]
+            patched["required"] = merged_required
+            patched["additionalProperties"] = False
+
+        return patched
+
+    return _patch(schema)
+
+
 def build_json_schema_response_format(schema: type[BaseModel]) -> dict[str, Any]:
-    """Build a LiteLLM/OpenAI-style JSON Schema response format payload."""
+    """Build a LiteLLM/OpenAI-style JSON Schema response format payload.
+
+    Calls inline_schema_refs() to resolve $defs/$ref and enforce_strict_schema()
+    to add the ``additionalProperties: false`` / ``required`` constraints that
+    Groq strict mode demands, before sending to the provider.
+    """
+    inlined = inline_schema_refs(schema.model_json_schema())
+    strict_schema = enforce_strict_schema(inlined)
     return {
         "type": "json_schema",
         "json_schema": {
             "name": schema.__name__,
-            "schema": schema.model_json_schema(),
+            "schema": strict_schema,
             "strict": True,
         },
     }

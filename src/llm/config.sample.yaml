@@ -12,7 +12,7 @@
 #
 # Current sample assumes free teir for Gemini, Ollama and OpenRouter.
 # Get available OpenRouter free models at https://openrouter.ai/collections/free-models (changes frequently).
-# See also https://github.com/mnfst/awesome-free-llm-apis (model lists likely outdated).  LiteLLM implements most of those.
+# See also https://github.com/mnfst/awesome-free-llm-apis (model lists likely outdated).  LiteLLM implements most of those (https://docs.litellm.ai/docs/providers).
 # A free OpenRouter account only gets 50 daily requests, adding minimum of 10 credits "verifies" your account and raises the daily limit to 1000 requests
 
 router:
@@ -37,6 +37,7 @@ router:
         - model: "gemini/gemini-3.1-flash-lite-preview"
           model_name: "slides"
           rpm: 15
+          
         - model: "gemini/gemini-3.1-flash-lite-preview"
           rpm: 15
           model_name: "fallback"
@@ -52,15 +53,15 @@ router:
         # Planner Tier 2: Nemotron 3 Super
         - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
           model_name: "planner"
-          order: 1
+          order: 2
         # Planner Tier 3: Elephant Alpha
         - model: "openrouter/inclusionai/ling-2.6-flash:free"   # Iffy structured output, constantly fails validation
           model_name: "planner"
           order: 3
-        # Critic first preference
-        - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+        # Critic preference
+        - model: "openrouter/inclusionai/ling-2.6-flash:free"
           model_name: "critic"
-          order: 2
+          order: 3
 
         - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
 
@@ -72,17 +73,38 @@ router:
         - model: "ollama/qwen3.5:397b-cloud" # LiteLLM recommends ollama_chat but doesn't work, presumably that's local-only
           timeout: 240  # Increased from 180, Qwen 3.5 is slow
           model_name: "planner"
-          order: 2
-          #- model: "ollama/glm-5.1:cloud"  # Often unavailable (524 error)
+          order: 1
         - model: "ollama/minimax-m2.7:cloud"
+          model_name: "critic"
+          order: 2
+
+        - model: "ollama/minimax-m2.7:cloud"
+        #- model: "ollama/glm-5.1:cloud"  # Often unavailable (524 error)
+
+    mistral:
+      api_key: "os.environ/MISTRAL_API_KEY"
+      models:
+        - model: "mistral/mistral-large-latest"  # 1 RPS
           model_name: "critic"
           order: 1
 
-        - model: "ollama/minimax-m2.7:cloud"
+        - model: "mistral/mistral-large-latest"  # 1 RPS, vision-capable
+        - model: "mistral/magistral-medium-2508"  # Reasoning. Does it support structured output?
+          rpm: 20
+
+    groq:
+      api_key: "os.environ/GROQ_API_KEY"
+      models:
+        - model: "groq/openai/gpt-oss-120b"   # 8K TPM input might be too restrictive
+        - model: "groq/llama-3.3-70b-versatile" # 12K TPM
 
     gemini_basic:
       api_key: "os.environ/GEMINI_API_KEY"
       models:
+        - model: "gemini/gemma-4-31b-it"
+          model_name: "image"
+          rpm: 15
+
         - model: "gemini/gemma-4-31b-it"
           rpm: 15
 
@@ -90,16 +112,19 @@ router:
       api_key: "os.environ/OLLAMA_API_KEY"
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
+        - model: "ollama/kimi-k2.6:cloud"
+          model_name: "image"
+
         - model: "ollama/gemma4:31b-cloud"
 
 #    openrouter_basic:
 #      api_key: "os.environ/OPENROUTER_API_KEY"
 #      api_base: "os.environ/OPENROUTER_BASE_URL"
 #      models:
-#        - model: "openrouter/openai/gpt-oss-120b:free"  # Does not support structured output
+#        - model: "openrouter/openai/gpt-oss-120b:free"  # Lots of validation errors, json_schema support?
 
   settings:
-    num_retries: 2
+    num_retries: 1
     retry_after: 5
     cooldown_time: 30
     enable_pre_call_checks: true
