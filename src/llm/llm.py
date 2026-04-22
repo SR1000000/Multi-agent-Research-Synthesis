@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import os
@@ -440,6 +441,53 @@ class LiteLLMProvider:
             raise LLMCallError(kw["model"], exc) from None
         self.last_model_used = getattr(resp, "model", None) or kw["model"]
         return resp.choices[0].message.content or ""
+
+    def batch_complete(
+        self,
+        messages_batch: list[list[dict]],
+        **kwargs,
+    ) -> list[str | Exception]:
+        if self._router is None:
+            raise RuntimeError("Router not initialized; call init_from_config() from main.")
+        if not messages_batch:
+            return []
+
+        kw: dict[str, Any] = {
+            **(self.config.litellm_params or {}),
+        }
+        t = kwargs.get("temperature", self.config.temperature)
+        mt = kwargs.get("max_tokens", self.config.max_tokens)
+        if t is not None:
+            kw["temperature"] = t
+        if mt is not None:
+            kw["max_tokens"] = mt
+
+        session_id = current_session_id.get()
+        if session_id:
+            existing_meta = kw.get("metadata") or {}
+            kw["metadata"] = {"session_id": session_id, **existing_meta}
+
+        alias = (self.config.model or DEFAULT_MODEL_NAME).strip()
+
+        try:
+            responses = asyncio.run(
+                self._router.abatch_completion_one_model_multiple_requests(
+                    model=alias,
+                    messages=messages_batch,
+                    **kw,
+                )
+            )
+        except Exception as exc:
+            raise LLMCallError(alias, exc) from None
+
+        parsed: list[str | Exception] = []
+        for response in responses:
+            if isinstance(response, Exception):
+                parsed.append(response)
+                continue
+            self.last_model_used = getattr(response, "model", None) or alias
+            parsed.append(response.choices[0].message.content or "")
+        return parsed
 
     def complete_with_tools(
         self,

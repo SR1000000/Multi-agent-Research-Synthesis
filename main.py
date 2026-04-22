@@ -22,6 +22,8 @@ from src.processing.export.pandoc_builder import PandocBuilder
 from src.processing.chunker import get_text_chunker
 from src.processing.document import DocProcessor
 from src.processing.embedder.provider import get_text_embedder
+from src.processing.context.contextualizer import Contextualizer, ContextConfig
+from src.processing.context.document import DocumentContextualizer, DocumentContextConfig
 from src.state import make_initial_review_state
 
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "output"
@@ -185,10 +187,21 @@ def _process_document(
     chunker_name      = _TEXT_SPLITTER_ALIASES[args.text_splitter]
 
     text_chunker = get_text_chunker(chunker_name) if chunker_name else None
+    contextualizer = Contextualizer(
+        config=ContextConfig(model="context"),
+        object_store=object_store,
+        logger=logger,
+    )
+    document_contextualizer = DocumentContextualizer(
+        config=DocumentContextConfig(model="context"),
+        logger=logger,
+    )
     processor = DocProcessor(
         backend=processor_backend,
         text_chunker=text_chunker,
         db=db,
+        contextualizer=contextualizer,
+        document_contextualizer=document_contextualizer,
         embedder=embedder,
         logger=logger,
         object_store=object_store,

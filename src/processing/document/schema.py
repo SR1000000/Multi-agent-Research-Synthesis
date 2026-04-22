@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Literal, TypeVar, Any
+from pydantic import BaseModel, Field
 
 
 @dataclass
@@ -146,6 +147,28 @@ class PaperMetadata:
     year: str | None = None
 
 
+class DocumentContextSubsection(BaseModel):
+    header: str = Field(description="The subsection heading from the paper.")
+    summary: str = Field(
+        description="A concise 1-4 sentence summary of the subsection's content."
+    )
+
+
+class DocumentContextSection(BaseModel):
+    header: str = Field(description="The top-level section heading from the paper.")
+    subsections: list[DocumentContextSubsection] = Field(
+        default_factory=list,
+        description="Subsections nested one level beneath this section. Do not exceed one level of depth.",
+    )
+
+
+class DocumentContext(BaseModel):
+    sections: list[DocumentContextSection] = Field(
+        default_factory=list,
+        description="Ordered top-level sections of the paper with at most one nested subsection level.",
+    )
+
+
 @dataclass
 class ExtractionResult:
     """The final output of the document processing pipeline."""
@@ -161,6 +184,7 @@ class ExtractionResult:
     run_id: str | None = None
     content_hash: str = ""
     paper_metadata: PaperMetadata | None = None
+    document_context: DocumentContext | None = None
     chunk_embeddings: list[list[float]] | None = None
     chunk_embedding_sources: list[str] | None = None
 

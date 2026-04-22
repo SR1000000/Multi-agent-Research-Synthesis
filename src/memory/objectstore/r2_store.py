@@ -60,6 +60,22 @@ class R2ObjectStore(ObjectStoreProvider):
 
         self._logger.log(f"R2ObjectStore initialized for bucket: {self._bucket_name}", level="info")
 
+    def _extract_object_key(self, location: str) -> str:
+        """Resolve a stable R2 object key from a stored key, public URL, or presigned URL."""
+        if not location:
+            raise ValueError("Object store location cannot be empty.")
+        if not location.startswith("http"):
+            return location.strip().lstrip("/")
+
+        parsed = urlparse(location)
+        path = parsed.path.lstrip("/")
+        if "r2.cloudflarestorage.com" in parsed.netloc:
+            parts = [part for part in path.split("/") if part]
+            if len(parts) >= 2 and parts[0] == self._bucket_name:
+                return "/".join(parts[1:])
+            return path
+        return path
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
@@ -127,6 +143,11 @@ class R2ObjectStore(ObjectStoreProvider):
             self._logger.log(f"Presigned URL generation failed: missing credentials for key '{key}'", level="error")
             raise
 
+    def generate_presigned_url_for_location(self, location: str, expiration: int = 3600) -> str:
+        """Generate a fresh presigned URL from a stored DB locator."""
+        object_key = self._extract_object_key(location)
+        return self.generate_presigned_url(object_key, expiration=expiration)
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
@@ -147,16 +168,7 @@ class R2ObjectStore(ObjectStoreProvider):
             FileNotFoundError: If object does not exist
             ClientError: If download fails after retries
         """
-        # Extract key from URL if a full URL is provided
-        object_key = key
-        if key.startswith("http"):
-            parsed = urlparse(key)
-            # R2 public URL format: https://pub-{bucket}.r2.dev/{key}
-            # We need to handle both public and presigned URLs potentially
-            if "r2.cloudflarestorage.com" in parsed.netloc: # For non-public R2 URLs
-                object_key = "/".join(parsed.path.split("/")[2:]) # This will depend on the exact URL structure
-            else: # For pub-bucket.r2.dev URLs
-                object_key = parsed.path.lstrip("/")
+        object_key = self._extract_object_key(key)
 
         try:
             response = self._client.get_object(

@@ -115,7 +115,8 @@ CREATE TABLE IF NOT EXISTS documents (
     run_id TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     schema TEXT,
-    paper_metadata TEXT
+    paper_metadata TEXT,
+    document_context TEXT
 );
 """
 
