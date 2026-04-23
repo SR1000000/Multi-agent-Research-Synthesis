@@ -5,6 +5,7 @@ from pptx import Presentation
 from pptx.util import Pt
 
 from src.memory.research.database import ResearchDatabase
+from src.util import sanitize_xml_text
 from src.memory.research.schema import BulletPoint, ProtoSlide, SlideContent
 
 # ── Layout name constants ─────────────────────────────────────────────────────
@@ -162,7 +163,6 @@ class PptxBuilder:
         slide = prs.slides.add_slide(layout)
 
         self._set_title(slide, content.title)
-        self._set_subtitle(slide, content.subtitle)
         self._set_body(slide, content, mode)
         self._set_speaker_notes(slide, content.speaker_notes)
 
@@ -178,14 +178,14 @@ class PptxBuilder:
     def _set_title(self, slide, title: str) -> None:
         title_shape = slide.shapes.title
         if title_shape is not None:
-            title_shape.text = title
+            title_shape.text = sanitize_xml_text(title)
 
     def _set_subtitle(self, slide, subtitle: str | None) -> None:
         if not subtitle:
             return
         for ph in slide.placeholders:
             if ph.placeholder_format.idx == 1:
-                ph.text = subtitle
+                ph.text = sanitize_xml_text(subtitle)
                 return
 
     def _set_body(self, slide, content: SlideContent, mode: str | None) -> None:
@@ -208,7 +208,7 @@ class PptxBuilder:
                 sub_para = tf.add_paragraph()
                 sub_para.level = 1
                 run = sub_para.add_run()
-                run.text = sub
+                run.text = sanitize_xml_text(sub)
                 if mode == "quote":
                     run.font.italic = True
 
@@ -229,7 +229,10 @@ class PptxBuilder:
         is applied to every run; bold_phrases styling is applied only to the
         matched segments.
         """
-        segments = _split_bold_runs(text, bullet.bold_phrases)
+        text = sanitize_xml_text(text)
+        bold_phrases = getattr(bullet, "bold_phrases", None) or []
+        bold_phrases = [sanitize_xml_text(p) for p in bold_phrases if isinstance(p, str)]
+        segments = _split_bold_runs(text, bold_phrases)
 
         for segment_text, is_bold in segments:
             run = para.add_run()
@@ -249,4 +252,4 @@ class PptxBuilder:
         if not notes:
             return
         notes_slide = slide.notes_slide
-        notes_slide.notes_text_frame.text = notes
+        notes_slide.notes_text_frame.text = sanitize_xml_text(notes)

@@ -50,7 +50,6 @@ class ImageMetadata(BaseModel):
 
 class SlideContent(BaseModel):
     title: str = Field(description="Punchy, active heading for the slide (e.g. 'Accuracy Jumps 40%' not 'Accuracy Results')")
-    subtitle: Optional[str] = Field(default=None, description="Optional subtitle, primarily for title slides and major section openers")
     key_message: str = Field(description="One sentence capturing what the audience should understand after this slide")
     bullets: List[BulletPoint] = Field(description="3-5 structured bullet points for the slide body")
     speaker_notes: str = Field(description="Speaker notes in a professional, conversational tone — include context and nuance too detailed for the slide itself")

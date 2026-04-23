@@ -8,6 +8,7 @@ from typing import List
 import pypandoc
 
 from src.logging.logger import AgentLogger
+from src.util import sanitize_xml_text
 from src.memory.objectstore.provider import ObjectStoreProvider
 from src.memory.research.database import ResearchDatabase
 from src.memory.research.schema import BulletPoint, ProtoSlide, SlideContent
@@ -30,7 +31,7 @@ def _media_alt_text(db: ResearchDatabase, media_id: str) -> str:
     if image is None:
         return ""
     alt = (image.caption or "").replace("\n", " ").replace("]", "").replace('"', "'").strip()
-    return alt[:500]
+    return sanitize_xml_text(alt[:500])
 
 
 def _resolve_image(
@@ -82,9 +83,9 @@ def _bullet_lines(content: SlideContent) -> List[str]:
 
 def _render_bullet(bullet: BulletPoint) -> List[str]:
     """Returns a list of Markdown lines for a single BulletPoint."""
-    lines = [f"- {bullet.text}"]
+    lines = [f"- {sanitize_xml_text(bullet.text)}"]
     for sub in bullet.sub_bullets:
-        lines.append(f"  - {sub}")
+        lines.append(f"  - {sanitize_xml_text(sub)}")
     return lines
 
 
@@ -97,11 +98,8 @@ def _render_slide(
     content: SlideContent = proto.content
     parts: List[str] = []
 
-    parts.append(f"# {content.title}")
+    parts.append(f"# {sanitize_xml_text(content.title)}")
     parts.append("")
-    if content.subtitle:
-        parts.append(f"## {content.subtitle}")
-        parts.append("")
 
     mid = content.media_id
     img_path = image_paths.get(mid) if mid else None
@@ -144,7 +142,7 @@ def _render_slide(
     if content.speaker_notes:
         parts.append("")
         parts.append("::: notes")
-        parts.append(content.speaker_notes)
+        parts.append(sanitize_xml_text(content.speaker_notes))
         parts.append(":::")
 
     return "\n".join(parts)
@@ -243,10 +241,10 @@ class PandocBuilder:
         """Renders the full deck as a Pandoc Markdown string."""
         yaml_header = ""
         if self._title:
-            title = self._title.replace('"', '\\"')
+            title = sanitize_xml_text(self._title).replace('"', '\\"')
             yaml_lines = ["---", f'title: "{title}"']
             if self._subtitle:
-                subtitle = self._subtitle.replace('"', '\\"')
+                subtitle = sanitize_xml_text(self._subtitle).replace('"', '\\"')
                 yaml_lines.append(f'subtitle: "{subtitle}"')
             yaml_lines.append("---")
             yaml_header = "\n".join(yaml_lines)
