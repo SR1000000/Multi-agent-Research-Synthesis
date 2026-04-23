@@ -22,7 +22,7 @@ router:
     - app: ["fallback"]
     - slides: ["fallback"]
     - critic: ["fallback", "app"]
-    - context: ["fallback", "context-vision"]
+    - context: ["context-vision", "fallback"]
     # - writer: ["fallback"]
     # - fast: ["fallback"]
 
@@ -41,6 +41,7 @@ router:
           rpm: 15
         - model: "gemini/gemini-3.1-flash-lite-preview"
           model_name: "context-vision"
+          max_parallel_requests: 2  
           rpm: 15
           
         - model: "gemini/gemini-3.1-flash-lite-preview"
@@ -70,7 +71,7 @@ router:
           model_name: "critic"
           order: 3
 
-        - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+        #- model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
 
     ollama_high:
       api_key: "os.environ/OLLAMA_API_KEY"
@@ -95,6 +96,7 @@ router:
           model_name: "critic"
           order: 1
         - model: "mistral/mistral-large-latest"  # 1 RPS, vision-capable
+          max_parallel_requests: 2
         - model: "mistral/magistral-medium-latest"  # Reasoning. Does it support structured output?
           rpm: 20
 
@@ -102,15 +104,18 @@ router:
       api_key: "os.environ/GROQ_API_KEY"
       models:
         - model: "groq/meta-llama/llama-4-scout-17b-16e-instruct"
-          model_name: "context-vision"
+          model_name: "context-vision" 
+          max_parallel_requests: 2
           tpm: 30000
         - model: "groq/llama-3.3-70b-versatile"
           model_name: "context"
+          max_parallel_requests: 1
           tpm: 12000
 
         #- model: "groq/openai/gpt-oss-120b"   # 8K TPM input too restrictive
         #  tpm: 8000
         - model: "groq/llama-3.3-70b-versatile"
+          max_parallel_requests: 1  
           tpm: 12000
     
     mistral_basic:
@@ -133,11 +138,13 @@ router:
       api_key: "os.environ/GEMINI_API_KEY"
       models:
         - model: "gemini/gemma-4-31b-it"
-          model_name: "context-vision-disabled"
+          model_name: "context-vision"
+          max_parallel_requests: 2
           order: 1
           rpm: 15
         - model: "gemini/gemma-3-27b-it"
           model_name: "context-vision"
+          max_parallel_requests: 2
           order: 1
           rpm: 15
         - model: "gemini/gemini-3-flash-preview"
@@ -168,13 +175,13 @@ router:
           max_parallel_requests: 2   
         - model: "ollama/qwen3-vl:235b-instruct-cloud"
           model_name: "context-vision" 
-          max_parallel_requests: 2   
+          max_parallel_requests: 2
         - model: "ollama/qwen3-vl:235b-cloud"
           model_name: "context-vision" 
-          max_parallel_requests: 2   
+          max_parallel_requests: 2
         - model: "ollama/gemini-3-flash-preview:cloud"
           model_name: "context-vision" 
-          max_parallel_requests: 2   
+          max_parallel_requests: 2
           
         - model: "ollama/gemma4:31b-cloud" 
           max_parallel_requests: 3   
@@ -185,14 +192,19 @@ router:
       models:
         - model: "openrouter/google/gemma-4-26b-a4b-it:free"
           model_name: "context-vision"
+          max_parallel_requests: 2
         - model: "openrouter/google/gemma-4-31b-it:free"
           model_name: "context-vision"
+          max_parallel_requests: 2
         - model: "openrouter/google/gemma-3-4b-it:free"
           model_name: "context-vision"
+          max_parallel_requests: 2
         - model: "openrouter/google/gemma-3-12b-it:free"
           model_name: "context-vision"
+          max_parallel_requests: 2
         - model: "openrouter/google/gemma-3-27b-it:free"
           model_name: "context-vision"
+          max_parallel_requests: 2
         - model: "openrouter/nvidia/nemotron-nano-12b-v2-vl:free"
           model_name: "context"
         - model: "openrouter/openai/gpt-oss-120b:free"  # Lots of validation errors, json_schema support?
@@ -200,7 +212,7 @@ router:
 
   settings:
     num_retries: 1
-    retry_after: 15
+    retry_after: 5
     cooldown_time: 30
     enable_pre_call_checks: true
     timeout: 120

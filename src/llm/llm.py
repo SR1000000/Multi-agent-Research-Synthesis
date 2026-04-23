@@ -136,9 +136,11 @@ def build_litellm_model_list(
                 effective_alias = default_alias
             
             out_row = {"model_name": effective_alias, "litellm_params": merged}
-            for key in ["rpm", "tpm", "tps", "weight", "max_parallel_requests"]:
+            # Keep rpm/tpm/weight/max_parallel_requests inside litellm_params (LiteLLM reads them
+            # there). Mirror at deployment top level for inspection / forward-compat only.
+            for key in ["rpm", "tpm", "weight", "max_parallel_requests"]:
                 if key in merged:
-                    out_row[key] = merged.pop(key)
+                    out_row[key] = merged[key]
             out.append(out_row)
     return out
 
