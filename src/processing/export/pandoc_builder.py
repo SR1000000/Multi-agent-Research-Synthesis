@@ -29,7 +29,7 @@ def _media_alt_text(db: ResearchDatabase, media_id: str) -> str:
     image = db.get_image(media_id)
     if image is None:
         return ""
-    alt = (image.vlm_caption or image.caption or "").replace("\n", " ").replace("]", "").strip()
+    alt = (image.caption or "").replace("\n", " ").replace("]", "").replace('"', "'").strip()
     return alt[:500]
 
 
@@ -108,13 +108,14 @@ def _render_slide(
     layout = content.layout
     alt = _media_alt_text(db, mid) if mid else ""
     img_uri = img_path.resolve().as_uri() if img_path else ""
+    img_md = f'![]({img_uri}){{alt="{alt}"}}' if img_path and img_uri else ""
 
     bullet_lines = _bullet_lines(content)
 
     if img_path and img_uri and layout == "media_left":
         parts.append(":::: {.columns}")
         parts.append("::: {.column width=\"40%\"}")
-        parts.append(f"![{alt}]({img_uri})")
+        parts.append(img_md)
         parts.append(":::")
         parts.append("::: {.column width=\"60%\"}")
         parts.extend(bullet_lines)
@@ -126,17 +127,17 @@ def _render_slide(
         parts.extend(bullet_lines)
         parts.append(":::")
         parts.append("::: {.column width=\"40%\"}")
-        parts.append(f"![{alt}]({img_uri})")
+        parts.append(img_md)
         parts.append(":::")
         parts.append("::::")
     elif img_path and img_uri and layout == "media_top":
-        parts.append(f"![{alt}]({img_uri})")
+        parts.append(img_md)
         parts.append("")
         parts.extend(bullet_lines)
     elif img_path and img_uri and layout == "media_bottom":
         parts.extend(bullet_lines)
         parts.append("")
-        parts.append(f"![{alt}]({img_uri})")
+        parts.append(img_md)
     else:
         parts.extend(bullet_lines)
 

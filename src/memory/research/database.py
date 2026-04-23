@@ -117,7 +117,13 @@ class ResearchDatabase(DatabaseProvider):
         load_sqlite_vec_extension(self._conn)
 
     def setup(self) -> None:
-        """Creates tables and indexes."""
+        """Creates tables and indexes.
+
+        The ALTER TABLE migration block below is a temporary measure to keep
+        existing development databases usable as the schema evolves. It will
+        not be present in the final build — schema versioning or a clean
+        migration tool will replace it.
+        """
         statements = [
             CREATE_DOCUMENTS_TABLE,
             CREATE_IMAGES_TABLE,

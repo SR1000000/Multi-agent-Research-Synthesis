@@ -22,7 +22,7 @@ router:
     - app: ["fallback"]
     - slides: ["fallback"]
     - critic: ["fallback", "app"]
-    - context: ["fallback", context-vision]
+    - context: ["fallback", "context-vision"]
     # - writer: ["fallback"]
     # - fast: ["fallback"]
 
@@ -133,7 +133,7 @@ router:
       api_key: "os.environ/GEMINI_API_KEY"
       models:
         - model: "gemini/gemma-4-31b-it"
-          model_name: "context-vision"
+          model_name: "context-vision-disabled"
           order: 1
           rpm: 15
         - model: "gemini/gemma-3-27b-it"
@@ -155,21 +155,29 @@ router:
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
         - model: "ollama/gemma4:31b-cloud"
-          model_name: "context-vision"        
+          model_name: "context-vision"  
+          max_parallel_requests: 2      
         - model: "ollama/gemma3:4b-cloud"
-          model_name: "context"
+          model_name: "context" 
+          max_parallel_requests: 2   
         - model: "ollama/gemma3:12b-cloud"
-          model_name: "context"
+          model_name: "context" 
+          max_parallel_requests: 2   
         - model: "ollama/gemma3:27b-cloud"
-          model_name: "context"
+          model_name: "context" 
+          max_parallel_requests: 2   
         - model: "ollama/qwen3-vl:235b-instruct-cloud"
-          model_name: "context-vision"
+          model_name: "context-vision" 
+          max_parallel_requests: 2   
         - model: "ollama/qwen3-vl:235b-cloud"
-          model_name: "context-vision"
+          model_name: "context-vision" 
+          max_parallel_requests: 2   
         - model: "ollama/gemini-3-flash-preview:cloud"
-          model_name: "context-vision"
+          model_name: "context-vision" 
+          max_parallel_requests: 2   
           
-        - model: "ollama/gemma4:31b-cloud"
+        - model: "ollama/gemma4:31b-cloud" 
+          max_parallel_requests: 3   
 
     openrouter_basic:
       api_key: "os.environ/OPENROUTER_API_KEY"
