@@ -22,6 +22,7 @@ router:
     - app: ["fallback"]
     - slides: ["fallback"]
     - critic: ["fallback", "app"]
+    - context: ["fallback", context-vision]
     # - writer: ["fallback"]
     # - fast: ["fallback"]
 
@@ -32,12 +33,14 @@ router:
       models:
         # ``default_model_name`` (``app``): Supervisor and any agent that omits ``model=``.
         - model: "gemini/gemini-3.1-flash-lite-preview"
-          model_name: "slides"
           model_name: "app"
           rpm: 15
         - model: "gemini/gemini-3.1-flash-lite-preview"
-          model_name: "context"
-          order: 1
+          model_name: "slides"
+          order: 2
+          rpm: 15
+        - model: "gemini/gemini-3.1-flash-lite-preview"
+          model_name: "context-vision"
           rpm: 15
           
         - model: "gemini/gemini-3.1-flash-lite-preview"
@@ -59,6 +62,9 @@ router:
         - model: "openrouter/inclusionai/ling-2.6-flash:free"   # Iffy structured output, constantly fails validation
           model_name: "planner"
           order: 3
+        - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+          model_name: "slides"
+          order: 1
         # Critic preference
         - model: "openrouter/inclusionai/ling-2.6-flash:free"
           model_name: "critic"
@@ -89,31 +95,58 @@ router:
           model_name: "critic"
           order: 1
         - model: "mistral/mistral-large-latest"  # 1 RPS, vision-capable
-        - model: "mistral/magistral-medium-2508"  # Reasoning. Does it support structured output?
+        - model: "mistral/magistral-medium-latest"  # Reasoning. Does it support structured output?
           rpm: 20
 
     groq:
       api_key: "os.environ/GROQ_API_KEY"
       models:
-        - model: "groq/openai/gpt-oss-120b"   # 8K TPM input might be too restrictive
-        - model: "groq/llama-3.3-70b-versatile" # 12K TPM
+        - model: "groq/meta-llama/llama-4-scout-17b-16e-instruct"
+          model_name: "context-vision"
+          tpm: 30000
+        - model: "groq/llama-3.3-70b-versatile"
+          model_name: "context"
+          tpm: 12000
+
+        #- model: "groq/openai/gpt-oss-120b"   # 8K TPM input too restrictive
+        #  tpm: 8000
+        - model: "groq/llama-3.3-70b-versatile"
+          tpm: 12000
     
     mistral_basic:
       api_key: "os.environ/MISTRAL_API_KEY"
       models:      
         - model: "mistral/mistral-medium-latest"
-          model_name: "context"
+          model_name: "context-vision"
         - model: "mistral/mistral-small-latest"
-          model_name: "context"
-
-
+          model_name: "context-vision"
+        - model: "mistral/mistral-small-2506"
+          model_name: "context-vision"
+        - model: "mistral/ministral-14b-2512"
+          model_name: "context-vision"
+        - model: "mistral/ministral-8b-2512"
+          model_name: "context-vision"
+        - model: "mistral/ministral-3b-2512"
+          model_name: "context-vision"
+          
     gemini_basic:
       api_key: "os.environ/GEMINI_API_KEY"
       models:
         - model: "gemini/gemma-4-31b-it"
-          model_name: "context"
+          model_name: "context-vision"
+          order: 1
           rpm: 15
-          
+        - model: "gemini/gemma-3-27b-it"
+          model_name: "context-vision"
+          order: 1
+          rpm: 15
+        - model: "gemini/gemini-3-flash-preview"
+          model_name: "context-vision"
+        - model: "gemini/gemini-2.5-flash"
+          model_name: "context-vision"
+        - model: "gemini/gemini-2.5-flash-lite"
+          model_name: "context-vision"
+
         - model: "gemini/gemma-4-31b-it"
           rpm: 15
 
@@ -122,31 +155,45 @@ router:
       api_base: "os.environ/OLLAMA_BASE_URL"
       models:
         - model: "ollama/gemma4:31b-cloud"
+          model_name: "context-vision"        
+        - model: "ollama/gemma3:4b-cloud"
+          model_name: "context"
+        - model: "ollama/gemma3:12b-cloud"
+          model_name: "context"
+        - model: "ollama/gemma3:27b-cloud"
+          model_name: "context"
+        - model: "ollama/qwen3-vl:235b-instruct-cloud"
+          model_name: "context-vision"
+        - model: "ollama/qwen3-vl:235b-cloud"
+          model_name: "context-vision"
+        - model: "ollama/gemini-3-flash-preview:cloud"
+          model_name: "context-vision"
+          
+        - model: "ollama/gemma4:31b-cloud"
 
     openrouter_basic:
       api_key: "os.environ/OPENROUTER_API_KEY"
       api_base: "os.environ/OPENROUTER_BASE_URL"
       models:
         - model: "openrouter/google/gemma-4-26b-a4b-it:free"
-          model_name: "context"
+          model_name: "context-vision"
         - model: "openrouter/google/gemma-4-31b-it:free"
-          model_name: "context"
+          model_name: "context-vision"
         - model: "openrouter/google/gemma-3-4b-it:free"
-          model_name: "context"
+          model_name: "context-vision"
         - model: "openrouter/google/gemma-3-12b-it:free"
-          model_name: "context"
+          model_name: "context-vision"
         - model: "openrouter/google/gemma-3-27b-it:free"
-          model_name: "context"
-        - model: "openrouter/nvidia/llama-nemotron-embed-vl-1b-v2:free"
-          model_name: "context"
+          model_name: "context-vision"
         - model: "openrouter/nvidia/nemotron-nano-12b-v2-vl:free"
           model_name: "context"
-        #- model: "openrouter/openai/gpt-oss-120b:free"  # Lots of validation errors, json_schema support?
+        - model: "openrouter/openai/gpt-oss-120b:free"  # Lots of validation errors, json_schema support?
+          model_name: "context"
 
   settings:
     num_retries: 1
-    retry_after: 5
+    retry_after: 15
     cooldown_time: 30
     enable_pre_call_checks: true
     timeout: 120
-    routing_strategy: "usage-based-routing"
+    routing_strategy: "least-busy"

@@ -136,6 +136,12 @@ def _parse_args() -> argparse.Namespace:
         default=False,
         help="Skip supervisor/critic review cycles and export proto-slides directly via Pandoc",
     )
+    parser.add_argument(
+        "--no-cache-control",
+        action="store_true",
+        default=False,
+        help="Disable prompt cache_control sent to the LLM provider (contextualizer)",
+    )
     return parser.parse_args()
 
 
@@ -202,7 +208,10 @@ def _process_document(
 
     text_chunker = get_text_chunker(chunker_name) if chunker_name else None
     contextualizer = Contextualizer(
-        config=ContextConfig(model="context"),
+        config=ContextConfig(
+            model="context",
+            cache_control=not args.no_cache_control,
+        ),
         object_store=object_store,
         logger=logger,
     )
