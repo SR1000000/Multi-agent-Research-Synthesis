@@ -6,7 +6,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from src.llm import get_llm, LLMConfig
+from src.llm import get_llm, LLMConfig, LiteLLMProvider
 from src.logging.logger import AgentLogger
 
 from .prompts import ARTIFACT_CONTEXT_PROMPT, CHUNK_CONTEXT_PROMPT
@@ -23,14 +23,18 @@ class ContextConfig:
     Attributes:
         model: Model identifier for contextualization (default: "context" alias from config.yaml)
                Uses light, cheap, multimodal models: gemini-2.0-flash, gemini-2.5-flash-lite
+        vision_model: Router alias for image contextualization (default: "context-vision").
         skip_chunk_token_threshold: Minimum token count to skip contextualization for short chunks with sufficient headings
         max_concurrency: Reserved; batch requests currently run sequentially to avoid provider overload
         batch_size: Number of items to process in each batch
+        cache_control: If True, attach LiteLLM ``cache_control`` to the system block on supported calls.
     """
     model: str = "context"
+    vision_model: str = "context-vision"
     skip_chunk_token_threshold: int = 120
     max_concurrency: int = 1
-    batch_size: int = 20      # Items per batch
+    batch_size: int = 10      # Items per batch
+    cache_control: bool = True
 
 
 DEFAULT_CONTEXT_CONFIG = ContextConfig()
@@ -40,8 +44,9 @@ class Contextualizer:
     """
     Handles document contextualization using LiteLLM.
 
-    Supports implicit caching via LiteLLM's cache_control for providers that support it
-    (Anthropic, Gemini). Add cache_control to system message parts in _generate() if needed.
+    Optional implicit caching: when ``config.cache_control`` is True, attaches
+    LiteLLM's ``cache_control`` on the system text block for providers that support it
+    (e.g. Anthropic, some Gemini models).
     """
     def __init__(
         self,
@@ -55,15 +60,25 @@ class Contextualizer:
             model=config.model,
         )
         self._object_store = object_store
-        self._llm = None
+        self._llm: LiteLLMProvider | None = None
         try:
             self._llm = get_llm(config=self._llm_config)
         except Exception as e:
             self._logger.log(
                 f"Failed to initialize contextualizer LLM for model alias '{config.model}': {e}. "
-                "Contextualizer will return original text/captions.",
+                "Text and non-image artifacts will use raw content; images may still use the vision model.",
                 level="warning",
             )
+        self._vision_llm: LiteLLMProvider | None = None
+        try:
+            self._vision_llm = get_llm(LLMConfig(model=config.vision_model))
+        except Exception as e:
+            self._logger.log(
+                f"Failed to initialize vision contextualizer LLM for model alias '{config.vision_model}': {e}. "
+                "Image contextualization will fall back to the text context model if available.",
+                level="warning",
+            )
+        self._use_cache_control: bool = config.cache_control
         self._image_uploader: ImageUploader | None = None
         if object_store is not None:
             self._image_uploader = ImageUploader(object_store)
@@ -80,12 +95,14 @@ class Contextualizer:
                         f"chunk_contextualization chunk_id={chunk.id} chunk_type=text_chunk status=passed",
                         level="info",
                     )
-                for image in result.images:
-                    image.contextualized_text = image.caption
                 for table in result.tables:
                     table.contextualized_text = table.content
                 for equation in result.equations:
                     equation.contextualized_text = equation.latex_or_text
+                return result
+            if self._vision_llm is None:
+                for image in result.images:
+                    image.contextualized_text = image.caption
                 return result
 
             chunks_todo = [c for c in result.source_chunks if not c.contextualized_text]
@@ -122,8 +139,47 @@ class Contextualizer:
         multimodal_items = [a for a in artifacts_todo if isinstance(a, ExtractedImage)]
         other_artifacts = [a for a in artifacts_todo if not isinstance(a, ExtractedImage)]
 
+        # Process multimodal items (images) in batches first
+        vision_llm = self._vision_llm or self._llm
+        if multimodal_items and not self._multimodal_disabled and vision_llm is not None:
+            multimodal_batches = self._create_batches(multimodal_items, self.config.batch_size)
+
+            async def process_multimodal_batch(batch):
+                payloads = []
+                for item in batch:
+                    text_before, text_after = self._find_surrounding_chunks(item.page, source_chunks)
+                    payload = self._build_multimodal_payload(item, markdown, text_before, text_after)
+                    payloads.append(payload)
+
+                results = await vision_llm.batch_complete(
+                    payloads
+                )
+
+                for i, result_str in enumerate(results):
+                    item = batch[i]
+                    if isinstance(result_str, Exception):
+                        self._logger.log(f"Failed to contextualize image {item.id}: {result_str}", level="error")
+                        item.contextualized_text = item.caption
+                    else:
+                        validated = self._validate_contextualized_text(result_str)
+                        item.contextualized_text = validated or item.caption
+
+            for i, batch in enumerate(multimodal_batches):
+                try:
+                    await process_multimodal_batch(batch)
+                except Exception as exc:
+                    self._logger.log(f"Image batch contextualization failed: {exc}", level="error")
+
         # Process text items (chunks, tables, equations) in batches
-        if text_items or other_artifacts:
+        if (text_items or other_artifacts) and self._llm is None:
+            all_text_items = text_items + other_artifacts
+            for item in all_text_items:
+                if isinstance(item, ExtractedChunk):
+                    item.contextualized_text = item.text
+                else:
+                    item.contextualized_text = self._get_artifact_content(item)
+
+        if (text_items or other_artifacts) and self._llm is not None:
             all_text_items = text_items + other_artifacts
             text_batches = self._create_batches(all_text_items, self.config.batch_size)
 
@@ -172,36 +228,6 @@ class Contextualizer:
                 except Exception as exc:
                     self._logger.log(f"Text batch contextualization failed: {exc}", level="error")
 
-        # Process multimodal items (images) in batches
-        if multimodal_items and not self._multimodal_disabled:
-            multimodal_batches = self._create_batches(multimodal_items, self.config.batch_size)
-
-            async def process_multimodal_batch(batch):
-                payloads = []
-                for item in batch:
-                    text_before, text_after = self._find_surrounding_chunks(item.page, source_chunks)
-                    payload = self._build_multimodal_payload(item, markdown, text_before, text_after)
-                    payloads.append(payload)
-
-                results = await self._llm.batch_complete(
-                    payloads
-                )
-
-                for i, result_str in enumerate(results):
-                    item = batch[i]
-                    if isinstance(result_str, Exception):
-                        self._logger.log(f"Failed to contextualize image {item.id}: {result_str}", level="error")
-                        item.contextualized_text = item.caption
-                    else:
-                        validated = self._validate_contextualized_text(result_str)
-                        item.contextualized_text = validated or item.caption
-
-            for i, batch in enumerate(multimodal_batches):
-                try:
-                    await process_multimodal_batch(batch)
-                except Exception as exc:
-                    self._logger.log(f"Image batch contextualization failed: {exc}", level="error")
-
     def _create_batches(self, items: list, batch_size: int) -> list[list]:
         """Split items into batches of specified size."""
         if not items:
@@ -248,10 +274,11 @@ class Contextualizer:
             }
         ]
 
-        try:
-            messages[0]["content"][0]["cache_control"] = {"type": "ephemeral"}
-        except (IndexError, KeyError):
-            pass  # Fallback if cache_control is not supported
+        if self._use_cache_control:
+            try:
+                messages[0]["content"][0]["cache_control"] = {"type": "ephemeral"}
+            except (IndexError, KeyError):
+                pass  # Fallback if cache_control is not supported
 
         return messages
 
@@ -279,10 +306,11 @@ class Contextualizer:
             }
         ]
 
-        try:
-            messages[0]["content"][0]["cache_control"] = {"type": "ephemeral"}
-        except (IndexError, KeyError):
-            pass  # Fallback if cache_control is not supported
+        if self._use_cache_control:
+            try:
+                messages[0]["content"][0]["cache_control"] = {"type": "ephemeral"}
+            except (IndexError, KeyError):
+                pass  # Fallback if cache_control is not supported
 
         return messages
 
@@ -308,7 +336,16 @@ class Contextualizer:
             if upload_url:
                 return upload_url
 
-        return image.storage_path or ""
+        candidate = image.storage_path or ""
+        if candidate.startswith(("http://", "https://", "data:")):
+            return candidate
+
+        # Local path: build a data URI from the already-extracted image bytes.
+        if image.base64_data:
+            mime_type = image.mime_type or "image/jpeg"
+            return f"data:{mime_type};base64,{image.base64_data.strip()}"
+
+        return ""  # empty → _build_multimodal_payload falls back to text-only
 
     def _build_multimodal_payload(self, image: ExtractedImage, document_markdown: str | None, text_before: str, text_after: str) -> list[dict]:
         """Build the message payload for an image."""

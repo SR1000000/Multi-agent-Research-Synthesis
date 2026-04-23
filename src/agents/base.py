@@ -36,6 +36,10 @@ class StructuredOutputResult:
 
 # ---------------------------------------------------------------------------
 # Active agent role prompts
+# TODO: These prompts should be moved to their respective agent files
+# (e.g. planner.py, critic.py, slide_writer.py) and imported here or
+# referenced directly. Keeping them centralised here is a temporary
+# convenience during early development.
 # ---------------------------------------------------------------------------
 
 PLANNER_ROLE = """

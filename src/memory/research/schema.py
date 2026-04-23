@@ -37,7 +37,7 @@ class ImageMetadata(BaseModel):
 
     id: str
     caption: str = ""
-    vlm_caption: str = ""
+    contextualized_text: str = ""
     aspect_ratio: Literal["landscape", "portrait", "square"] = "landscape"
     bbox: Optional[dict[str, Any]] = Field(
         default=None,

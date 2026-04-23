@@ -415,7 +415,7 @@ def get_images_for_chunks(db, chunk_ids: list[str]) -> list[ImageMetadata]:
     img_placeholders = ",".join(["?"] * len(ordered_ids))
     img_rows = db.connection.execute(
         f"""
-        SELECT id, caption, vlm_caption, bbox
+        SELECT id, caption, contextualized_text, bbox
         FROM images
         WHERE id IN ({img_placeholders})
           AND (
@@ -437,13 +437,11 @@ def get_images_for_chunks(db, chunk_ids: list[str]) -> list[ImageMetadata]:
             )
             continue
         bbox = json.loads(row["bbox"]) if row["bbox"] else None
-        keys = row.keys()
-        vlm = (row["vlm_caption"] or "") if "vlm_caption" in keys else ""
         out.append(
             ImageMetadata(
                 id=row["id"],
                 caption=row["caption"] or "",
-                vlm_caption=vlm,
+                contextualized_text=row["contextualized_text"] or "",
                 aspect_ratio=_image_aspect_ratio(bbox),
                 bbox=bbox,
             )
