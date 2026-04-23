@@ -13,11 +13,11 @@ def format_image_assets_block(images: list[ImageMetadata]) -> str:
         return ""
     lines = [
         "### IMAGE ASSETS",
-        "Set `media_id` to one of these IDs when an image supports a slide. Prefer the VLM line; use Caption if VLM is empty.",
+        "Set `media_id` to one of these IDs when an image supports a slide. Prefer contextualized description when available; otherwise use the raw caption.",
         "Each line includes `bbox` (region on the source PDF page) when available.",
     ]
     for img in images:
-        desc = img.vlm_caption or img.caption or "(no description)"
+        desc = img.contextualized_text or img.caption or "(no description)"
         bbox_s = json.dumps(img.bbox, separators=(",", ":")) if img.bbox else "null"
         lines.append(
             f"- `{img.id}` — aspect={img.aspect_ratio} — bbox={bbox_s} — {desc}"
