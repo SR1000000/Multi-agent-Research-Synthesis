@@ -142,6 +142,15 @@ def _parse_args() -> argparse.Namespace:
         default=False,
         help="Disable prompt cache_control sent to the LLM provider (contextualizer)",
     )
+    parser.add_argument(
+        "--no-context-batching",
+        action="store_true",
+        default=False,
+        help=(
+            "Disable batch LLM calls in contextualization; "
+            "items are sent to the LLM one at a time sequentially"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -211,6 +220,7 @@ def _process_document(
         config=ContextConfig(
             model="context",
             cache_control=not args.no_cache_control,
+            use_batch=not args.no_context_batching,
         ),
         object_store=object_store,
         logger=logger,

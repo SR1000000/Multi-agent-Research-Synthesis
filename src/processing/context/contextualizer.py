@@ -28,6 +28,7 @@ class ContextConfig:
         max_concurrency: Reserved; batch requests currently run sequentially to avoid provider overload
         batch_size: Number of items to process in each batch
         cache_control: If True, attach LiteLLM ``cache_control`` to the system block on supported calls.
+        use_batch: If True, use LiteLLM batched completion; if False, one ``complete()`` per item.
     """
     model: str = "context"
     vision_model: str = "context-vision"
@@ -35,6 +36,7 @@ class ContextConfig:
     max_concurrency: int = 1
     batch_size: int = 10      # Items per batch
     cache_control: bool = True
+    use_batch: bool = True
 
 
 DEFAULT_CONTEXT_CONFIG = ContextConfig()
@@ -132,7 +134,7 @@ class Contextualizer:
         markdown: str | None,
         source_chunks: list[ExtractedChunk],
     ) -> None:
-        """Process chunks and artifacts using batched LLM calls without concurrent batch requests."""
+        """Process chunks and artifacts with batched or sequential LLM calls (see ``ContextConfig.use_batch``)."""
 
         # Separate text and multimodal items
         text_items = chunks_todo[:]
@@ -151,9 +153,15 @@ class Contextualizer:
                     payload = self._build_multimodal_payload(item, markdown, text_before, text_after)
                     payloads.append(payload)
 
-                results = await vision_llm.batch_complete(
-                    payloads
-                )
+                if self.config.use_batch:
+                    results = await vision_llm.batch_complete(payloads)
+                else:
+                    results = []
+                    for payload in payloads:
+                        try:
+                            results.append(vision_llm.complete(payload))
+                        except Exception as exc:
+                            results.append(exc)
 
                 for i, result_str in enumerate(results):
                     item = batch[i]
@@ -207,9 +215,17 @@ class Contextualizer:
                 if not batch_requests:
                     return
 
-                results = await self._llm.batch_complete(
-                    [payload for _, payload in batch_requests],
-                )
+                if self.config.use_batch:
+                    results = await self._llm.batch_complete(
+                        [payload for _, payload in batch_requests],
+                    )
+                else:
+                    results = []
+                    for _, payload in batch_requests:
+                        try:
+                            results.append(self._llm.complete(payload))
+                        except Exception as exc:
+                            results.append(exc)
 
                 for (item, _payload), result_str in zip(batch_requests, results):
                     if isinstance(result_str, Exception):
