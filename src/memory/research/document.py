@@ -29,18 +29,10 @@ def _parse_img_refs_from_text(text: str) -> list[str]:
 
 
 def _image_aspect_ratio(bbox: dict | None) -> str:
-    if not bbox:
-        return "landscape"
-    w = bbox.get("width")
-    if w is None:
-        w = bbox.get("x2", 0) - bbox.get("x1", bbox.get("x", 0))
-    h = bbox.get("height")
-    if h is None:
-        h = bbox.get("y2", 0) - bbox.get("y1", bbox.get("y", 0))
     try:
-        fw = float(w)
-        fh = float(h)
-    except (TypeError, ValueError):
+        fw = float(bbox["w"])
+        fh = float(bbox["h"])
+    except (TypeError, KeyError, ValueError):
         return "landscape"
     if fw <= 0 or fh <= 0:
         return "landscape"
