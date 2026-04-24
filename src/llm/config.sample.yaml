@@ -33,7 +33,7 @@ router:
       models:
         # ``default_model_name`` (``app``): Supervisor and any agent that omits ``model=``.
         - model: "gemini/gemini-3.1-flash-lite-preview"
-          model_name: "app"
+          model_name: "none"
           rpm: 15
         - model: "gemini/gemini-3.1-flash-lite-preview"
           model_name: "slides"
@@ -55,18 +55,15 @@ router:
       api_key: "os.environ/OPENROUTER_API_KEY"
       api_base: "os.environ/OPENROUTER_BASE_URL"
       models:
-        # Planner Tier 2: Nemotron 3 Super
         - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
           model_name: "planner"
-          order: 2
-        # Planner Tier 3: Elephant Alpha
+          order: 1
         - model: "openrouter/inclusionai/ling-2.6-flash:free"   # Iffy structured output, constantly fails validation
           model_name: "planner"
           order: 3
         - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
           model_name: "slides"
-          order: 1
-        # Critic preference
+          order: 2
         - model: "openrouter/inclusionai/ling-2.6-flash:free"
           model_name: "critic"
           order: 3
@@ -81,10 +78,10 @@ router:
         - model: "ollama/qwen3.5:397b-cloud" # LiteLLM recommends ollama_chat but doesn't work, presumably that's local-only
           timeout: 240  # Increased from 180, Qwen 3.5 is slow
           model_name: "planner"
-          order: 1
+          order: 2
         - model: "ollama/minimax-m2.7:cloud"
           model_name: "critic"
-          order: 2
+          order: 1
 
         - model: "ollama/minimax-m2.7:cloud"
         #- model: "ollama/glm-5.1:cloud"  # Often unavailable (524 error)
@@ -94,6 +91,9 @@ router:
       models:
         - model: "mistral/mistral-large-latest"  # 1 RPS
           model_name: "critic"
+          order: 2
+        - model: "mistral/mistral-large-latest"  # 1 RPS
+          model_name: "slides"
           order: 1
         - model: "mistral/mistral-large-latest"  # 1 RPS, vision-capable
           max_parallel_requests: 2
@@ -110,6 +110,10 @@ router:
         - model: "groq/llama-3.3-70b-versatile"
           model_name: "context"
           max_parallel_requests: 1
+          tpm: 12000
+        - model: "groq/llama-3.3-70b-versatile"
+          model_name: "app"
+          max_parallel_requests: 1  
           tpm: 12000
 
         #- model: "groq/openai/gpt-oss-120b"   # 8K TPM input too restrictive
