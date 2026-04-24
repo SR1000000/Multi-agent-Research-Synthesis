@@ -131,6 +131,16 @@ def _parse_args() -> argparse.Namespace:
         help="Directory where the generated PPTX will be written (default: %(default)s)",
     )
     parser.add_argument(
+        "--reference-doc",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to a .pptx or .potx template passed to Pandoc's --reference-doc option "
+            "(default: none)"
+        ),
+    )
+    parser.add_argument(
         "--skip-supervisor",
         action="store_true",
         default=False,
@@ -338,6 +348,24 @@ def _report_final_warnings(messages: list[str]) -> None:
 def main() -> None:
     args       = _parse_args()
     logger     = AgentLogger()
+
+    reference_doc: Path | None = None
+    if args.reference_doc:
+        _ref = Path(args.reference_doc).expanduser().resolve()
+        if not _ref.exists():
+            logger.log(
+                f"[export] --reference-doc not found: {_ref}. Continuing without template.",
+                level="warning",
+            )
+        elif _ref.suffix.lower() not in {".pptx", ".potx"}:
+            logger.log(
+                f"[export] --reference-doc should point to a .pptx or .potx file, got: {_ref}. "
+                "Continuing without template.",
+                level="warning",
+            )
+        else:
+            reference_doc = _ref
+
     session_id = str(uuid.uuid4())
     output_dir = Path(args.output_dir).expanduser().resolve()
 
@@ -462,6 +490,7 @@ def main() -> None:
                     title=plan_title,
                     subtitle=plan_subtitle,
                     object_store=object_store,
+                    reference_doc=reference_doc,
                 ).build()
                 print(f"\n[export] Presentation saved -> {out}")
             except ValueError as exc:
