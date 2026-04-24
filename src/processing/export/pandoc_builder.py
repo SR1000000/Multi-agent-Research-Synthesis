@@ -13,6 +13,11 @@ from src.memory.objectstore.provider import ObjectStoreProvider
 from src.memory.research.database import ResearchDatabase
 from src.memory.research.schema import BulletPoint, ProtoSlide, SlideContent
 
+# NOTE: This is the default reference doc for the PandocBuilder.
+# Using relative path so export folder can be moved without issue.
+# This is here instead of in main.py because the file is used and owned by pandoc_builder, and is not intended for the user to change.
+_DEFAULT_REFERENCE_DOC = Path(__file__).parent / "reference.pptx"
+
 _MIME_TO_EXT = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -186,12 +191,17 @@ class PandocBuilder:
         title: str = "",
         subtitle: str = "",
         object_store: ObjectStoreProvider | None = None,
+        reference_doc: Path | None = None,
     ) -> None:
         self.output_path = Path(output_path)
         self._db = db
         self._title = title
         self._subtitle = subtitle
         self._object_store = object_store
+        if reference_doc is None and _DEFAULT_REFERENCE_DOC.exists():
+            self._reference_doc = _DEFAULT_REFERENCE_DOC
+        else:
+            self._reference_doc = reference_doc
 
     def build(self) -> Path:
         """
@@ -227,13 +237,34 @@ class PandocBuilder:
 
             self.output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            pypandoc.convert_text(
-                markdown,
-                "pptx",
-                format=self._PANDOC_FORMAT,
-                outputfile=str(self.output_path),
-                extra_args=["--standalone"],
-            )
+            extra_args = ["--standalone"]
+            if self._reference_doc:
+                extra_args.extend(["--reference-doc", str(self._reference_doc)])
+
+            try:
+                pypandoc.convert_text(
+                    markdown,
+                    "pptx",
+                    format=self._PANDOC_FORMAT,
+                    outputfile=str(self.output_path),
+                    extra_args=extra_args,
+                )
+            except RuntimeError as exc:
+                if not self._reference_doc:
+                    raise
+
+                AgentLogger().log(
+                    f"[PandocBuilder] Reference doc failed ({self._reference_doc}): {exc}. "
+                    "Retrying without template.",
+                    level="warning",
+                )
+                pypandoc.convert_text(
+                    markdown,
+                    "pptx",
+                    format=self._PANDOC_FORMAT,
+                    outputfile=str(self.output_path),
+                    extra_args=["--standalone"],
+                )
 
         return self.output_path.resolve()
 

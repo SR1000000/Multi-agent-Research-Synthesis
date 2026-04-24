@@ -205,7 +205,7 @@ def build_litellm_model_list(config_data: dict[str, Any]) -> list[DeploymentType
             }
             for key in ["rpm", "tpm", "tps", "weight", "max_parallel_requests"]:
                 if key in merged:
-                    out_row[key] = merged.pop(key)
+                    out_row[key] = merged[key]
             out.append(out_row)
 
     return out
