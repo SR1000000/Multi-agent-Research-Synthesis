@@ -13,6 +13,11 @@ from src.memory.objectstore.provider import ObjectStoreProvider
 from src.memory.research.database import ResearchDatabase
 from src.memory.research.schema import BulletPoint, ProtoSlide, SlideContent
 
+# NOTE: This is the default reference doc for the PandocBuilder.
+# Using relative path so export folder can be moved without issue.
+# This is here instead of in main.py because the file is used and owned by pandoc_builder, and is not intended for the user to change.
+_DEFAULT_REFERENCE_DOC = Path(__file__).parent / "reference.pptx"
+
 _MIME_TO_EXT = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -193,7 +198,10 @@ class PandocBuilder:
         self._title = title
         self._subtitle = subtitle
         self._object_store = object_store
-        self._reference_doc = reference_doc
+        if reference_doc is None and _DEFAULT_REFERENCE_DOC.exists():
+            self._reference_doc = _DEFAULT_REFERENCE_DOC
+        else:
+            self._reference_doc = reference_doc
 
     def build(self) -> Path:
         """

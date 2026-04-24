@@ -137,7 +137,7 @@ def _parse_args() -> argparse.Namespace:
         metavar="PATH",
         help=(
             "Path to a .pptx or .potx template passed to Pandoc's --reference-doc option "
-            "(default: none)"
+            "(default: src/processing/export/reference.pptx bundled template)"
         ),
     )
     parser.add_argument(
