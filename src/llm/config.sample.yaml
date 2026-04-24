@@ -1,220 +1,83 @@
-# Router group aliases: optional per-model-row ``model_name`` assigns a deployment to an alias
-# (default for ``providers`` is ``default_model_name``; for ``fallback_providers`` it is
-# ``fallback_model_name``). Use ``_call(..., model="writer")`` etc. to target an alias.
-# All models under ``fallback_providers`` without a ``model_name`` are implicitly considered "fallback" models.
-#
-# Example (commented):
-#   models:
-#     - model: "gemini/gemini-2.5-pro"
-#       model_name: "app"
-#     - model: "gemini/gemini-2.5-flash"
-#       model_name: "writer"
-#
-# Current sample assumes free teir for Gemini, Ollama and OpenRouter.
-# Get available OpenRouter free models at https://openrouter.ai/collections/free-models (changes frequently).
-# See also https://github.com/mnfst/awesome-free-llm-apis (model lists likely outdated).  LiteLLM implements most of those (https://docs.litellm.ai/docs/providers).
-# A free OpenRouter account only gets 50 daily requests, adding minimum of 10 credits "verifies" your account and raises the daily limit to 1000 requests
+# Config split:
+# - providers: provider credentials/shared params plus the allowed model catalog
+# - groups: logical aliases used by the app, each listing concrete <provider>/<model_name> entries
+# - litellm: Router runtime settings only
 
-router:
-  default_model_name: "app"
-  fallback_model_name: "fallback"
-  fallbacks:
-    - app: ["fallback"]
-    - slides: ["fallback"]
-    - critic: ["fallback", "app"]
-    - context: ["context-vision", "fallback"]
-    # - writer: ["fallback"]
-    # - fast: ["fallback"]
-
-  providers:
-    gemini:
-      # Gemini Free tier store used prompts for their own use.
+providers:
+  gemini:
+    shared:
       api_key: "os.environ/GEMINI_API_KEY"
-      models:
-        # ``default_model_name`` (``app``): Supervisor and any agent that omits ``model=``.
-        - model: "gemini/gemini-3.1-flash-lite-preview"
-          model_name: "none"
-          rpm: 15
-        - model: "gemini/gemini-3.1-flash-lite-preview"
-          model_name: "slides"
-          order: 2
-          rpm: 15
-        - model: "gemini/gemini-3.1-flash-lite-preview"
-          model_name: "context-vision"
-          max_parallel_requests: 2  
-          rpm: 15
-          
-        - model: "gemini/gemini-3.1-flash-lite-preview"
-          rpm: 15
+    models:
+      gemini-3.1-flash-lite-preview:
+        rpm: 15
+      gemini-2.5-flash: {}
+      gemini-2.5-pro: {}
 
-  # Note: splitting fallback_providers into *_high and *_rest allows us to control the
-  # exact model-level fallback order across different providers (e.g. OpenRouter -> Ollama -> OpenRouter)
-  # since the Router follows the order entries appear in this YAML.
-  fallback_providers:
-    openrouter_high:
+  openrouter:
+    shared:
       api_key: "os.environ/OPENROUTER_API_KEY"
       api_base: "os.environ/OPENROUTER_BASE_URL"
-      models:
-        - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
-          model_name: "planner"
-          order: 1
-        - model: "openrouter/inclusionai/ling-2.6-flash:free"   # Iffy structured output, constantly fails validation
-          model_name: "planner"
-          order: 3
-        - model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
-          model_name: "slides"
-          order: 2
-        - model: "openrouter/inclusionai/ling-2.6-flash:free"
-          model_name: "critic"
-          order: 3
+    models:
+      google/gemma-4-26b-a4b-it:free: {}
+      google/gemma-3-4b-it:free: {}
 
-        #- model: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
-
-    ollama_high:
+  ollama:
+    shared:
       api_key: "os.environ/OLLAMA_API_KEY"
       api_base: "os.environ/OLLAMA_BASE_URL"
-      models:
-        # Planner Tier 1: Qwen 3.5
-        - model: "ollama/qwen3.5:397b-cloud" # LiteLLM recommends ollama_chat but doesn't work, presumably that's local-only
-          timeout: 240  # Increased from 180, Qwen 3.5 is slow
-          model_name: "planner"
-          order: 2
-        - model: "ollama/minimax-m2.7:cloud"
-          model_name: "critic"
-          order: 1
+    models:
+      qwen3.5:397b-cloud:
+        timeout: 240
 
-        - model: "ollama/minimax-m2.7:cloud"
-        #- model: "ollama/glm-5.1:cloud"  # Often unavailable (524 error)
+groups:
+  app:
+    models:
+      - "gemini/gemini-3.1-flash-lite-preview"
+      - "gemini/gemini-2.5-flash"
+    fallbacks:
+      - "fallback"
 
-    mistral_high:
-      api_key: "os.environ/MISTRAL_API_KEY"
-      models:
-        - model: "mistral/mistral-large-latest"  # 1 RPS
-          model_name: "critic"
-          order: 2
-        - model: "mistral/mistral-large-latest"  # 1 RPS
-          model_name: "slides"
-          order: 1
-        - model: "mistral/mistral-large-latest"  # 1 RPS, vision-capable
-          max_parallel_requests: 2
-        - model: "mistral/magistral-medium-latest"  # Reasoning. Does it support structured output?
-          rpm: 20
+  planner:
+    models:
+      - "ollama/qwen3.5:397b-cloud"
+      - "gemini/gemini-3.1-flash-lite-preview"
+    fallbacks:
+      - "fallback"
 
-    groq:
-      api_key: "os.environ/GROQ_API_KEY"
-      models:
-        - model: "groq/meta-llama/llama-4-scout-17b-16e-instruct"
-          model_name: "context-vision" 
-          max_parallel_requests: 2
-          tpm: 30000
-        - model: "groq/llama-3.3-70b-versatile"
-          model_name: "context"
-          max_parallel_requests: 1
-          tpm: 12000
-        - model: "groq/llama-3.3-70b-versatile"
-          model_name: "app"
-          max_parallel_requests: 1  
-          tpm: 12000
+  slides:
+    models:
+      - "gemini/gemini-2.5-pro"
+      - "gemini/gemini-2.5-flash"
+    fallbacks:
+      - "fallback"
 
-        #- model: "groq/openai/gpt-oss-120b"   # 8K TPM input too restrictive
-        #  tpm: 8000
-        - model: "groq/llama-3.3-70b-versatile"
-          max_parallel_requests: 1  
-          tpm: 12000
-    
-    mistral_basic:
-      api_key: "os.environ/MISTRAL_API_KEY"
-      models:      
-        - model: "mistral/mistral-medium-latest"
-          model_name: "context-vision"
-        - model: "mistral/mistral-small-latest"
-          model_name: "context-vision"
-        - model: "mistral/mistral-small-2506"
-          model_name: "context-vision"
-        - model: "mistral/ministral-14b-2512"
-          model_name: "context-vision"
-        - model: "mistral/ministral-8b-2512"
-          model_name: "context-vision"
-        - model: "mistral/ministral-3b-2512"
-          model_name: "context-vision"
-          
-    gemini_basic:
-      api_key: "os.environ/GEMINI_API_KEY"
-      models:
-        - model: "gemini/gemma-4-31b-it"
-          model_name: "context-vision"
-          max_parallel_requests: 2
-          order: 1
-          rpm: 15
-        - model: "gemini/gemma-3-27b-it"
-          model_name: "context-vision"
-          max_parallel_requests: 2
-          order: 1
-          rpm: 15
-        - model: "gemini/gemini-3-flash-preview"
-          model_name: "context-vision"
-        - model: "gemini/gemini-2.5-flash"
-          model_name: "context-vision"
-        - model: "gemini/gemini-2.5-flash-lite"
-          model_name: "context-vision"
+  critic:
+    models:
+      - "gemini/gemini-3.1-flash-lite-preview"
+    fallbacks:
+      - "app"
+      - "fallback"
 
-        - model: "gemini/gemma-4-31b-it"
-          rpm: 15
+  context:
+    models:
+      - "gemini/gemini-3.1-flash-lite-preview"
+    fallbacks:
+      - "fallback"
 
-    ollama_basic:
-      api_key: "os.environ/OLLAMA_API_KEY"
-      api_base: "os.environ/OLLAMA_BASE_URL"
-      models:
-        - model: "ollama/gemma4:31b-cloud"
-          model_name: "context-vision"  
-          max_parallel_requests: 2      
-        - model: "ollama/gemma3:4b-cloud"
-          model_name: "context" 
-          max_parallel_requests: 2   
-        - model: "ollama/gemma3:12b-cloud"
-          model_name: "context" 
-          max_parallel_requests: 2   
-        - model: "ollama/gemma3:27b-cloud"
-          model_name: "context" 
-          max_parallel_requests: 2   
-        - model: "ollama/qwen3-vl:235b-instruct-cloud"
-          model_name: "context-vision" 
-          max_parallel_requests: 2
-        - model: "ollama/qwen3-vl:235b-cloud"
-          model_name: "context-vision" 
-          max_parallel_requests: 2
-        - model: "ollama/gemini-3-flash-preview:cloud"
-          model_name: "context-vision" 
-          max_parallel_requests: 2
-          
-        - model: "ollama/gemma4:31b-cloud" 
-          max_parallel_requests: 3   
+  context-vision:
+    models:
+      - "gemini/gemini-2.5-flash"
+    fallbacks:
+      - "fallback"
 
-    openrouter_basic:
-      api_key: "os.environ/OPENROUTER_API_KEY"
-      api_base: "os.environ/OPENROUTER_BASE_URL"
-      models:
-        - model: "openrouter/google/gemma-4-26b-a4b-it:free"
-          model_name: "context-vision"
-          max_parallel_requests: 2
-        - model: "openrouter/google/gemma-4-31b-it:free"
-          model_name: "context-vision"
-          max_parallel_requests: 2
-        - model: "openrouter/google/gemma-3-4b-it:free"
-          model_name: "context-vision"
-          max_parallel_requests: 2
-        - model: "openrouter/google/gemma-3-12b-it:free"
-          model_name: "context-vision"
-          max_parallel_requests: 2
-        - model: "openrouter/google/gemma-3-27b-it:free"
-          model_name: "context-vision"
-          max_parallel_requests: 2
-        - model: "openrouter/nvidia/nemotron-nano-12b-v2-vl:free"
-          model_name: "context"
-        - model: "openrouter/openai/gpt-oss-120b:free"  # Lots of validation errors, json_schema support?
-          model_name: "context"
+  fallback:
+    models:
+      - "openrouter/google/gemma-4-26b-a4b-it:free"
+      - "openrouter/google/gemma-3-4b-it:free"
 
-  settings:
+litellm:
+  default_group: "app"
+  router:
     num_retries: 1
     retry_after: 5
     cooldown_time: 30

@@ -106,68 +106,150 @@ class LLMCallError(RuntimeError):
         super().__init__(f"{exc_type}{status_part}")
 
 
-def build_litellm_model_list(
-    config: dict[str, Any],
-    default_alias: str,
-) -> list[DeploymentTypedDict]:
-    """Merge ``providers`` into LiteLLM ``model_list`` rows.
+def _normalize_provider_models(provider_name: str, provider_config: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(provider_config, dict):
+        raise ValueError(f"Invalid provider config for `{provider_name}`: expected mapping")
 
-    Each model row may set ``model_name`` to register that deployment under a Router group alias
-    (e.g. ``writer``). 
-    If omitted, ``default_alias`` is used (``default_model_name`` or ``fallback_model_name`` for the block).
-    """
-    out: list[dict[str, Any]] = []
-    for _provider, prov in (config.get("providers") or {}).items():
-        if not isinstance(prov, dict):
+    raw_models = provider_config.get("models")
+    if not isinstance(raw_models, dict) or not raw_models:
+        raise ValueError(
+            f"Invalid provider config for `{provider_name}`: `providers.{provider_name}.models` "
+            "must be a non-empty mapping"
+        )
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for model_name, model_config in raw_models.items():
+        clean_name = str(model_name).strip()
+        if not clean_name:
+            raise ValueError(f"Invalid empty model name under provider `{provider_name}`")
+        if model_config is None:
+            normalized[clean_name] = {}
             continue
-        shared = {k: v for k, v in prov.items() if k != "models"}
-        for entry in prov.get("models", []):
-            if isinstance(entry, str):
-                row = {"model": entry}
-            else:
-                row = dict(entry)
-            merged = {**shared, **row}
-            if not merged.get("model"):
-                continue
-            alias_raw = merged.pop("model_name", None)
-            if isinstance(alias_raw, str) and alias_raw.strip():
-                effective_alias = alias_raw.strip()
-            else:
-                effective_alias = default_alias
-            
-            out_row = {"model_name": effective_alias, "litellm_params": merged}
-            # Keep rpm/tpm/weight/max_parallel_requests inside litellm_params (LiteLLM reads them
-            # there). Mirror at deployment top level for inspection / forward-compat only.
-            for key in ["rpm", "tpm", "weight", "max_parallel_requests"]:
+        if not isinstance(model_config, dict):
+            raise ValueError(
+                f"Invalid provider model config for `{provider_name}/{clean_name}`: expected mapping or null"
+            )
+        normalized[clean_name] = dict(model_config)
+    return normalized
+
+
+def _parse_group_model_ref(ref: Any) -> tuple[str, str]:
+    if not isinstance(ref, str):
+        raise ValueError(f"Invalid group model reference `{ref}`: expected string `<provider>/<model_name>`")
+    clean_ref = ref.strip()
+    provider, sep, model_name = clean_ref.partition("/")
+    if not sep or not provider.strip() or not model_name.strip():
+        raise ValueError(f"Invalid group model reference `{ref}`: expected string `<provider>/<model_name>`")
+    return provider.strip(), model_name.strip()
+
+
+def build_litellm_model_list(config_data: dict[str, Any]) -> list[DeploymentTypedDict]:
+    providers = config_data.get("providers")
+    groups = config_data.get("groups")
+    if not isinstance(providers, dict) or not providers:
+        raise ValueError("Invalid configuration: missing top-level key `providers`")
+    if not isinstance(groups, dict) or not groups:
+        raise ValueError("Invalid configuration: missing top-level key `groups`")
+
+    provider_catalog: dict[str, dict[str, Any]] = {}
+    provider_shared: dict[str, dict[str, Any]] = {}
+    for provider_name, provider_config in providers.items():
+        if not isinstance(provider_config, dict):
+            raise ValueError(f"Invalid provider config for `{provider_name}`: expected mapping")
+        provider_catalog[provider_name] = _normalize_provider_models(provider_name, provider_config)
+        shared = provider_config.get("shared") or {}
+        if not isinstance(shared, dict):
+            raise ValueError(
+                f"Invalid provider config for `{provider_name}`: `providers.{provider_name}.shared` must be a mapping"
+            )
+        provider_shared[provider_name] = dict(shared)
+
+    out: list[DeploymentTypedDict] = []
+    for group_name, group_config in groups.items():
+        if not isinstance(group_config, dict):
+            raise ValueError(f"Invalid group config for `{group_name}`: expected mapping")
+
+        group_models = group_config.get("models")
+        if not isinstance(group_models, list) or not group_models:
+            raise ValueError(
+                f"Invalid group config for `{group_name}`: `groups.{group_name}.models` must be a non-empty list"
+            )
+
+        seen_refs: set[str] = set()
+        for ref in group_models:
+            provider_name, model_name = _parse_group_model_ref(ref)
+            normalized_ref = f"{provider_name}/{model_name}"
+            if normalized_ref in seen_refs:
+                raise ValueError(f"Duplicate model `{normalized_ref}` declared in group `{group_name}`")
+            seen_refs.add(normalized_ref)
+
+            if provider_name not in provider_catalog:
+                raise ValueError(
+                    f"Group `{group_name}` references unknown provider `{provider_name}` in `{normalized_ref}`"
+                )
+            model_config = provider_catalog[provider_name].get(model_name)
+            if model_config is None:
+                raise ValueError(
+                    f"Group `{group_name}` references undeclared model `{normalized_ref}`; "
+                    f"declare `{model_name}` under `providers.{provider_name}.models` first"
+                )
+
+            merged = {
+                **provider_shared[provider_name],
+                **model_config,
+                "model": normalized_ref,
+            }
+            out_row: DeploymentTypedDict = {
+                "model_name": group_name,
+                "litellm_params": merged,
+            }
+            for key in ["rpm", "tpm", "tps", "weight", "max_parallel_requests"]:
                 if key in merged:
                     out_row[key] = merged[key]
             out.append(out_row)
+
     return out
 
 
 def build_router_from_config_data(config_data: dict[str, Any]) -> Router:
-    rb = config_data.get("router") or {}
-    if not rb:
-        raise ValueError("Invalid configuration: missing top-level key ``router``")
+    litellm_config = config_data.get("litellm")
+    groups = config_data.get("groups")
+    if not isinstance(litellm_config, dict):
+        raise ValueError("Invalid configuration: missing top-level key `litellm`")
+    if not isinstance(groups, dict) or not groups:
+        raise ValueError("Invalid configuration: missing top-level key `groups`")
 
-    primary = str(rb.get("default_model_name") or "app")
-    fb_alias = rb.get("fallback_model_name")
-    fb_alias = str(fb_alias).strip() if fb_alias else None
-
-    model_list = build_litellm_model_list(rb, primary)
-    if fb_alias and (rb.get("fallback_providers") or {}):
-        model_list.extend(
-            build_litellm_model_list({**rb, "providers": rb["fallback_providers"]}, fb_alias)
-        )
+    model_list = build_litellm_model_list(config_data)
 
     if not model_list:
-        raise ValueError("Invalid configuration: add at least one entry under router.providers.*.models")
+        raise ValueError("Invalid configuration: add at least one entry under `groups.*.models`")
 
-    settings = dict(rb.get("settings") or {})
+    settings = dict(litellm_config.get("router") or {})
 
-    # Optional explicit cross-alias chain; omit to rely on same-alias pooling + Router defaults.
-    if "fallbacks" in rb:
-        settings["fallbacks"] = rb["fallbacks"]
+    fallbacks: list[dict[str, list[str]]] = []
+    for group_name, group_config in groups.items():
+        if not isinstance(group_config, dict):
+            continue
+        raw_fallbacks = group_config.get("fallbacks") or []
+        if not raw_fallbacks:
+            continue
+        if not isinstance(raw_fallbacks, list):
+            raise ValueError(
+                f"Invalid group config for `{group_name}`: `groups.{group_name}.fallbacks` must be a list"
+            )
+        clean_fallbacks: list[str] = []
+        for fallback_group in raw_fallbacks:
+            target = str(fallback_group).strip()
+            if not target:
+                raise ValueError(f"Invalid empty fallback target in group `{group_name}`")
+            if target not in groups:
+                raise ValueError(f"Group `{group_name}` references unknown fallback group `{target}`")
+            clean_fallbacks.append(target)
+        if clean_fallbacks:
+            fallbacks.append({group_name: clean_fallbacks})
+
+    if fallbacks:
+        settings["fallbacks"] = fallbacks
 
     return Router(model_list=model_list, **settings)
 
@@ -176,18 +258,14 @@ def init_from_config(config_path: str | None = None) -> None:
     """
     Load ``config.dev.yaml`` and build a LiteLLM ``Router``.
 
-    **Deployments** — Each ``model_list`` entry is one backend (``litellm_params``) plus a Router **alias**
-    (``model_name`` in LiteLLM terms). YAML rows use the block default (``default_model_name`` or
-    ``fallback_model_name``) unless the row sets ``model_name: <alias>`` (e.g. ``writer``, ``fast``).
+    Config is split into three top-level sections:
+    - ``providers``: allowed provider-local model catalog plus shared provider params
+    - ``groups``: logical Router groups listing concrete ``<provider>/<model_name>`` entries
+    - ``litellm``: Router runtime settings such as retries, cooldowns, and default group
 
-    **Same alias (intra-group)** — Rows that share one alias (e.g. two Gemini models both under ``app``)
-    are one pool. The Router moves between those deployments on its own: routing strategy, retries,
-    cooldowns, rate limits. No ``router.fallbacks`` entry is required for that.
-
-    **Different aliases (cross-group)** — To move from one logical name to another (e.g. ``app`` →
-    ``fallback``), LiteLLM uses ``Router(fallbacks=...)``. We pass ``router.fallbacks`` from YAML when
-    present. If you omit it, the ``fallback`` group still exists in ``model_list`` but nothing auto-switches
-    to it; call ``router.completion(model="…")`` with another alias (or set ``LLMConfig.model``).
+    Group model references are validated before Router build so unknown providers, undeclared
+    provider models, and unknown fallback groups fail fast during startup instead of surfacing
+    later as LiteLLM routing errors.
     """
     global ROUTER, DEFAULT_MODEL_NAME
 
@@ -206,8 +284,8 @@ def init_from_config(config_path: str | None = None) -> None:
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
-    rb = data.get("router") or {}
-    DEFAULT_MODEL_NAME = str(rb.get("default_model_name") or "app")
+    litellm_config = data.get("litellm") or {}
+    DEFAULT_MODEL_NAME = str(litellm_config.get("default_group") or "app")
     ROUTER = build_router_from_config_data(data)
 
 
