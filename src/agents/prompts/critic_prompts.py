@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from src.agents.prompts.common import schema_prompt_contract
 
+# Will have to be updated for multiple review criteria
 CRITIC_ROLE = """
 You are a Slide Deck Critic. Your job is to review assigned slides against the
 source research chunks and identify only meaningful issues that require correction.
@@ -31,7 +32,7 @@ For each issue found:
 """
 
 # Reserved for a future layout-focused critic pass; not wired in the current graph.
-CRITIC_LAYOUT_ROLE = """
+LAYOUT_REVIEW_CRITERIA = """
 Layout and image-placement review criteria (modular block):
 Review the assigned slides against the IMAGE ASSETS listed in the prompt.
 
