@@ -65,7 +65,7 @@ def _start_dispatch(
 def _matching_dispatch_records(records: list[dict], active_dispatch: dict) -> list[dict]:
     """Return records for the current batch: matching ``dispatch_id`` and ``plan_generation``."""
     dispatch_id = active_dispatch["dispatch_id"]
-    generation = active_dispatch.get("plan_generation", 0)
+    generation = active_dispatch["plan_generation"]
     return [
         record
         for record in records
