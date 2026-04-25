@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 # Persisted / planned content slides are numbered 1..N. The opening title slide is
 # not stored; it is added at export from presentation_plan.title/subtitle.
-FIRST_CONTENT_SLIDE_NUMBER = 1
+
 
 MAX_CYCLES = 2
 
@@ -240,7 +240,6 @@ class CriticIssueRecord(TypedDict):
     severity: Literal["critical", "major", "minor"]
     issue_type: str
     location: str
-    description: str
     fingerprint: str
     affected_slide_numbers: List[int]
     rewrite_instruction: str

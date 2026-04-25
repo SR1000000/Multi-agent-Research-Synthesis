@@ -209,10 +209,6 @@ class ResearchDatabase(DatabaseProvider):
                         self._conn.execute(
                             "ALTER TABLE slide_review_events ADD COLUMN location TEXT;"
                         )
-                    if "description" not in review_event_columns:
-                        self._conn.execute(
-                            "ALTER TABLE slide_review_events ADD COLUMN description TEXT;"
-                        )
                     if "plan_generation" not in review_event_columns:
                         self._conn.execute(
                             "ALTER TABLE slide_review_events "

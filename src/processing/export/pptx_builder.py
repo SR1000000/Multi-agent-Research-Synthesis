@@ -2,7 +2,6 @@ from pathlib import Path
 from typing import List
 
 from pptx import Presentation
-from pptx.util import Pt
 
 from src.memory.research.database import ResearchDatabase
 from src.util import sanitize_xml_text
@@ -15,11 +14,6 @@ from src.memory.research.schema import BulletPoint, ProtoSlide, SlideContent
 _LAYOUT_TITLE_SLIDE = "Title Slide"
 _LAYOUT_TITLE_AND_CONTENT = "Title and Content"
 _LAYOUT_TWO_CONTENT = "Two Content"
-
-# Font overrides
-_BIG_NUMBER_FONT_PT = 40
-_QUOTE_FONT_PT = 20
-
 
 def _split_bold_runs(text: str, bold_phrases: List[str]) -> List[tuple[str, bool]]:
     """
@@ -90,8 +84,7 @@ class PptxBuilder:
         "title_slide":    (_LAYOUT_TITLE_SLIDE,       None),
         "title_and_body": (_LAYOUT_TITLE_AND_CONTENT, None),
         "two_column":     (_LAYOUT_TWO_CONTENT,       None),
-        "big_number":     (_LAYOUT_TITLE_AND_CONTENT, "big_number"),
-        "quote":          (_LAYOUT_TITLE_AND_CONTENT, "quote"),
+        "media_center":   (_LAYOUT_TWO_CONTENT,       "media_placeholder"),
         "media_left":     (_LAYOUT_TWO_CONTENT,       "media_placeholder"),
         "media_right":    (_LAYOUT_TWO_CONTENT,       "media_placeholder"),
         "media_top":      (_LAYOUT_TWO_CONTENT,       "media_placeholder"),
@@ -209,8 +202,6 @@ class PptxBuilder:
                 sub_para.level = 1
                 run = sub_para.add_run()
                 run.text = sanitize_xml_text(sub)
-                if mode == "quote":
-                    run.font.italic = True
 
     def _find_body_placeholder(self, slide):
         """
@@ -225,9 +216,8 @@ class PptxBuilder:
     def _write_run(self, para, text: str, bullet: BulletPoint, mode: str | None) -> None:
         """
         Splits *text* into plain/bold segments (via bold_phrases) and writes
-        one python-pptx run per segment.  Mode-level styling (big_number, quote)
-        is applied to every run; bold_phrases styling is applied only to the
-        matched segments.
+        one python-pptx run per segment. Bold-phrase styling is applied only to
+        the matched segments.
         """
         text = sanitize_xml_text(text)
         bold_phrases = getattr(bullet, "bold_phrases", None) or []
@@ -237,13 +227,6 @@ class PptxBuilder:
         for segment_text, is_bold in segments:
             run = para.add_run()
             run.text = segment_text
-
-            if mode == "big_number":
-                run.font.size = Pt(_BIG_NUMBER_FONT_PT)
-                run.font.bold = True
-            elif mode == "quote":
-                run.font.italic = True
-                run.font.size = Pt(_QUOTE_FONT_PT)
 
             if is_bold:
                 run.font.bold = True

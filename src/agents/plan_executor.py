@@ -11,6 +11,7 @@ from langgraph.types import Command, Send
 
 from src.memory.research.database import ResearchDatabase
 from src.state import PresentationPlan, ResearchState, SlideGroup
+from src.logging.logger import AgentLogger
 
 MAX_RETRIES_PER_GROUP = 2
 
@@ -21,6 +22,7 @@ MAX_RETRIES_PER_GROUP = 2
 
 def _group_chunk_ids(group: SlideGroup) -> list[str]:
     """Collect the union of source_chunk_ids across all blueprints in a group, preserving order."""
+    # Preserve blueprint order so downstream retrieval receives context in narrative order.
     seen:   set[str]  = set()
     result: list[str] = []
     for bp in group.slide_blueprints:
@@ -32,6 +34,7 @@ def _group_chunk_ids(group: SlideGroup) -> list[str]:
 
 
 def _blueprints_as_dicts(group: SlideGroup) -> list[dict]:
+    # LangGraph Send payloads must be plain dictionaries, not Pydantic models.
     return [bp.model_dump() for bp in group.slide_blueprints]
 
 
@@ -46,6 +49,7 @@ def _build_slide_writer_send(
     rewrite_instructions: str = "",
     target_slide_numbers: list[int] | None = None,
 ) -> Send:
+    # Centralize writer payload shape so initial writes and rewrites stay aligned.
     return Send(
         "slide_writer",
         {
@@ -63,6 +67,7 @@ def _build_slide_writer_send(
 
 
 def _build_critic_send(*, dispatch_id: str, session_id: str, assignment: dict) -> Send:
+    # Preserve the supervisor-created assignment fields while stamping this dispatch id.
     return Send(
         "critic",
         {
@@ -84,7 +89,8 @@ def _build_critic_send(*, dispatch_id: str, session_id: str, assignment: dict) -
 
 
 def _exhausted_group_message(group: SlideGroup, group_idx: int) -> str:
-    """Return a user-visible warning when a group's retries are exhausted."""
+    """Return a user-visible warning when a group's retries are exhausted.
+        Include the skipped titles because exhausted groups otherwise disappear from the final deck."""
     slide_titles = [bp.working_title for bp in group.slide_blueprints]
     return (
         f"[PlanExecutor] RETRIES EXHAUSTED — group {group_idx} failed after "
@@ -101,16 +107,17 @@ class PlanExecutorAgent:
     """Stateless dispatcher — all state lives in ResearchState."""
 
     def __init__(self) -> None:
-        from src.logging.logger import AgentLogger
         self._logger = AgentLogger()
 
     def _set_session_id(self, state: dict) -> None:
         from src.llm.llm import current_session_id
+        # Propagate session context into nested LLM/tool calls made later in the graph.
         sid = state.get("session_id") if isinstance(state, dict) else None
         if sid:
             current_session_id.set(sid)
 
     def run(self, state: ResearchState) -> Command:
+        # Drive the fan-out/fan-in state machine entirely from the persisted review state.
         self._set_session_id(state)
 
         session_id        = state.get("session_id", "")
@@ -129,6 +136,7 @@ class PlanExecutorAgent:
         active_dispatch = review.get("active_dispatch")
 
         if phase == "initial_write" and active_dispatch is None:
+            # Fresh initial write starts by removing stale slides outside the new plan.
             new_slide_numbers = [
                 bp.slide_number
                 for group in groups
@@ -176,6 +184,7 @@ class PlanExecutorAgent:
             return Command(update={"review": review}, goto=sends)
 
         if phase == "initial_write" and active_dispatch is not None:
+            # Wait until every parallel writer assignment has reported for this dispatch.
             ag = active_dispatch.get("plan_generation", 0)
             relevant = [
                 entry
@@ -235,6 +244,7 @@ class PlanExecutorAgent:
             return Command(update={"review": review, "messages": [msg]}, goto="supervisor")
 
         if phase == "critic_dispatch":
+            # Critic dispatch mirrors writer dispatch but uses supervisor-built review assignments.
             assignments = review.get("pending_critic_assignments", [])
             if assignments and active_dispatch is None:
                 dispatch_id = f"critic-{dispatch_counter + 1}"
@@ -281,6 +291,7 @@ class PlanExecutorAgent:
                 return Command(update={"review": review}, goto="supervisor")
 
         if phase == "rewrite_dispatch":
+            # Rewrite dispatch targets only the slides identified by actionable critic findings.
             assignments = review.get("pending_rewrite_assignments", [])
             if assignments and active_dispatch is None:
                 dispatch_id = f"rewrite-{dispatch_counter + 1}"
@@ -340,4 +351,5 @@ class PlanExecutorAgent:
 
 
 def plan_executor_node(state: ResearchState) -> Command:
+    # Construct a fresh dispatcher for each graph tick; continuation data is carried in state.
     return PlanExecutorAgent().run(state)

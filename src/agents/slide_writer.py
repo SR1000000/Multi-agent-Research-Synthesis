@@ -9,13 +9,19 @@ agent wrapper based on whether rewrite instructions are present.
 from __future__ import annotations
 
 import json
-from typing import Any, List, TypedDict
+from typing import Any, TypedDict
 
 from langgraph.types import Command
 
-from src.agents._image_utils import format_image_assets_block
-from src.agents.base import BaseLLMAgent, SLIDE_REWRITER_ROLE
-from src.memory.research.schema import ImageMetadata, ProtoSlide, make_slide_batch_model, slide_output_prompt_contract
+from src.agents.base import BaseLLMAgent
+from src.agents.prompts.writer_prompts import (
+    SLIDE_REWRITER_ROLE,
+    SLIDE_WRITER_ROLE,
+    build_initial_slide_user_prompt,
+    build_slide_retrieval_turns,
+    build_slide_rewrite_user_prompt,
+)
+from src.memory.research.schema import ImageMetadata, ProtoSlide, make_slide_batch_model
 from src.memory.research.database import ResearchDatabase
 
 
@@ -41,6 +47,7 @@ class SlideWriterDispatch(TypedDict):
 # ---------------------------------------------------------------------------
 
 def _group_log_label(state: SlideWriterDispatch) -> str:
+    # Use the assigned slide span in logs so interleaved parallel writer log output stays traceable.
     blueprints = state.get("slide_blueprints", [])
     if not blueprints:
         return "SlideWriter[empty]"
@@ -61,18 +68,6 @@ def _ordered_chunk_texts(rows: list, chunk_ids: list[str]) -> list[str]:
     return ordered
 
 
-def _format_existing_slide(slide: ProtoSlide) -> str:
-    """Render an existing slide draft into a compact JSON block for revision mode."""
-    return json.dumps(
-        {
-            "slide_number": slide.slide_number,
-            "content": slide.content.model_dump(mode="json"),
-            "chunk_references": slide.chunk_references,
-        },
-        indent=2,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -81,10 +76,16 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
     def __init__(
         self,
         *,
+        system_prompt: str,
         log_display: str | None = None,
         tools_for_agent: dict[str, dict[str, Any]] | None = None,
     ):
-        super().__init__("slide_writer", log_display=log_display, tools_for_agent=tools_for_agent)
+        super().__init__(
+            "slide_writer",
+            system_prompt=system_prompt,
+            log_display=log_display,
+            tools_for_agent=tools_for_agent,
+        )
 
     def _failure(
         self,
@@ -97,6 +98,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         target_slide_numbers: list[int],
         tag: str,
     ) -> Command:
+        # Report a zero-count write so PlanExecutor can make progress instead of waiting forever.
         err_str = f"{type(error).__name__}: {error}"
         self._logger.log(f"[{tag}] ERROR: {err_str}", level="error")
         err_msg = f"[{tag}] FAILED: {err_str}"
@@ -130,6 +132,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
                     chunk_ids,
                 ).fetchall()
             existing_slides: list[ProtoSlide] = []
+            # Load existing slides only for rewrites; initial generation should not see stale drafts.
             if include_existing_slides:
                 for bp_dict in slide_blueprints:
                     slide_num = bp_dict.get("slide_number")
@@ -143,79 +146,8 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         chunk_texts = _ordered_chunk_texts(rows, chunk_ids)
         return "\n\n".join(chunk_texts), existing_slides, image_metadatas
 
-    def _build_assignment_block(self, slide_blueprints: list[dict]) -> str:
-        return "\n".join(
-            f"Slide {bp.get('slide_number', i + 1)}: "
-            f"[{bp.get('narrative_role', 'evidence')}] "
-            f'"{bp.get("working_title", "")}" — {bp.get("intent", "")}'
-            for i, bp in enumerate(slide_blueprints)
-        )
-
-    def _base_prompt_parts(
-        self,
-        *,
-        slide_count: int,
-        combined_text: str,
-        image_metadatas: list[ImageMetadata],
-    ) -> list[str]:
-        parts: list[str] = [
-            "",
-            slide_output_prompt_contract(slide_count),
-            "",
-            "### SEMANTIC GUIDANCE:",
-            "- Keep each slide focused on one primary takeaway.",
-            "- Do not default to a basic slide with exactly three flat bullets unless that structure is genuinely the clearest fit for the material.",
-            "- Vary slide density based on the content: some slides should use 2 strong bullets, others 4-5 concise bullets, and others a few top-level bullets with supporting sub-bullets.",
-            "- Use sub-bullets when they help unpack evidence, examples, caveats, or stepwise logic under a main claim.",
-            "- Speaker notes should be professional, conversational, and cover the core bullets with added context.",
-            "- Avoid academic jargon unless the original terminology is important to preserve.",
-            "- Only populate `media_id` when an image genuinely reinforces the slide's narrative intent. Do not force image inclusion; omit `media_id` (leave it null) if no available asset meaningfully supports the slide.",
-            "- Choose the layout that best supports the evidence and intended narrative role.",
-        ]
-        image_block = format_image_assets_block(image_metadatas)
-        if image_block:
-            parts += ["", image_block]
-        parts += ["", "SOURCE MATERIAL (research chunks):", combined_text]
-        return parts
-
-    def _build_retrieval_turns(
-        self,
-        *,
-        slide_blueprints: list[dict],
-        rewrite_instructions: str,
-        existing_slides: list[ProtoSlide],
-    ) -> list[dict]:
-        # Tool prompt snippets describe tool policy at the agent/system level.
-        # This separate user turn exists to make the first LLM call an explicit
-        # evidence-gathering step for the current slide assignment before the
-        # second structured slide-generation call.
-        assignment_block = self._build_assignment_block(slide_blueprints)
-        existing_slides_block = "\n\n".join(
-            _format_existing_slide(slide) for slide in existing_slides
-        )
-        prompt_parts = [
-            "Use the available retrieval tool to gather evidence for the assigned slides.",
-            "You must call `retrieve_artifacts` at least once before answering.",
-            "After finishing tool use, return a short evidence brief summarizing only the retrieved evidence that is most relevant to these slides.",
-            "",
-            "SLIDE ASSIGNMENTS:",
-            assignment_block,
-        ]
-        if rewrite_instructions.strip():
-            prompt_parts.extend(
-                [
-                    "",
-                    "REVISION CONTEXT:",
-                    "Reviewer rewrite instructions:",
-                    rewrite_instructions,
-                    "",
-                    "Current slide drafts:",
-                    existing_slides_block or "No existing drafts were found.",
-                ]
-            )
-        return [{"role": "user", "content": "\n".join(prompt_parts)}]
-
     def _tool_payload_text(self, tool_results: list[dict[str, Any]]) -> str:
+        # Preserve tool payloads as JSON text because the structured slide call cannot consume tool objects.
         payloads: list[str] = []
         for result in tool_results:
             payload = result.get("payload")
@@ -234,10 +166,8 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         existing_slides: list[ProtoSlide],
         image_metadatas: list[ImageMetadata],
     ) -> str:
+        # Subclasses choose the prompt contract while the shared run loop handles retrieval and saving.
         raise NotImplementedError
-
-    def _system_prompt_override(self) -> str | None:
-        return None
 
     def run(self, state: SlideWriterDispatch) -> Command:
         self._set_session_id(state)
@@ -294,7 +224,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
                 slide_blueprints=slide_blueprints,
                 include_existing_slides=bool(rewrite_instructions.strip()),
             )
-            retrieval_turns = self._build_retrieval_turns(
+            retrieval_turns = build_slide_retrieval_turns(
                 slide_blueprints=slide_blueprints,
                 rewrite_instructions=rewrite_instructions,
                 existing_slides=existing_slides,
@@ -305,7 +235,6 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
                 session_id=session_id,
                 max_tool_calls=4,
                 model="slides",
-                system_prompt_override=self._system_prompt_override(),
             )
             # The tool loop above already gave the model the tool outputs once.
             # We pass the full returned payloads into the second structured call
@@ -349,7 +278,6 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
                 turns,
                 output_schema,
                 model="slides",
-                system_prompt_override=self._system_prompt_override(),
                 runtime_validator=lambda parsed: [] if len(parsed.slides) == slide_count else [
                     f"Expected exactly {slide_count} slides but received {len(parsed.slides)}."
                 ],
@@ -416,6 +344,18 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
 # ---------------------------------------------------------------------------
 
 class InitialSlideWriterAgent(_BaseSlideWorkerAgent):
+    def __init__(
+        self,
+        *,
+        log_display: str | None = None,
+        tools_for_agent: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(
+            system_prompt=SLIDE_WRITER_ROLE,
+            log_display=log_display,
+            tools_for_agent=tools_for_agent,
+        )
+
     def _build_user_prompt(
         self,
         *,
@@ -426,28 +366,28 @@ class InitialSlideWriterAgent(_BaseSlideWorkerAgent):
         existing_slides: list[ProtoSlide],
         image_metadatas: list[ImageMetadata],
     ) -> str:
-        del rewrite_instructions
-        blueprint_block = self._build_assignment_block(slide_blueprints)
-        user_prompt_parts = [
-            f"Return exactly ONE JSON object whose `slides` array contains exactly {slide_count} slide(s).\n",
-            "",
-            "SLIDE ASSIGNMENTS:",
-            blueprint_block,
-            "",
-            "For each slide, follow the intent directive precisely. "
-            "Do not add extra slides or skip any.",
-        ]
-        user_prompt_parts += self._base_prompt_parts(
+        # Drop rewrite-only inputs here so accidental caller state cannot leak into first drafts.
+        del rewrite_instructions, existing_slides
+        return build_initial_slide_user_prompt(
             slide_count=slide_count,
+            slide_blueprints=slide_blueprints,
             combined_text=combined_text,
             image_metadatas=image_metadatas,
         )
-        return "\n".join(user_prompt_parts)
 
 
 class SlideRewriterAgent(_BaseSlideWorkerAgent):
-    def _system_prompt_override(self) -> str | None:
-        return SLIDE_REWRITER_ROLE
+    def __init__(
+        self,
+        *,
+        log_display: str | None = None,
+        tools_for_agent: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(
+            system_prompt=SLIDE_REWRITER_ROLE,
+            log_display=log_display,
+            tools_for_agent=tools_for_agent,
+        )
 
     def _build_user_prompt(
         self,
@@ -459,40 +399,15 @@ class SlideRewriterAgent(_BaseSlideWorkerAgent):
         existing_slides: list[ProtoSlide],
         image_metadatas: list[ImageMetadata],
     ) -> str:
-        blueprint_block = self._build_assignment_block(slide_blueprints)
-        existing_slides_block = "\n\n".join(
-            _format_existing_slide(slide) for slide in existing_slides
-        )
-        user_prompt_parts = [
-            f"Return exactly ONE JSON object whose `slides` array contains exactly {slide_count} slide(s).\n",
-            "",
-            "REVISION MODE:",
-            "- Rewrite the assigned slides to satisfy the reviewer feedback.",
-            "- Reviewer feedback overrides the prior blueprint intent when they conflict.",
-            "- Preserve any parts of the current slides that already work.",
-            "- Keep the slide count fixed and maintain slide order.",
-            "",
-            "INSTRUCTION PRIORITY:",
-            "1. Reviewer rewrite instructions",
-            "2. Factual grounding in the provided research chunks",
-            "3. Existing slide drafts as the material to revise",
-            "4. Slide assignments and narrative roles as supporting context",
-            "",
-            "REWRITE INSTRUCTIONS (from reviewer):",
-            rewrite_instructions,
-            "",
-            "CURRENT SLIDE DRAFTS TO REVISE:",
-            existing_slides_block or "No existing drafts were found. Regenerate the assigned slides from scratch while following the reviewer feedback.",
-            "",
-            "SLIDE ASSIGNMENTS (context only unless reviewer feedback conflicts):",
-            blueprint_block,
-        ]
-        user_prompt_parts += self._base_prompt_parts(
+        # Feed both the current slide draft and critique text so rewrites can preserve valid content.
+        return build_slide_rewrite_user_prompt(
             slide_count=slide_count,
+            slide_blueprints=slide_blueprints,
             combined_text=combined_text,
             image_metadatas=image_metadatas,
+            rewrite_instructions=rewrite_instructions,
+            existing_slides=existing_slides,
         )
-        return "\n".join(user_prompt_parts)
 
 
 class SlideWriterAgent(InitialSlideWriterAgent):
@@ -504,6 +419,7 @@ def slide_writer_node(
     *,
     tools_for_agent: dict[str, dict[str, Any]] | None = None,
 ) -> Command:
+    # The same graph node handles first drafts and rewrites; non-empty instructions select the rewriter.
     rewrite_instructions = state.get("rewrite_instructions", "")
     agent_cls = SlideRewriterAgent if rewrite_instructions.strip() else InitialSlideWriterAgent
     return agent_cls(

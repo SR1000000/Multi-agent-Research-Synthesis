@@ -141,6 +141,27 @@ def _render_slide(
         parts.extend(bullet_lines)
         parts.append("")
         parts.append(img_md)
+    elif layout == "two_column":
+        left_lines, right_lines = _split_bullets_for_two_columns(content)
+        parts.append(":::: {.columns}")
+        parts.append("::: {.column width=\"50%\"}")
+        parts.extend(left_lines)
+        parts.append(":::")
+        parts.append("::: {.column width=\"50%\"}")
+        parts.extend(right_lines)
+        parts.append(":::")
+        parts.append("::::")
+    elif img_path and img_uri and layout == "media_center":
+        # Use side gutters so the image appears centered under the title in pptx.
+        parts.append(":::: {.columns}")
+        parts.append("::: {.column width=\"20%\"}")
+        parts.append(":::")
+        parts.append("::: {.column width=\"60%\"}")
+        parts.append(img_md)
+        parts.append(":::")
+        parts.append("::: {.column width=\"20%\"}")
+        parts.append(":::")
+        parts.append("::::")
     else:
         parts.extend(bullet_lines)
 

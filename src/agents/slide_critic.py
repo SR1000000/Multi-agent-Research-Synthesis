@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Any, Literal, TypedDict
 
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from src.agents._image_utils import format_image_assets_block
-from src.agents.base import BaseLLMAgent, schema_prompt_contract
+from src.agents.base import BaseLLMAgent
+from src.agents.prompts.common import format_image_assets_block, format_slide_for_prompt
+from src.agents.prompts.critic_prompts import (
+    CRITIC_ROLE,
+    build_critic_user_prompt,
+    format_retrieved_artifact_row,
+    format_rewrite_instruction,
+)
 from src.memory.research.database import ResearchDatabase
 from src.memory.research.schema import ProtoSlide
 from src.state import (
@@ -35,7 +40,8 @@ class CriticDispatch(TypedDict):
 
 
 def _critic_log_label(state: CriticDispatch) -> str:
-    """Match SlideWriter-style prefixes so parallel critics are easy to tell apart in logs."""
+    """Match SlideWriter-style prefixes so parallel critics are easy to tell apart in logs.
+        Fall back to blueprint slide numbers when the supervisor did not narrow the assignment."""
     nums = list(state.get("target_slide_numbers") or [])
     if not nums:
         for bp in state.get("slide_blueprints") or []:
@@ -55,7 +61,6 @@ class CriticIssue(BaseModel):
     severity: Literal["critical", "major", "minor"]
     issue_type: str
     location: str
-    description: str
     affected_slide_numbers: list[int] = Field(default_factory=list)
     rewrite_instruction: str = Field(description="Precise instruction describing how to fix the issue.")
 
@@ -73,42 +78,15 @@ class CriticOutput(BaseModel):
     )
 
 
-def _critic_output_format() -> str:
-    """Schema-derived JSON contract for critic structured output (matches planner/writer pattern)."""
-    return schema_prompt_contract(
-        CriticOutput,
-        extra_rules=[
-            "Top-level keys MUST be exactly `summary`, `actionable`, and `issues` — do not wrap the payload in another key.",
-            "If no meaningful issues exist, set actionable=false and issues=[].",
-            "If one or more issues exist, set actionable=true and include every required field on each issue "
-            "(issue_code, severity, issue_type, location, description, rewrite_instruction).",
-            "issue_code values must be unique within this response (e.g. ISS_001, ISS_002).",
-            "Use the exact field names issue_code and issue_type — not `id`, `classification`, or other synonyms.",
-            "location must pinpoint what to change (e.g. slide number and bullet or heading).",
-            "rewrite_instruction must be one concrete edit directive per issue, not only a restatement of the problem.",
-        ],
-    )
-
-
-def _format_slide(slide: ProtoSlide) -> str:
-    return json.dumps(
-        {
-            "slide_number": slide.slide_number,
-            "content": slide.content.model_dump(mode="json"),
-            "chunk_references": slide.chunk_references,
-        },
-        indent=2,
-    )
-
-
 def _fingerprint(*, scope_type: str, scope_id: str, issue_type: str, location: str) -> str:
+    # Stable issue fingerprints let the supervisor detect repeated problems across cycles.
     raw = f"{scope_type}|{scope_id}|{issue_type}|{location}".encode("utf-8")
     return hashlib.sha1(raw).hexdigest()[:12]
 
 
 class SlideCriticAgent(BaseLLMAgent):
     def __init__(self, *, log_display: str | None = None) -> None:
-        super().__init__("critic", log_display=log_display)
+        super().__init__("critic", system_prompt=CRITIC_ROLE, log_display=log_display)
 
     def _load_session_retrieval_log(
         self, session_id: str, plan_generation: int | None = None
@@ -121,28 +99,8 @@ class SlideCriticAgent(BaseLLMAgent):
             )
         ordered: list[str] = []
         for row in rows:
-            ordered.append(self._format_retrieved_artifact(row))
+            ordered.append(format_retrieved_artifact_row(row))
         return "\n\n".join(ordered)
-
-    def _format_retrieved_artifact(self, row: dict[str, Any]) -> str:
-        kind = str(row.get("kind", "chunk"))
-        artifact_id = str(row.get("artifact_id") or "")
-        call_id = str(row.get("call_id") or "")
-        document_id = str(row.get("document_id") or "")
-        score = row.get("score")
-        contextualized = str(row.get("contextualized_text") or "").strip()
-        text = str(row.get("text") or "").strip()
-        caption = str(row.get("caption") or "").strip()
-        lines = [
-            f"--- Retrieved {kind} {artifact_id} (call_id={call_id}, doc={document_id}, score={score}) ---"
-        ]
-        if caption:
-            lines.append(f"caption: {caption}")
-        if contextualized:
-            lines.append(f"contextualized description: {contextualized}")
-        if text:
-            lines.append(f"value: {text}")
-        return "\n".join(lines)
 
     def _load_slides(self, slide_numbers: list[int]) -> list[ProtoSlide]:
         slides: list[ProtoSlide] = []
@@ -154,6 +112,7 @@ class SlideCriticAgent(BaseLLMAgent):
         return slides
 
     def _build_user_prompt(self, state: CriticDispatch) -> str:
+        # Assemble slides, plan intent, baseline chunks, retrieved artifacts, and images in one review packet.
         slide_numbers = state.get("target_slide_numbers", [])
         slides = self._load_slides(slide_numbers)
         plan_gen = int(state.get("plan_generation", 0))
@@ -166,7 +125,7 @@ class SlideCriticAgent(BaseLLMAgent):
             for bp in blueprints
             if bp.get("slide_number") in set(slide_numbers)
         )
-        slides_block = "\n\n".join(_format_slide(slide) for slide in slides) or "No slides found."
+        slides_block = "\n\n".join(format_slide_for_prompt(slide) for slide in slides) or "No slides found."
         chunk_ids = state.get("chunk_ids", [])
         baseline_chunks_block = ""
         with ResearchDatabase() as research_db:
@@ -189,39 +148,22 @@ class SlideCriticAgent(BaseLLMAgent):
                 baseline_chunks_block = "\n\n".join(ordered_texts)
 
         image_block = format_image_assets_block(image_metadatas)
-        return "\n".join(
-            [
-                f"Cycle: {state['cycle_number']}",
-                f"Check type: {state['check_type']}",
-                f"Scope: {state['scope_type']}::{state['scope_id']}",
-                f"Target slides: {slide_numbers}",
-                "",
-                "SLIDE ASSIGNMENTS:",
-                blueprint_block or "(none)",
-                "",
-                "CURRENT SLIDES:",
-                slides_block,
-                "",
-                "BASELINE SOURCE MATERIAL (Provided to writer):",
-                baseline_chunks_block or "(none)",
-                "",
-                "IN-SESSION RETRIEVAL LOG (Dynamically gathered by writer):",
-                retrieval_log or "(none)",
-                "",
-                "AVAILABLE IMAGE ASSETS:",
-                image_block or "(none)",
-                "",
-                "Identify only significant issues that break grounding, clarity, coherence, or the review criteria. "
-                "If no changes are needed, set actionable=false and issues=[].",
-                "Review the slides against the BASELINE SOURCE MATERIAL and IN-SESSION RETRIEVAL LOG. Treat this combined evidence as the source of truth for grounding checks.",
-                "If the combined evidence is missing support for a concrete claim on a slide, treat that as a grounding issue.",
-                "Identify only significant issues that break grounding, clarity, coherence, or the review criteria. If no changes are needed, set actionable=false and issues=[].",
-                "",
-                _critic_output_format(),
-            ]
+        return build_critic_user_prompt(
+            cycle_number=state["cycle_number"],
+            check_type=state["check_type"],
+            scope_type=state["scope_type"],
+            scope_id=state["scope_id"],
+            target_slide_numbers=slide_numbers,
+            blueprint_block=blueprint_block,
+            slides_block=slides_block,
+            baseline_chunks_block=baseline_chunks_block,
+            retrieval_log=retrieval_log,
+            image_block=image_block,
+            output_model=CriticOutput,
         )
 
     def run(self, state: CriticDispatch) -> Command:
+        # Persist each issue before returning it so later supervisor cycles can detect recurrence.
         self._set_session_id(state)
         self._set_plan_generation(state)
         plan_gen = int(state.get("plan_generation", 0))
@@ -239,7 +181,6 @@ class SlideCriticAgent(BaseLLMAgent):
                     "severity": issue.severity,
                     "issue_type": issue.issue_type,
                     "location": issue.location,
-                    "description": issue.description,
                     "fingerprint": _fingerprint(
                         scope_type=state["scope_type"],
                         scope_id=state["scope_id"],
@@ -250,21 +191,8 @@ class SlideCriticAgent(BaseLLMAgent):
                     "rewrite_instruction": issue.rewrite_instruction,
                 }
             )
-        def _fmt_instruction(issue: dict) -> str:
-            slide_nums = issue.get("affected_slide_numbers") or []
-            loc = issue.get("location", "").strip()
-            
-            context_parts = []
-            if slide_nums:
-                context_parts.append(f"Slide(s) {', '.join(str(n) for n in slide_nums)}")
-            if loc and loc.lower() not in ("none", "n/a", "general", "all"):
-                context_parts.append(f"Location: {loc}")
-                
-            prefix = f"[{' | '.join(context_parts)}] " if context_parts else ""
-            return f"- {prefix}{issue['rewrite_instruction']}"
-
         rewrite_instructions = "\n".join(
-            _fmt_instruction(issue) for issue in issues if issue["rewrite_instruction"].strip()
+            format_rewrite_instruction(issue) for issue in issues if issue["rewrite_instruction"].strip()
         )
         critic_result: CriticResultRecord = {
             "plan_generation": plan_gen,
@@ -298,7 +226,6 @@ class SlideCriticAgent(BaseLLMAgent):
                     issue_code=issue["issue_code"],
                     severity=issue["severity"],
                     location=issue["location"],
-                    description=issue["description"],
                     fingerprint=issue["fingerprint"],
                     rewrite_instruction_summary=issue["rewrite_instruction"],
                     affected_slide_numbers=issue.get("affected_slide_numbers") or None,
@@ -319,4 +246,5 @@ class SlideCriticAgent(BaseLLMAgent):
 
 
 def critic_node(state: CriticDispatch | ResearchState) -> Command:
+    # Type ignore is intentional: LangGraph supplies the narrower CriticDispatch at runtime.
     return SlideCriticAgent(log_display=_critic_log_label(state)).run(state)  # type: ignore[arg-type]

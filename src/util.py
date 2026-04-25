@@ -1,13 +1,3 @@
-# Available models for reference:
-# - gemini-3.1-flash-lite-preview
-# - qwen3.5:397b
-# - meta-llama/llama-3.2-3b-instruct
-# - meta-llama/llama-3.3-70b-instruct
-# - openai/gpt-oss-20b
-# - openai/gpt-oss-120b
-# - google/gemma-3n-e2b-it
-# - google/gemma-3n-e4b-it
-
 import re
 
 MAX_REVISIONS = 3
@@ -17,7 +7,7 @@ MAX_REPLANS = 2
 VEC_DIMENSIONS = 768
 
 # Known Type 1 PDF encoding artifacts: raw glyph byte promoted to a U+00xx
-# control character instead of the correct U+20xx typographic character.
+# Some models will output these in the proto-slides, which causes trouble for pandoc as these are not valid XML characters.
 _TYPOGRAPHIC_REPAIRS = {
     "\u0010": "\u2010",  # HYPHEN
     "\u0011": "\u2011",  # NON-BREAKING HYPHEN

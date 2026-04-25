@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from src.memory.research.database import ResearchDatabase
 from src.agents.base import BaseLLMAgent
+from src.agents.prompts.supervisor_prompts import SUPERVISOR_ROLE, build_supervisor_user_prompt
 from src.state import MAX_CYCLES, ResearchState, ReviewAssignment, make_initial_review_state
 
 
@@ -67,6 +68,7 @@ def _all_actionable_issues_are_persistent_minor(
     results: list[dict],
     recurring_counts: dict[str, int],
 ) -> bool:
+    # Persistent minor findings can be accepted to avoid endless rewrite loops on low-risk issues.
     saw_issue = False
     for result in results:
         if not result.get("actionable"):
@@ -84,6 +86,7 @@ def _all_actionable_issues_are_persistent_minor(
 def _build_group_assignments(
     *, plan, cycle_number: int, plan_generation: int
 ) -> list[ReviewAssignment]:
+    # Critics review by group so each assignment shares the same source chunks and narrative context.
     assignments: list[ReviewAssignment] = []
     for idx, group in enumerate(plan.slide_groups):
         target_slide_numbers = [bp.slide_number for bp in group.slide_blueprints]
@@ -132,6 +135,7 @@ def _short_reasoning(text: str, max_len: int = 240) -> str:
 def _build_rewrite_assignments(
     *, plan, results: list[dict], cycle_number: int, plan_generation: int
 ) -> list[ReviewAssignment]:
+    # Rewrite only affected slides when the critic names them; otherwise rewrite the whole group.
     assignments: list[ReviewAssignment] = []
     for result in results:
         group = plan.slide_groups[result["group_idx"]]
@@ -179,10 +183,11 @@ def _build_rewrite_assignments(
 
 
 class SupervisorAgent(BaseLLMAgent):
-    def __init__(self):
-        super().__init__("supervisor")
+    def __init__(self) -> None:
+        super().__init__("supervisor", system_prompt=SUPERVISOR_ROLE)
 
     def run(self, state: ResearchState) -> Command:
+        # Mutate review state as the durable control plane for critic and rewrite cycles.
         self._set_session_id(state)
         review = dict(state.get("review") or {})
         plan = state.get("presentation_plan")
@@ -338,18 +343,13 @@ class SupervisorAgent(BaseLLMAgent):
         actionable_results = [r for r in critic_results if r.get("actionable")]
         max_cycles = review.get("max_cycles", MAX_CYCLES)
 
-        user = "\n".join(
-            [
-                f"Query:\n{state['query']}",
-                f"Cycle number: {cycle_number} (Max: {max_cycles})",
-                f"Severity counts: {severity_counts}",
-                "Critic results:",
-                summaries,
-                "Recurring issue fingerprints (count >= 2):",
-                recurring_lines,
-                "",
-                "Based on the edge cases in your system instructions, decide whether to accept, revise, or replan.",
-            ]
+        user = build_supervisor_user_prompt(
+            query=state["query"],
+            cycle_number=cycle_number,
+            max_cycles=max_cycles,
+            severity_counts=severity_counts,
+            summaries=summaries,
+            recurring_lines=recurring_lines,
         )
 
         result: SupervisorOutput = self._call(

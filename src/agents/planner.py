@@ -19,9 +19,9 @@ from typing import Literal
 
 from langgraph.types import Command
 
-from src.agents.base import BaseLLMAgent, schema_prompt_contract
+from src.agents.base import BaseLLMAgent
+from src.agents.prompts.planner_prompts import PLANNER_ROLE, build_planner_output_format
 from src.state import (
-    FIRST_CONTENT_SLIDE_NUMBER,
     LLMPresentationPlan,
     PresentationPlan,
     ResearchState,
@@ -45,20 +45,6 @@ SECTION_SNIPPET_PER_CHUNK_CHARS = 180
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+\S")
 
 
-def _planner_output_format() -> str:
-    """Return a schema-derived output contract for planner structured JSON."""
-    return schema_prompt_contract(
-        LLMPresentationPlan,
-        extra_rules=[
-            "Do NOT wrap the plan in `presentation_plan` or any other outer key.",
-            "Use only section labels that appear in the outline exactly as shown.",
-            f"Each SlideGroup must contain between {MIN_GROUP_SIZE} and {MAX_GROUP_SIZE} slide_blueprints.",
-            "Provide a top-level `title` with fewer than 7 words.",
-            "Provide a top-level `subtitle` as a concise supporting phrase for the audience.",
-        ],
-    )
-
-
 # ---------------------------------------------------------------------------
 # Internal data class
 # ---------------------------------------------------------------------------
@@ -75,6 +61,7 @@ class _Section:
         word_count: int,
         snippet: str,
     ):
+        # Store only lightweight section metadata; full chunk text stays in research.db.
         self.label      = label
         self.heading    = heading
         self.chunk_ids  = chunk_ids
@@ -101,6 +88,7 @@ def _detect_heading(chunk_text: str) -> str | None:
 
 def _normalize_planner_text(text: str) -> str:
     """Collapse markdown-ish chunk text into one readable snippet line."""
+    # Remove headings from snippets because headings already appear separately in the outline.
     cleaned_lines: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
@@ -121,6 +109,7 @@ def _truncate_text(text: str, max_chars: int) -> str:
     if len(clean) <= max_chars:
         return clean
 
+    # Prefer natural punctuation boundaries so prompt snippets remain readable.
     floor = max(int(max_chars * 0.6), 1)
     for sep in (". ", "; ", ": ", ", "):
         idx = clean.rfind(sep, floor, max_chars + 1)
@@ -145,6 +134,7 @@ def _build_section_snippet(chunks: list[dict]) -> str:
     if not chunks:
         return ""
 
+    # Sample first/middle/last chunks to keep long sections represented without bloating prompts.
     candidate_indexes = sorted({0, len(chunks) // 2, len(chunks) - 1})
     snippets: list[str] = []
     seen: set[str] = set()
@@ -164,7 +154,8 @@ def _build_section_snippet(chunks: list[dict]) -> str:
 
 
 def _build_paper_summary(raw_chunks: list[dict], paper_abstract: str) -> str:
-    """Create a short paper-level summary for the planner prompt."""
+    """Create a short paper-level summary for the planner prompt.
+        The abstract is trusted first; otherwise the first chunks approximate the paper overview."""
     abstract = _normalize_planner_text(paper_abstract)
     if abstract:
         return _truncate_text(abstract, PAPER_SUMMARY_MAX_CHARS)
@@ -203,6 +194,7 @@ def _detect_sections(raw_chunks: list[dict], label_offset: int = 0) -> list[_Sec
     for i, chunk in enumerate(raw_chunks):
         text    = chunk["text"] or ""
         heading = _detect_heading(text)
+        # A new heading starts a new section; headingless chunks stay attached to the prior section.
         is_boundary = (i == 0) or (heading is not None)
 
         if is_boundary and current_ids:
@@ -250,6 +242,7 @@ def _build_outline(
     max_slides: int,
     total_chunks: int,
 ) -> str:
+    # Keep the outline compact but information-rich enough for the LLM to choose a narrative arc.
     total_words = sum(s.word_count for s in all_sections)
     lines = [
         f"PAPER OUTLINE ({len(all_sections)} sections across {len(paper_contexts)} paper(s), "
@@ -281,8 +274,8 @@ def _build_outline(
         "- Use the paper summaries and section snippets to infer the thesis and storyline, not just the headings.",
         f"- Each SlideGroup must contain between {MIN_GROUP_SIZE} and {MAX_GROUP_SIZE} slides.",
         "- A slide may reference sections from different papers.",
-        f"- The title slide is generated automatically from the `title` and `subtitle` fields you provide. Your blueprints MUST start at slide_number {FIRST_CONTENT_SLIDE_NUMBER}.",
-        f"- Keep content slides within slide numbers {FIRST_CONTENT_SLIDE_NUMBER} through {max_slides - 1} "
+        f"- The title slide is generated automatically from the `title` and `subtitle` fields you provide. Your blueprints MUST start at slide_number 1.",
+        f"- Keep content slides within slide numbers 1 through {max_slides - 1} "
         f"(total deck = title + content = at most {max_slides} slides).",
     ]
     return "\n".join(lines)
@@ -298,6 +291,7 @@ def _validate_llm_plan(
     max_slides: int,
 ) -> list[str]:
     """Return a list of validation failure messages (empty = valid)."""
+    # Validate all cross-field invariants before resolving labels into concrete chunk ids.
     failures: list[str] = []
     seen_slide_numbers: set[int] = set()
     slide_numbers_in_order: list[int] = []
@@ -327,9 +321,9 @@ def _validate_llm_plan(
         for bi, bp in enumerate(group.slide_blueprints):
             slide_numbers_in_order.append(bp.slide_number)
 
-            if bp.slide_number < FIRST_CONTENT_SLIDE_NUMBER:
+            if bp.slide_number < 1:
                 failures.append(
-                    f"Group {gi} blueprint {bi} has slide_number {bp.slide_number}, but content slides must start at {FIRST_CONTENT_SLIDE_NUMBER}."
+                    f"Group {gi} blueprint {bi} has slide_number {bp.slide_number}, but content slides must start at 1."
                 )
             if bp.slide_number > max_slides - 1:
                 failures.append(
@@ -356,15 +350,13 @@ def _validate_llm_plan(
     if slide_numbers_in_order and slide_numbers_in_order != sorted(slide_numbers_in_order):
         failures.append("Slide blueprints must be ordered by ascending slide_number across the full plan.")
     if slide_numbers_in_order:
+        # Contiguous numbering prevents later fan-out steps from silently dropping or duplicating slides.
         expected_numbers = list(
-            range(
-                FIRST_CONTENT_SLIDE_NUMBER,
-                FIRST_CONTENT_SLIDE_NUMBER + len(slide_numbers_in_order),
-            )
+            range(1, 1 + len(slide_numbers_in_order))
         )
         if slide_numbers_in_order != expected_numbers:
             failures.append(
-                f"Content slide numbers must be contiguous starting at {FIRST_CONTENT_SLIDE_NUMBER}: expected {expected_numbers}, received {slide_numbers_in_order}."
+                f"Content slide numbers must be contiguous starting at 1: expected {expected_numbers}, received {slide_numbers_in_order}."
             )
 
     return failures
@@ -381,10 +373,12 @@ class PlannerAgent(BaseLLMAgent):
     ):
         super().__init__(
             "planner",
+            system_prompt=PLANNER_ROLE,
             tools_for_agent=tools_for_agent,
         )
 
     def run(self, state: ResearchState) -> Command[Literal["plan_executor"]]:
+        # Convert stored document chunks into a strict, section-referenced presentation plan.
         self._set_session_id(state)
 
         doc_ids      = state.get("doc_ids", [])
@@ -458,11 +452,14 @@ class PlannerAgent(BaseLLMAgent):
             sections_per_doc, max_slides, total_chunks,
         )
 
+        contract = build_planner_output_format(
+            min_group_size=MIN_GROUP_SIZE, max_group_size=MAX_GROUP_SIZE
+        )
         user_prompt = (
             f"USER QUERY:\n{query}\n\n"
             f"{outline}\n\n"
             "Produce a PresentationPlan for the above paper(s) based on the user query.\n\n"
-            f"{_planner_output_format()}"
+            f"{contract}"
         )
         turns = [{"role": "user", "content": user_prompt}]
 
