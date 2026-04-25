@@ -1,5 +1,10 @@
 """
-Slide-native SupervisorAgent.
+SupervisorAgent — orchestrates the critic-and-rewrite quality gate for slide decks.
+
+The supervisor sits between critic cycles and rewrite cycles in the LangGraph pipeline.
+After critics report their findings it decides whether to accept the deck, dispatch targeted
+rewrites, or trigger a full replan.  Decisions are forced to be conservative: critical issues
+always override an LLM "accept", and the cycle cap prevents infinite rewrite loops.
 """
 import json
 
@@ -9,6 +14,7 @@ from pydantic import BaseModel
 
 from src.memory.research.database import ResearchDatabase
 from src.agents.base import BaseLLMAgent
+from src.agents.prompts.supervisor_prompts import SUPERVISOR_ROLE, build_supervisor_user_prompt
 from src.state import MAX_CYCLES, ResearchState, ReviewAssignment, make_initial_review_state
 
 
@@ -17,16 +23,18 @@ from src.state import MAX_CYCLES, ResearchState, ReviewAssignment, make_initial_
 # ---------------------------------------------------------------------------
 
 class SupervisorOutput(BaseModel):
+    """Structured decision returned by the supervisor LLM call.
+
+    The LLM proposes a decision; the agent then applies override rules (e.g. forcing
+    "revise" when critical issues are present) before acting on the final decision.
+    """
+
     decision:  str   # "accept" | "revise" | "replan"
     reasoning: str
     feedback:  str = ""
 
-
-# ---------------------------------------------------------------------------
-# Agent (dormant)
-# ---------------------------------------------------------------------------
-
 def _severity_counts(results: list[dict]) -> dict[str, int]:
+    """Aggregate issue counts by severity across all critic results for a single cycle."""
     counts = {"critical": 0, "major": 0, "minor": 0}
     for result in results:
         for issue in result.get("issues", []):
@@ -36,37 +44,16 @@ def _severity_counts(results: list[dict]) -> dict[str, int]:
     return counts
 
 
-def _rewrite_map(results: list[dict]) -> dict[str, bool]:
-    return {
-        result["assignment_id"]: bool(result.get("actionable"))
-        for result in results
-    }
-
-
-def _has_actionable_critical_issue(results: list[dict]) -> bool:
-    for result in results:
-        if not result.get("actionable"):
-            continue
-        for issue in result.get("issues", []):
-            if issue.get("severity") == "critical":
-                return True
-    return False
-
-
-def _has_actionable_major_issue(results: list[dict]) -> bool:
-    for result in results:
-        if not result.get("actionable"):
-            continue
-        for issue in result.get("issues", []):
-            if issue.get("severity") == "major":
-                return True
-    return False
-
-
 def _all_actionable_issues_are_persistent_minor(
     results: list[dict],
     recurring_counts: dict[str, int],
 ) -> bool:
+    """Return True when every outstanding issue is minor and has recurred at least twice.
+
+    Persistent minor findings can be accepted to break endless rewrite loops where the LLM
+    repeatedly flags low-risk stylistic concerns it is unable to resolve.
+    Returns False when there are no actionable issues at all (caller must not accept on vacuous truth).
+    """
     saw_issue = False
     for result in results:
         if not result.get("actionable"):
@@ -84,6 +71,11 @@ def _all_actionable_issues_are_persistent_minor(
 def _build_group_assignments(
     *, plan, cycle_number: int, plan_generation: int
 ) -> list[ReviewAssignment]:
+    """Build one critic ReviewAssignment per slide group in the presentation plan.
+
+    Critics are scoped to groups so each assignment shares the same source chunks and
+    narrative context, keeping review prompts focused and findings comparable across cycles.
+    """
     assignments: list[ReviewAssignment] = []
     for idx, group in enumerate(plan.slide_groups):
         target_slide_numbers = [bp.slide_number for bp in group.slide_blueprints]
@@ -122,16 +114,15 @@ def _format_dispatch_targets(assignments: list[ReviewAssignment]) -> str:
     return "; ".join(parts)
 
 
-def _short_reasoning(text: str, max_len: int = 240) -> str:
-    one_line = " ".join((text or "").split())
-    if len(one_line) <= max_len:
-        return one_line
-    return one_line[: max_len - 1] + "…"
-
-
 def _build_rewrite_assignments(
     *, plan, results: list[dict], cycle_number: int, plan_generation: int
 ) -> list[ReviewAssignment]:
+    """Build targeted rewrite ReviewAssignments from actionable critic results.
+
+    Prefers to rewrite only the specific slides named by the critic; falls back to the
+    full group when no individual slide numbers are provided or when all named slides are
+    outside the valid group range (i.e. the critic hallucinated out-of-bounds numbers).
+    """
     assignments: list[ReviewAssignment] = []
     for result in results:
         group = plan.slide_groups[result["group_idx"]]
@@ -179,10 +170,30 @@ def _build_rewrite_assignments(
 
 
 class SupervisorAgent(BaseLLMAgent):
-    def __init__(self):
-        super().__init__("supervisor")
+    """Stateful control-plane agent that evaluates critic results and routes the pipeline.
+
+    On each invocation it inspects the current review state and critic findings to decide
+    between three outcomes:
+      - accept:  deck meets the quality bar → route to END (or force-export on cycle cap).
+      - revise:  targeted issues found → dispatch rewrite assignments then re-run critics.
+      - replan:  fundamental structural problems → reset review state and call the planner.
+
+    Override rules ensure critical issues are never silently accepted and that cycle limits
+    are respected regardless of what the LLM proposes.
+    """
+
+    def __init__(self) -> None:
+        """Initialise with the supervisor system prompt."""
+        super().__init__("supervisor", system_prompt=SUPERVISOR_ROLE)
 
     def run(self, state: ResearchState) -> Command:
+        """Evaluate the current critic cycle and return the next routing Command.
+
+        Reads ``critic_results`` filtered to the current cycle and plan generation, queries
+        the database for recurring issue fingerprints, calls the LLM for a proposed decision,
+        then applies conservative override rules before returning a Command routed to the next
+        node.  Review state is mutated in-place and written back to the graph state on every path.
+        """
         self._set_session_id(state)
         review = dict(state.get("review") or {})
         plan = state.get("presentation_plan")
@@ -199,7 +210,10 @@ class SupervisorAgent(BaseLLMAgent):
             and result.get("plan_generation", 0) == plan_generation
         ]
         severity_counts = _severity_counts(critic_results)
-        rewrites_required = _rewrite_map(critic_results)
+        # Map each assignment ID to whether its critic result was actionable.
+        rewrites_required = {
+            r["assignment_id"]: bool(r.get("actionable")) for r in critic_results
+        }
         history = []
         with ResearchDatabase() as research_db:
             history = research_db.list_review_events(
@@ -338,18 +352,13 @@ class SupervisorAgent(BaseLLMAgent):
         actionable_results = [r for r in critic_results if r.get("actionable")]
         max_cycles = review.get("max_cycles", MAX_CYCLES)
 
-        user = "\n".join(
-            [
-                f"Query:\n{state['query']}",
-                f"Cycle number: {cycle_number} (Max: {max_cycles})",
-                f"Severity counts: {severity_counts}",
-                "Critic results:",
-                summaries,
-                "Recurring issue fingerprints (count >= 2):",
-                recurring_lines,
-                "",
-                "Based on the edge cases in your system instructions, decide whether to accept, revise, or replan.",
-            ]
+        user = build_supervisor_user_prompt(
+            query=state["query"],
+            cycle_number=cycle_number,
+            max_cycles=max_cycles,
+            severity_counts=severity_counts,
+            summaries=summaries,
+            recurring_lines=recurring_lines,
         )
 
         result: SupervisorOutput = self._call(
@@ -358,8 +367,19 @@ class SupervisorAgent(BaseLLMAgent):
         )
         model_decision = result.decision
         at_cycle_cap = cycle_number >= max_cycles
-        has_critical_actionable = _has_actionable_critical_issue(actionable_results)
-        has_major_actionable = _has_actionable_major_issue(actionable_results)
+        # Return True if any actionable critic result contains at least one
+        # critical- or major-severity issue. (actionable_results is pre-filtered
+        # to actionable=True, so the old per-result actionable guard is redundant here.)
+        has_critical_actionable = any(
+            i.get("severity") == "critical"
+            for r in actionable_results
+            for i in r.get("issues", [])
+        )
+        has_major_actionable = any(
+            i.get("severity") == "major"
+            for r in actionable_results
+            for i in r.get("issues", [])
+        )
         has_only_persistent_minor_actionable = _all_actionable_issues_are_persistent_minor(
             actionable_results,
             recurring,
@@ -395,9 +415,16 @@ class SupervisorAgent(BaseLLMAgent):
             "messages": [json.dumps({"supervisor_cycle_summary": summary}, sort_keys=True)],
         }
 
+        # Collapse multi-line LLM reasoning to a single truncated line suitable for terminal logs.
+        _reasoning_one = " ".join((result.reasoning or "").split())
+        _short_reasoning = (
+            _reasoning_one
+            if len(_reasoning_one) <= 240
+            else _reasoning_one[:239] + "…"
+        )
         self._logger.log(
             f"[supervisor] cycle {cycle_number}: model={model_decision} -> effective={decision} "
-            f"| counts={severity_counts} | {_short_reasoning(result.reasoning)}"
+            f"| counts={severity_counts} | {_short_reasoning}"
         )
 
         if decision == "replan":
@@ -456,4 +483,5 @@ class SupervisorAgent(BaseLLMAgent):
 
 
 def supervisor_node(state: ResearchState) -> Command:
+    """LangGraph node entry point that constructs a SupervisorAgent and delegates to its run() method."""
     return SupervisorAgent().run(state)

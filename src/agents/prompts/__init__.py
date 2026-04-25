@@ -1,0 +1,2 @@
+# Agent prompt content lives in sibling modules: planner_prompts, critic_prompts, writer_prompts, supervisor_prompts, common.
+# This file is recommended for consistency in structure with other packages, and for future use.

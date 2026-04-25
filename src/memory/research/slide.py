@@ -103,7 +103,6 @@ def save_review_event(
     issue_code: str | None = None,
     severity: str | None = None,
     location: str | None = None,
-    description: str | None = None,
     fingerprint: str | None = None,
     rewrite_instruction_summary: str | None = None,
     affected_slide_numbers: list[int] | None = None,
@@ -129,13 +128,12 @@ def save_review_event(
                 issue_code,
                 severity,
                 location,
-                description,
                 fingerprint,
                 rewrite_instruction_summary,
                 affected_slide_numbers,
                 decision
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -148,7 +146,6 @@ def save_review_event(
                 issue_code,
                 severity,
                 location,
-                description,
                 fingerprint,
                 rewrite_instruction_summary,
                 affected_json,
@@ -183,7 +180,7 @@ def list_review_events(
         rows = db._conn.execute(
             """
             SELECT session_id, cycle_number, plan_generation, scope_type, scope_id, check_type,
-                   assignment_id, issue_code, severity, location, description, fingerprint,
+                   assignment_id, issue_code, severity, location, fingerprint,
                    rewrite_instruction_summary, affected_slide_numbers, decision, created_at
             FROM slide_review_events
             WHERE session_id = ? AND plan_generation = ?
@@ -195,7 +192,7 @@ def list_review_events(
         rows = db._conn.execute(
             """
             SELECT session_id, cycle_number, plan_generation, scope_type, scope_id, check_type,
-                   assignment_id, issue_code, severity, location, description, fingerprint,
+                   assignment_id, issue_code, severity, location, fingerprint,
                    rewrite_instruction_summary, affected_slide_numbers, decision, created_at
             FROM slide_review_events
             WHERE session_id = ?

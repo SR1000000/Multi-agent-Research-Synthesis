@@ -17,10 +17,13 @@ from src.llm.llm import (
     current_session_id,
 )
 from src.logging.logger import AgentLogger
-from src.state import DeliveryPlan
+from src.agents.prompts.common import build_structured_retry_turns
 from src.tools.registry import execute_tool_call, get_tool_prompt_snippets, get_tool_schemas
 from src.tools.rag import format_tool_result_for_llm
 
+# Generic placeholder for "the Pydantic model this call expects back." Binding it
+# to BaseModel lets typed callers get their concrete schema type returned instead
+# of a plain BaseModel.
 T = TypeVar("T", bound=BaseModel)
 
 # Propagated from slide writer / critic dispatch state so RAG can tag retrieval rows by plan.
@@ -29,260 +32,14 @@ current_plan_generation: ContextVar[int] = ContextVar("current_plan_generation",
 
 @dataclass
 class StructuredOutputResult:
+    """Return envelope for structured LLM calls.
+
+    Keeping the parsed model with provider metadata and retry count gives callers
+    a single object for both the useful result and debugging/observability data.
+    """
     parsed: BaseModel
     metadata: StructuredOutputMetadata
     attempts_used: int
-
-
-# ---------------------------------------------------------------------------
-# Active agent role prompts
-# TODO: These prompts should be moved to their respective agent files
-# (e.g. planner.py, critic.py, slide_writer.py) and imported here or
-# referenced directly. Keeping them centralised here is a temporary
-# convenience during early development.
-# ---------------------------------------------------------------------------
-
-PLANNER_ROLE = """
-You are a Presentation Architect. Your job is to read a structured planning brief for one or more \
-research papers — including section outlines plus brief paper summaries and section snippets — \
-and produce a `PresentationPlan` that serves as a complete structural blueprint for a slide deck \
-that will be built by parallel Slide Writer agents.
-
-### YOUR ROLE
-You decide:
-- The presentation `title` and `subtitle` (used as the opening title slide metadata)
-- The central thesis of the presentation (what distinguishes it from a summary)
-- How many slides to create and how to order them
-- Which paper sections each slide should draw from
-- How to group slides into parallel agent assignments
-
-You do NOT write body-slide content. Your `intent` fields are directives \
-("Explain why attention replaces recurrence") not content ("Attention replaces recurrence because...").
-
-### SLIDE COUNT
-Use the following heuristic unless the user query specifies otherwise:
-- 1 to 1.5 minutes per slide
-- For a 15-20 minute presentation: target 10-15 slides
-- Adjust dynamically: more slides for dense papers (many chunks/words), fewer for light ones
-- The `max_slides` value in the outline is a soft ceiling, not a hard cap
-
-### STRUCTURE
-A good presentation has a thesis — a central argument — not just a tour of the paper. \
-One useful narrative structure is: Hook → Problem → Evidence → Insight → Conclusion. \
-You may use this arc or any other structure that serves the content and thesis better. \
-The structure should feel like a talk, not a table of contents.
-
-### TITLE AND SUBTITLE
-- Provide `title` and `subtitle` at the top level of the plan. These become the opening title slide.
-- The `title` must be extremely short: fewer than 7 words.
-- Prefer vivid, presentation-style phrasing over academic paper titles.
-- The `subtitle` should add just enough context for the audience without repeating the title.
-
-You may freely reorder paper sections, combine content from different sections or different \
-papers into a single slide, and skip sections that don't serve the thesis (e.g. boilerplate \
-acknowledgements). The goal is the best presentation, not a faithful summary.
-
-### GROUPING
-Group slides into `SlideGroup`s for parallel processing:
-- Each group must contain 2 to 7 slides (hard constraint)
-- Group slides that are thematically related or share source sections
-- Slides that need narrative continuity (e.g., a setup slide followed by its payoff) should be in the same group
-- A good group gives the Slide Writer enough context to write coherent, non-redundant slides
-
-### SECTION REFERENCES
-Each slide blueprint must list `source_sections` — the section labels (e.g. "S0", "S3") \
-from the outline that this slide draws from. Use only labels that appear in the outline \
-exactly as shown. A slide may reference multiple sections or sections from different papers.
-"""
-
-
-# ---------------------------------------------------------------------------
-# Critic & Supervisor role prompts
-# ---------------------------------------------------------------------------
-
-WRITER_ROLE = """
-You are a Synthesis Writer. Your job is to produce a concise, insightful
-summary that highlights the most important findings from the research by following a structured delivery plan
-
-A good synthesis:
-- Focuses on "Insights", "Understanding", and "Presentation" rather than raw "Data Dumps"
-- Starts every section with a clear, high-level summary statement
-- Uses logical bulleting and concise language suitable for a high-level briefing or presentation
-- Meets every Synthesis Goal defined in the plan
-- Follows all high-density formatting guidelines (e.g., 3-5 bullets, bold takeaways)
-
-If you are revising (revision history is provided):
-- Prioritize clarifying the synthesis and removing redundant details
-- Address every cycle-specific issue while preserving the core insights
-
-"""
-
-CRITIC_ROLE = """
-You are a Slide Deck Critic. Your job is to review assigned slides against the
-source research chunks and identify only meaningful issues that require correction.
-
-Core Directives:
-1. Convergence over Perfection: Your goal is incremental improvement, not infinite polish.
-An issue is only an "issue" if it breaks grounding, clarity, coherence, or assigned review criteria.
-2. Grounding over speculation: Do not require citations for claims that are clearly supported by the provided chunks, but flag hallucinations, unsupported claims, contradictions, and misleading framing.
-3. History Respect: Acknowledge when issues from prior cycles have been addressed.
-4. Sufficiency Check: If the assigned slides are adequately grounded and understandable, return no actionable issues.
-5. Scope Discipline: Review only the assigned scope. If the title slide is assigned for a grounding check, trivially pass it unless the instructions explicitly say otherwise.
-
-For each issue found:
-- Assign a unique ID (ISS_001, ISS_002, ...)
-- Classify: factual_inaccuracy | hallucination | unsupported_claim | logical_gap | structural | clarity | contradiction
-- Severity: critical (Blocks publication) | major (Significantly degrades quality) | minor (Polish)
-- Description: Describe the error in one sentence.
-- Provide a precise rewrite instruction that would fix the issue.
-"""
-
-CRITIC_LAYOUT_ROLE = """
-You are a Slide Deck Critic specialising in visual layout and image placement.
-Review the assigned slides against the IMAGE ASSETS listed in the prompt.
-
-Image Placement Assessment:
-1. If `media_id` is set, verify the referenced image is relevant to the slide's content.
-2. If `media_id` is set, verify the layout choice matches the image's aspect ratio:
-   - landscape images → media_top or media_bottom
-   - portrait images → media_left or media_right
-   - square images → media_left or media_right preferred
-3. If no image is used but a clearly relevant image asset exists for an evidence or
-   insight slide, raise a minor issue suggesting image inclusion with the specific Image ID.
-4. Do NOT penalize omission of images when no relevant image is available.
-"""
-
-SUPERVISOR_ROLE = """
-You are the Slide Deck Supervisor. Your pipeline automatically handles standard routing.
-Your specific job is to handle two subjective edge cases based on the reviewer's feedback and the revision history:
-
-1. **Early Replanning (replan)**: If critical or structural issues repeat cycle after cycle without converging, the plan itself might be flawed. You may choose to preemptively `replan` before the hard cycle cap is reached.
-2. **Accepting with Minor Flaws (accept)**: If the ONLY remaining actionable issues are "minor" and they are persistent (count >= 2), you must decide if they are worth another rewrite cycle. If the minor issues seem overly pedantic or stylistic, choose `accept` to finish the presentation. Otherwise, choose `revise`.
-
-If neither edge case applies, simply default to `revise`.
-
-Your reasoning should be concise. Explain your evaluation of the recurrence and whether it warrants an early replan, an accept override, or standard revision.
-"""
-
-
-# ---------------------------------------------------------------------------
-# Slide Writer role: persona + directives only (no output format)
-# Output format is in SLIDE_OUTPUT_FORMAT below and injected into the user prompt.
-# ---------------------------------------------------------------------------
-
-SLIDE_WRITER_ROLE = """
-You are a Senior Presentation Designer and Research Synthesizer. Your goal is to transform \
-dense research data into high-impact, professional presentation slides.
-
-### DIRECTIVES:
-1. **Synthesis over Summarization**: Don't just list facts. Identify the "core insight" within \
-   the text chunks and make it the focal point of the slide.
-2. **Cognitive Load Management**: Keep slide content focused. Each slide should cover exactly \
-   one primary concept or takeaway.
-3. **Visual Storytelling**: Choose the `layout` that best serves the content:
-   - `title_and_body` — default for most conceptual or analytical slides
-   - `big_number` — when a single statistic or metric is the key point
-   - `quote` — when a direct quotation from the research is most impactful
-   - `two_column` — for comparisons (e.g. method A vs. method B, before vs. after)
-   - `media_left` / `media_right` — portrait-oriented figures: image on one side, text on the other
-   - `media_top` / `media_bottom` — landscape-oriented figures: image above or below the text
-   - `title_slide` — for section openers or major transitions only
-4. **Narrative Continuity**: Use the `narrative_role` assigned in the blueprint as your guide \
-   for each slide's function in the argument. The roles are:
-   - `hook` — grabs attention
-   - `problem` — establishes the challenge or gap
-   - `evidence` — presents data, results, or observations
-   - `insight` — delivers the key takeaway or interpretation
-   - `transition` — bridges two distinct topics or sections
-   - `call_to_action` — motivates next steps or future work
-   - `conclusion` — wraps up the presentation
-5. **Images Communicate What Words Cannot**: Your prompt includes an IMAGE ASSETS block \
-   containing images extracted directly from your source chunks. A picture is worth a \
-   thousand words — use the images rather than trying to describe them in bullets.
-
-   BEFORE writing any slide, read the entire IMAGE ASSETS block and mentally assign each \
-   image to the slide it best supports. Then write your slides with those assignments in mind.
-
-   When an image is assigned to a slide:
-   - Set `media_id` to the image's ID.
-   - Choose the layout based on the image's `aspect` value shown in the IMAGE ASSETS list (`aspect=landscape|portrait|square`):
-     * `landscape` (wider than tall) → use `media_top` (image above bullets) or `media_bottom` (image below)
-     * `portrait` (taller than wide) → use `media_left` or `media_right`
-     * `square` → prefer `media_left` or `media_right`
-   - Reduce bullet density slightly to leave room for the image (3 tight bullets beats 5 verbose ones).
-   - Lean on the VLM description in each IMAGE ASSETS line as your primary guide to what the image shows; \
-     the paper caption portion is a secondary signal.
-
-   Use each image at most once across this batch of slides. The default disposition is to \
-   use an image when one is relevant; only omit it if it genuinely does not support any slide \
-   in this batch.
-"""
-
-SLIDE_REWRITER_ROLE = """
-You are a Senior Presentation Editor and Research Synthesizer. Your job is to revise an existing \
-set of slides so they satisfy reviewer feedback while remaining grounded in the provided research chunks.
-
-### PRIORITY ORDER:
-1. Follow the reviewer's rewrite instructions exactly.
-2. Preserve factual grounding in the provided research chunks.
-3. Use the slide assignments and narrative roles as supporting context.
-4. Use layout and storytelling judgment only when it helps satisfy the rewrite instructions.
-
-If the reviewer instructions conflict with the prior slide assignment or prior wording, follow the \
-reviewer instructions. Treat this as an edit pass, not a fresh unconstrained rewrite.
-
-### REVISION DIRECTIVES:
-1. Preserve what already works; change only what is necessary to resolve the review feedback.
-2. Fix the specific issues named by the reviewer rather than drifting into a broader rewrite.
-3. Keep each slide coherent and presentation-ready after revision.
-4. Do not introduce claims that are not supported by the provided research chunks.
-"""
-
-
-# ---------------------------------------------------------------------------
-# Slide output format — injected into the Slide Writer user prompt.
-# Kept separate so it can be reused for Critic-driven rewrites and changed
-# independently of the persona.
-# ---------------------------------------------------------------------------
-
-def schema_prompt_contract(
-    schema: type[BaseModel],
-    *,
-    root_key: str | None = None,
-    extra_rules: list[str] | None = None,
-) -> str:
-    """Build a concise prompt contract from a Pydantic schema."""
-    schema_json = json.dumps(schema.model_json_schema(), indent=2)
-    lines = [
-        "### REQUIRED ROOT JSON SHAPE:",
-        "- Return exactly ONE top-level JSON object matching the schema below.",
-    ]
-    if root_key:
-        lines.append(f'- The top-level key MUST be `{root_key}`.')
-    lines.extend([
-        "- Do NOT return multiple top-level objects.",
-        "- Do NOT return newline-delimited JSON.",
-        "- Do NOT return a top-level array.",
-        "- Do NOT include any text before or after the JSON object.",
-    ])
-    if extra_rules:
-        lines.append("")
-        lines.append("### ADDITIONAL RULES:")
-        lines.extend(f"- {rule}" for rule in extra_rules)
-    lines.extend([
-        "",
-        "### EXACT JSON SCHEMA:",
-        schema_json,
-    ])
-    return "\n".join(lines)
-
-
-AGENT_ROLES = {
-    'planner':    PLANNER_ROLE,
-    'critic':     CRITIC_ROLE,
-    'supervisor': SUPERVISOR_ROLE,
-    'slide_writer': SLIDE_WRITER_ROLE,
-}
 
 
 class BaseLLMAgent:
@@ -290,10 +47,12 @@ class BaseLLMAgent:
         self,
         role: str,
         *,
+        system_prompt: str,
         log_display: str | None = None,
         tools_for_agent: dict[str, dict[str, Any]] | None = None,
     ):
         self.role = role
+        self.system_prompt = system_prompt
         self._log_display = log_display if log_display is not None else role
         self._logger = AgentLogger()
         self._last_model_used: str | None = None  # Used for logging validation errors
@@ -302,7 +61,6 @@ class BaseLLMAgent:
 
     def _set_session_id(self, state: dict) -> None:
         """Propagate session_id from the node's state into the module-level ContextVar.
-
         Called at the start of every agent run() so that the LiteLLM Langfuse callback
         always tags traces with the correct session, regardless of whether this node
         runs in the main thread or a parallel worker thread.
@@ -336,7 +94,7 @@ class BaseLLMAgent:
                 {'type': 'text', 'text': '...', 'cache_control': {'type': 'ephemeral'}}
             ]}
         """
-        system_prompt = system_prompt_override or AGENT_ROLES[self.role]
+        system_prompt = system_prompt_override or self.system_prompt
         snippets = get_tool_prompt_snippets(self._tools_for_agent)
         if snippets:
             system_prompt = f"{system_prompt}\n\n" + "\n\n".join(snippets)
@@ -422,24 +180,6 @@ class BaseLLMAgent:
         finally:
             current_agent_label.reset(token)
 
-    def _build_structured_retry_turns(
-        self,
-        current_turns: list[dict],
-        clean_response: str,
-        error_summary: str,
-        schema: type[BaseModel],
-    ) -> list[dict]:
-        return [
-            *current_turns,
-            {"role": "assistant", "content": clean_response},
-            {"role": "user", "content": (
-                f"Your previous response failed validation:\n{error_summary}\n\n"
-                f"Required JSON schema:\n{json.dumps(schema.model_json_schema(), indent=2)}\n\n"
-                "Respond with ONLY a valid JSON object that matches the schema above. "
-                "Do NOT wrap in markdown fences, add explanations, or include any text outside the JSON."
-            )},
-        ]
-
     def _call_structured(
         self,
         turns: list[dict],
@@ -451,6 +191,13 @@ class BaseLLMAgent:
         runtime_validator: Callable[[T], list[str]] | None = None,
         system_prompt_override: str | None = None,
     ) -> StructuredOutputResult:
+        """Call the LLM and validate the response against a Pydantic schema.
+
+        This wraps ``_call_raw`` with the structured-output responsibilities:
+        strip provider artifacts, heal small JSON issues, validate the schema,
+        optionally run semantic/runtime checks, and retry with a correction prompt
+        when validation fails.
+        """
         current_turns = list(turns)
         last_error: Exception | None = None
 
@@ -494,7 +241,7 @@ class BaseLLMAgent:
                 )
                 if attempt == max_retries:
                     break
-                current_turns = self._build_structured_retry_turns(
+                current_turns = build_structured_retry_turns(
                     current_turns,
                     clean,
                     str(exc),
@@ -530,7 +277,7 @@ class BaseLLMAgent:
                     )
                     if attempt == max_retries:
                         break
-                    current_turns = self._build_structured_retry_turns(
+                    current_turns = build_structured_retry_turns(
                         current_turns,
                         parsed.model_dump_json(),
                         failure_summary,
@@ -611,6 +358,13 @@ class BaseLLMAgent:
         llm_config_override: dict | None = None,
         system_prompt_override: str | None = None,
     ) -> dict[str, Any]:
+        """Run an LLM turn that may ask for registered tools.
+
+        The method owns the provider tool-call loop: expose schemas, execute each
+        requested tool locally, append role="tool" results back into the message
+        history, and return the final model content plus tool/retrieval logs for
+        downstream writer flows.
+        """
         if not self._tools_for_agent:
             return {
                 "content": self._call(
@@ -764,17 +518,3 @@ class BaseLLMAgent:
 
             if assistant_tool_calls:
                 assistant_message["tool_calls"] = assistant_tool_calls
-
-def _render_history(history: list[str], kind: str) -> str:
-    if not history:
-        return ''
-    lines = [f'PRIOR {kind.upper()} HISTORY — do not repeat these mistakes:']
-    for i, entry in enumerate(history):
-        lines.append(f'  Cycle {i + 1}: {entry}')
-    return '\n'.join(lines)
-
-
-def _plan_to_text(plan: DeliveryPlan | None) -> str:
-    if plan is None:
-        return '(no plan yet)'
-    return json.dumps(plan.model_dump(), indent=2)

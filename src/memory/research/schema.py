@@ -1,5 +1,4 @@
 from __future__ import annotations
-import json
 from typing import Any, List, Literal, Optional
 from pydantic import AliasChoices, BaseModel, Field, create_model, field_validator
 
@@ -58,8 +57,7 @@ class SlideContent(BaseModel):
         "title_slide",
         "title_and_body",
         "two_column",
-        "big_number",
-        "quote",
+        "media_center",
         "media_left",
         "media_right",
         "media_top",
@@ -68,7 +66,7 @@ class SlideContent(BaseModel):
         default="title_and_body",
         description=(
             "Slide layout: 'title_slide' for openers/dividers, 'title_and_body' for standard bullet slides, "
-            "'two_column' for comparisons, 'big_number' for stat callouts, 'quote' for direct quotations, "
+            "'two_column' for comparisons, 'media_center' for a title with one centered hero image, "
             "'media_left'/'media_right' for portrait-oriented figures (image left or right of text), "
             "'media_top'/'media_bottom' for landscape-oriented figures (image above or below text)"
         ),
@@ -103,34 +101,6 @@ def make_slide_batch_model(slide_count: int) -> type[BaseModel]:
             ),
         ),
     )
-
-
-def slide_output_prompt_contract(slide_count: int) -> str:
-    """Return schema-derived prompt guidance for slide generation."""
-    batch_model = make_slide_batch_model(slide_count)
-    schema_json = json.dumps(batch_model.model_json_schema(), indent=2)
-    rules = [
-        f'Return exactly {slide_count} slide objects in the top-level `slides` array.',
-        "All information must be strictly grounded in the provided research chunks.",
-        "Use Markdown and LaTeX only when they materially improve clarity.",
-        "Display equations should appear as the sole content of a sub_bullet string.",
-    ]
-    lines = [
-        "### REQUIRED ROOT JSON SHAPE:",
-        "- Return exactly ONE top-level JSON object matching the schema below.",
-        '- The top-level key MUST be `slides`.',
-        "- Do NOT return multiple top-level objects.",
-        "- Do NOT return newline-delimited JSON.",
-        "- Do NOT return a top-level array.",
-        "- Do NOT include any text before or after the JSON object.",
-        "",
-        "### ADDITIONAL RULES:",
-        *[f"- {rule}" for rule in rules],
-        "",
-        "### EXACT JSON SCHEMA:",
-        schema_json,
-    ]
-    return "\n".join(lines)
 
 
 # Documents table stores the master record for each processed file
@@ -332,7 +302,6 @@ CREATE TABLE IF NOT EXISTS slide_review_events (
     issue_code TEXT,
     severity TEXT,
     location TEXT,
-    description TEXT,
     fingerprint TEXT,
     rewrite_instruction_summary TEXT,
     affected_slide_numbers TEXT,

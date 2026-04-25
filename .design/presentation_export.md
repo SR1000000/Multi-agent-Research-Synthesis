@@ -16,7 +16,7 @@ The bridge between synthesis and export is the `ProtoSlide` schema defined in `s
 *   **`SlideContent`**: Contains the semantic parts of a slide.
     *   `title`: The main heading.
     *   `bullets`: A list of `BulletPoint` objects.
-    *   `layout`: A literal (e.g., `title_and_body`, `two_column`, `big_number`, `quote`) that hints at how the slide should be styled.
+    *   `layout`: A literal (e.g., `title_and_body`, `two_column`, `media_center`) that hints at how the slide should be styled.
     *   `speaker_notes`: Narrative text for the presenter.
 *   **`BulletPoint`**:
     *   `text`: The primary bullet text. Supports Markdown formatting and LaTeX math (see [Markdown & LaTeX in Bullet Text](#markdown--latex-in-bullet-text) below).

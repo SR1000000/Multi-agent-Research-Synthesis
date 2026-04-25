@@ -2,6 +2,10 @@
 # - providers: provider credentials/shared params plus the allowed model catalog
 # - groups: logical aliases used by the app, each listing concrete <provider>/<model_name> entries
 # - litellm: Router runtime settings only
+# Current sample assumes free teir for Gemini, Ollama and OpenRouter.
+# Get available OpenRouter free models at https://openrouter.ai/collections/free-models (changes frequently).
+# See also https://github.com/mnfst/awesome-free-llm-apis (model lists likely outdated).  LiteLLM implements most of those (https://docs.litellm.ai/docs/providers).
+# A free OpenRouter account only gets 50 daily requests, adding minimum of 10 credits "verifies" your account and raises the daily limit to 1000 requests
 
 providers:
   gemini:
@@ -9,17 +13,39 @@ providers:
       api_key: "os.environ/GEMINI_API_KEY"
     models:
       gemini-3.1-flash-lite-preview:
+        max_parallel_requests: 5
         rpm: 15
-      gemini-2.5-flash: {}
-      gemini-2.5-pro: {}
+      gemma-4-31b-it:
+        max_parallel_requests: 5
+        rpm: 15
+      gemma-3-27b-it:
+        max_parallel_requests: 5
+        rpm: 30
+      gemini-3-flash-preview: {}
+      gemini-2.5-flash: 
+        rpm: 5
+      gemini-2.5-flash-lite:
+        rpm: 10
 
   openrouter:
     shared:
       api_key: "os.environ/OPENROUTER_API_KEY"
       api_base: "os.environ/OPENROUTER_BASE_URL"
     models:
-      google/gemma-4-26b-a4b-it:free: {}
-      google/gemma-3-4b-it:free: {}
+      nvidia/nemotron-3-super-120b-a12b:free: {}
+      inclusionai/ling-2.6-flash:free: {}
+      google/gemma-4-26b-a4b-it:free:
+        max_parallel_requests: 2
+      google/gemma-4-31b-it:free:
+        max_parallel_requests: 2
+      google/gemma-3-4b-it:free:
+        max_parallel_requests: 2
+      google/gemma-3-12b-it:free:
+        max_parallel_requests: 2
+      google/gemma-3-27b-it:free:
+        max_parallel_requests: 2
+      nvidia/nemotron-nano-12b-v2-vl:free: {}
+      openai/gpt-oss-120b:free: {}
 
   ollama:
     shared:
@@ -28,59 +54,145 @@ providers:
     models:
       qwen3.5:397b-cloud:
         timeout: 240
+      minimax-m2.7:cloud: {}
+      gemma4:31b-cloud:
+        max_parallel_requests: 5
+      gemma3:4b-cloud:
+        max_parallel_requests: 5
+      gemma3:12b-cloud:
+        max_parallel_requests: 5
+      gemma3:27b-cloud:
+        max_parallel_requests: 5
+      qwen3-vl:235b-instruct-cloud:
+        max_parallel_requests: 5
+      qwen3-vl:235b-cloud:
+        max_parallel_requests: 5
+      gemini-3-flash-preview:cloud:
+        max_parallel_requests: 5
+
+  mistral:
+    shared:
+      api_key: "os.environ/MISTRAL_API_KEY"
+    models:
+      mistral-large-latest:
+        tpm: 50000
+      mistral-large-2411:
+        tpm: 300000
+        rpm: 60
+      mistral-medium-2508:
+        tpm: 375000
+        rpm: 25
+      mistral-medium-2505:
+        tpm: 60000
+        rpm: 60
+      mistral-small-2603:
+        tpm: 150000
+        rpm: 40
+
+      magistral-medium-latest:
+        tpm: 75000
+        rpm: 5
+      magistral-small-latest:
+        tpm: 75000
+        rpm: 5
+
+      ministral-14b-2512:
+        rpm: 30
+
+  groq:
+    shared:
+      api_key: "os.environ/GROQ_API_KEY"
+    models:
+      meta-llama/llama-4-scout-17b-16e-instruct:
+        tpm: 30000
+      llama-3.3-70b-versatile:
+        tpm: 12000
 
 groups:
   app:
     models:
       - "gemini/gemini-3.1-flash-lite-preview"
-      - "gemini/gemini-2.5-flash"
-    fallbacks:
-      - "fallback"
-
-  planner:
-    models:
-      - "ollama/qwen3.5:397b-cloud"
-      - "gemini/gemini-3.1-flash-lite-preview"
+      - "groq/llama-3.3-70b-versatile"
     fallbacks:
       - "fallback"
 
   slides:
     models:
-      - "gemini/gemini-2.5-pro"
-      - "gemini/gemini-2.5-flash"
+      - "mistral/mistral-large-2411"
+      - "mistral/mistral-medium-2508"
+      - "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
     fallbacks:
+      - "slides"
       - "fallback"
+
+  planner:
+    models:
+      - "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+      - "ollama/qwen3.5:397b-cloud"
+      - "mistral/mistral-large-2411"
+    fallbacks:
+      - "planner"
 
   critic:
     models:
+      - "ollama/minimax-m2.7:cloud"
+      - "mistral/magistral-medium-latest"
       - "gemini/gemini-3.1-flash-lite-preview"
     fallbacks:
-      - "app"
-      - "fallback"
-
-  context:
-    models:
-      - "gemini/gemini-3.1-flash-lite-preview"
-    fallbacks:
+      - "critic"
       - "fallback"
 
   context-vision:
     models:
+      - "gemini/gemma-4-31b-it"
+      - "gemini/gemma-3-27b-it"
+      - "groq/meta-llama/llama-4-scout-17b-16e-instruct"
+      - "mistral/mistral-medium-2505"
+      - "mistral/ministral-14b-2512"
+      - "gemini/gemini-3-flash-preview"
       - "gemini/gemini-2.5-flash"
+      - "gemini/gemini-2.5-flash-lite"
+      - "gemini/gemini-3.1-flash-lite-preview"
+      - "ollama/gemma4:31b-cloud"
+      - "ollama/qwen3-vl:235b-instruct-cloud"
+      - "ollama/qwen3-vl:235b-cloud"
+      - "ollama/gemini-3-flash-preview:cloud"
+      - "openrouter/google/gemma-4-26b-a4b-it:free"
+      - "openrouter/google/gemma-4-31b-it:free"
+      - "openrouter/google/gemma-3-12b-it:free"
+      - "openrouter/google/gemma-3-27b-it:free"
     fallbacks:
+      - "context-vision"
+
+  context:
+    models:
+      - "groq/llama-3.3-70b-versatile"
+      - "ollama/gemma3:27b-cloud"
+      - "ollama/gemma3:12b-cloud"
+      - "openrouter/nvidia/nemotron-nano-12b-v2-vl:free"
+      - "openrouter/openai/gpt-oss-120b:free"
+    fallbacks:
+      - "context"
+      - "context-vision"
       - "fallback"
 
   fallback:
     models:
-      - "openrouter/google/gemma-4-26b-a4b-it:free"
-      - "openrouter/google/gemma-3-4b-it:free"
+      - "ollama/minimax-m2.7:cloud"
+      - "mistral/mistral-large-2411"
+      - "mistral/mistral-medium-2508"
+      - "mistral/magistral-medium-latest"
+      - "groq/llama-3.3-70b-versatile"
+      - "groq/meta-llama/llama-4-scout-17b-16e-instruct"
+      - "gemini/gemma-4-31b-it"
+      - "ollama/gemma4:31b-cloud"
 
 litellm:
   default_group: "app"
   router:
     num_retries: 1
     retry_after: 5
-    cooldown_time: 30
+    cooldown_time: 60
     enable_pre_call_checks: true
     timeout: 120
     routing_strategy: "least-busy"

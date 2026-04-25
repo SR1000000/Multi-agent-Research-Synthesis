@@ -11,6 +11,7 @@ from langgraph.types import Command, Send
 
 from src.memory.research.database import ResearchDatabase
 from src.state import PresentationPlan, ResearchState, SlideGroup
+from src.logging.logger import AgentLogger
 
 MAX_RETRIES_PER_GROUP = 2
 
@@ -21,6 +22,7 @@ MAX_RETRIES_PER_GROUP = 2
 
 def _group_chunk_ids(group: SlideGroup) -> list[str]:
     """Collect the union of source_chunk_ids across all blueprints in a group, preserving order."""
+    # Preserve blueprint order so downstream retrieval receives context in narrative order.
     seen:   set[str]  = set()
     result: list[str] = []
     for bp in group.slide_blueprints:
@@ -29,10 +31,6 @@ def _group_chunk_ids(group: SlideGroup) -> list[str]:
                 seen.add(cid)
                 result.append(cid)
     return result
-
-
-def _blueprints_as_dicts(group: SlideGroup) -> list[dict]:
-    return [bp.model_dump() for bp in group.slide_blueprints]
 
 
 def _build_slide_writer_send(
@@ -46,6 +44,13 @@ def _build_slide_writer_send(
     rewrite_instructions: str = "",
     target_slide_numbers: list[int] | None = None,
 ) -> Send:
+    """Build a LangGraph Send targeting the slide_writer node for one group assignment.
+
+    Centralising the payload shape here ensures initial writes and rewrites produce
+    identically-structured dispatch records, preventing subtle fan-in mismatches.
+    """
+    # Serialize all slide blueprints in a group to plain dicts.
+    # LangGraph Send payloads must be JSON-serializable plain dictionaries, not Pydantic models.
     return Send(
         "slide_writer",
         {
@@ -53,7 +58,7 @@ def _build_slide_writer_send(
             "assignment_id":      assignment_id,
             "plan_generation":   plan_generation,
             "chunk_ids":          _group_chunk_ids(group),
-            "slide_blueprints":   _blueprints_as_dicts(group),
+            "slide_blueprints":   [bp.model_dump() for bp in group.slide_blueprints],
             "group_idx":          group_idx,
             "session_id":         session_id,
             "rewrite_instructions": rewrite_instructions,
@@ -63,6 +68,11 @@ def _build_slide_writer_send(
 
 
 def _build_critic_send(*, dispatch_id: str, session_id: str, assignment: dict) -> Send:
+    """Build a LangGraph Send targeting the critic node for one review assignment.
+
+    Preserves all supervisor-created assignment fields and stamps the current dispatch_id
+    so the fan-in logic can match critic results to the correct dispatch round.
+    """
     return Send(
         "critic",
         {
@@ -78,18 +88,7 @@ def _build_critic_send(*, dispatch_id: str, session_id: str, assignment: dict) -
             "chunk_ids": assignment["chunk_ids"],
             "slide_blueprints": assignment["slide_blueprints"],
             "target_slide_numbers": assignment["target_slide_numbers"],
-            "rewrite_instructions": assignment.get("rewrite_instructions", ""),
         },
-    )
-
-
-def _exhausted_group_message(group: SlideGroup, group_idx: int) -> str:
-    """Return a user-visible warning when a group's retries are exhausted."""
-    slide_titles = [bp.working_title for bp in group.slide_blueprints]
-    return (
-        f"[PlanExecutor] RETRIES EXHAUSTED — group {group_idx} failed after "
-        f"{MAX_RETRIES_PER_GROUP + 1} attempts with 0 slides. "
-        f"Slides skipped: {slide_titles}"
     )
 
 
@@ -98,19 +97,56 @@ def _exhausted_group_message(group: SlideGroup, group_idx: int) -> str:
 # ---------------------------------------------------------------------------
 
 class PlanExecutorAgent:
-    """Stateless dispatcher — all state lives in ResearchState."""
+    """Deterministic fan-out/fan-in coordinator for slide writing, critic review, and rewrites.
+
+    All persistent state (phases, dispatch IDs, assignment lists) lives in ResearchState so
+    this agent is fully stateless and safe to instantiate fresh on every graph tick.  It drives
+    three sequential sub-phases — initial_write → critic_dispatch → rewrite_dispatch — separated
+    by awaiting_supervisor checkpoints where the SupervisorAgent decides the next step.
+    """
 
     def __init__(self) -> None:
-        from src.logging.logger import AgentLogger
+        """Initialise the logger; no other instance state is needed."""
         self._logger = AgentLogger()
 
     def _set_session_id(self, state: dict) -> None:
+        """Propagate the session ID into the current_session_id context var.
+
+        This ensures nested LLM and tool calls made later in the same graph tick are attributed
+        to the correct session without requiring explicit parameter threading through every caller.
+        """
         from src.llm.llm import current_session_id
         sid = state.get("session_id") if isinstance(state, dict) else None
         if sid:
             current_session_id.set(sid)
 
     def run(self, state: ResearchState) -> Command:
+        """Advance the fan-out/fan-in state machine by one tick and return the next routing Command.
+
+        Reads the current review phase from state and handles one of five cases:
+
+        1. initial_write (no active dispatch):
+           Cleans stale slides from a prior plan generation, fans out one slide_writer Send
+           per group, and records the expected assignment IDs in the active dispatch.
+
+        2. initial_write (active dispatch):
+           Waits until all writer results have reported; retries zero-count groups up to
+           MAX_RETRIES_PER_GROUP times, then routes to the supervisor or directly to END
+           if skip_supervisor is set in state.
+
+        3. critic_dispatch (no active dispatch):
+           Fans out one critic Send per supervisor-built review assignment.
+
+        4. critic_dispatch (active dispatch):
+           Waits until all critic results have arrived, then routes to the supervisor.
+
+        5. rewrite_dispatch (no/active dispatch):
+           Same fan-out/fan-in pattern as critics but sends to slide_writer with
+           rewrite_instructions and a narrowed target_slide_numbers list.
+
+        In all waiting states the method returns an empty ``Command(update={})`` to yield
+        control back to LangGraph without advancing the phase.
+        """
         self._set_session_id(state)
 
         session_id        = state.get("session_id", "")
@@ -129,6 +165,7 @@ class PlanExecutorAgent:
         active_dispatch = review.get("active_dispatch")
 
         if phase == "initial_write" and active_dispatch is None:
+            # Fresh initial write starts by removing stale slides outside the new plan.
             new_slide_numbers = [
                 bp.slide_number
                 for group in groups
@@ -176,6 +213,7 @@ class PlanExecutorAgent:
             return Command(update={"review": review}, goto=sends)
 
         if phase == "initial_write" and active_dispatch is not None:
+            # Wait until every parallel writer assignment has reported for this dispatch.
             ag = active_dispatch.get("plan_generation", 0)
             relevant = [
                 entry
@@ -212,7 +250,15 @@ class PlanExecutorAgent:
                             )
                         )
                     else:
-                        exhausted_messages.append(_exhausted_group_message(groups[idx], idx))
+                        # Return a user-visible warning when a group's retries are exhausted.
+                        # Include the skipped titles because exhausted groups otherwise disappear from the final deck.
+                        _g = groups[idx]
+                        _slide_titles = [bp.working_title for bp in _g.slide_blueprints]
+                        exhausted_messages.append(
+                            f"[PlanExecutor] RETRIES EXHAUSTED — group {idx} failed after "
+                            f"{MAX_RETRIES_PER_GROUP + 1} attempts with 0 slides. "
+                            f"Slides skipped: {_slide_titles}"
+                        )
                 if retries:
                     return Command(update={"messages": exhausted_messages}, goto=retries)
             total_slides = sum(max(counts_by_group.get(idx, [0])) for idx in range(len(groups)))
@@ -235,6 +281,7 @@ class PlanExecutorAgent:
             return Command(update={"review": review, "messages": [msg]}, goto="supervisor")
 
         if phase == "critic_dispatch":
+            # Critic dispatch mirrors writer dispatch but uses supervisor-built review assignments.
             assignments = review.get("pending_critic_assignments", [])
             if assignments and active_dispatch is None:
                 dispatch_id = f"critic-{dispatch_counter + 1}"
@@ -281,6 +328,7 @@ class PlanExecutorAgent:
                 return Command(update={"review": review}, goto="supervisor")
 
         if phase == "rewrite_dispatch":
+            # Rewrite dispatch targets only the slides identified by actionable critic findings.
             assignments = review.get("pending_rewrite_assignments", [])
             if assignments and active_dispatch is None:
                 dispatch_id = f"rewrite-{dispatch_counter + 1}"
@@ -340,4 +388,8 @@ class PlanExecutorAgent:
 
 
 def plan_executor_node(state: ResearchState) -> Command:
+    """LangGraph node entry point that constructs a fresh PlanExecutorAgent and delegates to run().
+
+    A new instance is created on each tick; all continuation data is carried in ResearchState.
+    """
     return PlanExecutorAgent().run(state)
