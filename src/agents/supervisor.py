@@ -49,36 +49,6 @@ def _severity_counts(results: list[dict]) -> dict[str, int]:
     return counts
 
 
-def _rewrite_map(results: list[dict]) -> dict[str, bool]:
-    """Map each assignment ID to whether its critic result was actionable."""
-    return {
-        result["assignment_id"]: bool(result.get("actionable"))
-        for result in results
-    }
-
-
-def _has_actionable_critical_issue(results: list[dict]) -> bool:
-    """Return True if any actionable critic result contains at least one critical-severity issue."""
-    for result in results:
-        if not result.get("actionable"):
-            continue
-        for issue in result.get("issues", []):
-            if issue.get("severity") == "critical":
-                return True
-    return False
-
-
-def _has_actionable_major_issue(results: list[dict]) -> bool:
-    """Return True if any actionable critic result contains at least one major-severity issue."""
-    for result in results:
-        if not result.get("actionable"):
-            continue
-        for issue in result.get("issues", []):
-            if issue.get("severity") == "major":
-                return True
-    return False
-
-
 def _all_actionable_issues_are_persistent_minor(
     results: list[dict],
     recurring_counts: dict[str, int],
@@ -147,14 +117,6 @@ def _format_dispatch_targets(assignments: list[ReviewAssignment]) -> str:
             span = "slides ?"
         parts.append(f"{aid} [{span}]")
     return "; ".join(parts)
-
-
-def _short_reasoning(text: str, max_len: int = 240) -> str:
-    """Collapse multi-line LLM reasoning to a single truncated line suitable for terminal logs."""
-    one_line = " ".join((text or "").split())
-    if len(one_line) <= max_len:
-        return one_line
-    return one_line[: max_len - 1] + "…"
 
 
 def _build_rewrite_assignments(
@@ -253,7 +215,10 @@ class SupervisorAgent(BaseLLMAgent):
             and result.get("plan_generation", 0) == plan_generation
         ]
         severity_counts = _severity_counts(critic_results)
-        rewrites_required = _rewrite_map(critic_results)
+        # Map each assignment ID to whether its critic result was actionable.
+        rewrites_required = {
+            r["assignment_id"]: bool(r.get("actionable")) for r in critic_results
+        }
         history = []
         with ResearchDatabase() as research_db:
             history = research_db.list_review_events(
@@ -407,8 +372,19 @@ class SupervisorAgent(BaseLLMAgent):
         )
         model_decision = result.decision
         at_cycle_cap = cycle_number >= max_cycles
-        has_critical_actionable = _has_actionable_critical_issue(actionable_results)
-        has_major_actionable = _has_actionable_major_issue(actionable_results)
+        # Return True if any actionable critic result contains at least one
+        # critical- or major-severity issue. (actionable_results is pre-filtered
+        # to actionable=True, so the old per-result actionable guard is redundant here.)
+        has_critical_actionable = any(
+            i.get("severity") == "critical"
+            for r in actionable_results
+            for i in r.get("issues", [])
+        )
+        has_major_actionable = any(
+            i.get("severity") == "major"
+            for r in actionable_results
+            for i in r.get("issues", [])
+        )
         has_only_persistent_minor_actionable = _all_actionable_issues_are_persistent_minor(
             actionable_results,
             recurring,
@@ -444,9 +420,16 @@ class SupervisorAgent(BaseLLMAgent):
             "messages": [json.dumps({"supervisor_cycle_summary": summary}, sort_keys=True)],
         }
 
+        # Collapse multi-line LLM reasoning to a single truncated line suitable for terminal logs.
+        _reasoning_one = " ".join((result.reasoning or "").split())
+        _short_reasoning = (
+            _reasoning_one
+            if len(_reasoning_one) <= 240
+            else _reasoning_one[:239] + "…"
+        )
         self._logger.log(
             f"[supervisor] cycle {cycle_number}: model={model_decision} -> effective={decision} "
-            f"| counts={severity_counts} | {_short_reasoning(result.reasoning)}"
+            f"| counts={severity_counts} | {_short_reasoning}"
         )
 
         if decision == "replan":

@@ -14,6 +14,7 @@ from typing import Any, TypedDict
 from langgraph.types import Command
 
 from src.agents.base import BaseLLMAgent
+from src.agents.prompts.common import ordered_chunk_texts
 from src.agents.prompts.writer_prompts import (
     SLIDE_REWRITER_ROLE,
     SLIDE_WRITER_ROLE,
@@ -34,25 +35,12 @@ class SlideWriterDispatch(TypedDict):
     plan_generation: int
     dispatch_id:            str
     assignment_id:          str
-    chunk_ids:             List[str]   # group-wide union passed to the writer as shared working context
-    slide_blueprints:      List[dict]  # serialized SlideBlueprint dicts
+    chunk_ids:             list[str]   # group-wide union passed to the writer as shared working context
+    slide_blueprints:      list[dict]  # serialized SlideBlueprint dicts
     group_idx:             int         # index into PresentationPlan.slide_groups
     session_id:            str
     rewrite_instructions:  str         # empty for initial gen; Critic populates for rewrites
-    target_slide_numbers:  List[int]
-
-
-def _ordered_chunk_texts(rows: list, chunk_ids: list[str]) -> list[str]:
-    """Return chunk text blocks in the caller-provided chunk order."""
-    rows_by_id = {row["id"]: row for row in rows}
-    ordered: list[str] = []
-    for chunk_id in chunk_ids:
-        row = rows_by_id.get(chunk_id)
-        if row is None:
-            continue
-        text = row["contextualized_text"] if row["contextualized_text"] else row["text"]
-        ordered.append(f"--- Chunk ID: {row['id']} ---\n{text}")
-    return ordered
+    target_slide_numbers:  list[int]
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +138,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
                         existing_slides.append(existing_slide)
             image_metadatas = research_db.get_images_for_chunks(chunk_ids) if chunk_ids else []
 
-        chunk_texts = _ordered_chunk_texts(rows, chunk_ids)
+        chunk_texts = ordered_chunk_texts(rows, chunk_ids)
         return "\n\n".join(chunk_texts), existing_slides, image_metadatas
 
     def _tool_payload_text(self, tool_results: list[dict[str, Any]]) -> str:

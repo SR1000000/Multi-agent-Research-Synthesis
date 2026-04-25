@@ -33,14 +33,6 @@ def _group_chunk_ids(group: SlideGroup) -> list[str]:
     return result
 
 
-def _blueprints_as_dicts(group: SlideGroup) -> list[dict]:
-    """Serialize all slide blueprints in a group to plain dicts.
-
-    LangGraph Send payloads must be JSON-serializable plain dictionaries, not Pydantic models.
-    """
-    return [bp.model_dump() for bp in group.slide_blueprints]
-
-
 def _build_slide_writer_send(
     *,
     dispatch_id: str,
@@ -57,6 +49,8 @@ def _build_slide_writer_send(
     Centralising the payload shape here ensures initial writes and rewrites produce
     identically-structured dispatch records, preventing subtle fan-in mismatches.
     """
+    # Serialize all slide blueprints in a group to plain dicts.
+    # LangGraph Send payloads must be JSON-serializable plain dictionaries, not Pydantic models.
     return Send(
         "slide_writer",
         {
@@ -64,7 +58,7 @@ def _build_slide_writer_send(
             "assignment_id":      assignment_id,
             "plan_generation":   plan_generation,
             "chunk_ids":          _group_chunk_ids(group),
-            "slide_blueprints":   _blueprints_as_dicts(group),
+            "slide_blueprints":   [bp.model_dump() for bp in group.slide_blueprints],
             "group_idx":          group_idx,
             "session_id":         session_id,
             "rewrite_instructions": rewrite_instructions,
@@ -96,17 +90,6 @@ def _build_critic_send(*, dispatch_id: str, session_id: str, assignment: dict) -
             "target_slide_numbers": assignment["target_slide_numbers"],
             "rewrite_instructions": assignment.get("rewrite_instructions", ""),
         },
-    )
-
-
-def _exhausted_group_message(group: SlideGroup, group_idx: int) -> str:
-    """Return a user-visible warning when a group's retries are exhausted.
-        Include the skipped titles because exhausted groups otherwise disappear from the final deck."""
-    slide_titles = [bp.working_title for bp in group.slide_blueprints]
-    return (
-        f"[PlanExecutor] RETRIES EXHAUSTED — group {group_idx} failed after "
-        f"{MAX_RETRIES_PER_GROUP + 1} attempts with 0 slides. "
-        f"Slides skipped: {slide_titles}"
     )
 
 
@@ -268,7 +251,15 @@ class PlanExecutorAgent:
                             )
                         )
                     else:
-                        exhausted_messages.append(_exhausted_group_message(groups[idx], idx))
+                        # Return a user-visible warning when a group's retries are exhausted.
+                        # Include the skipped titles because exhausted groups otherwise disappear from the final deck.
+                        _g = groups[idx]
+                        _slide_titles = [bp.working_title for bp in _g.slide_blueprints]
+                        exhausted_messages.append(
+                            f"[PlanExecutor] RETRIES EXHAUSTED — group {idx} failed after "
+                            f"{MAX_RETRIES_PER_GROUP + 1} attempts with 0 slides. "
+                            f"Slides skipped: {_slide_titles}"
+                        )
                 if retries:
                     return Command(update={"messages": exhausted_messages}, goto=retries)
             total_slides = sum(max(counts_by_group.get(idx, [0])) for idx in range(len(groups)))

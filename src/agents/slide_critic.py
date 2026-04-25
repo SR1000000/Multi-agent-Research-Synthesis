@@ -7,7 +7,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from src.agents.base import BaseLLMAgent
-from src.agents.prompts.common import format_image_assets_block, format_slide_for_prompt
+from src.agents.prompts.common import format_image_assets_block, format_slide_for_prompt, ordered_chunk_texts
 from src.agents.prompts.critic_prompts import (
     CRITIC_ROLE,
     build_critic_user_prompt,
@@ -72,16 +72,6 @@ class CriticOutput(BaseModel):
     )
 
 
-def _fingerprint(*, scope_type: str, scope_id: str, issue_type: str, location: str) -> str:
-    """Return a short, stable hash that uniquely identifies an issue by its structural attributes.
-
-    The fingerprint is scoped to (scope_type, scope_id, issue_type, location) so the
-    supervisor can track whether the same logical problem recurs across review cycles.
-    """
-    raw = f"{scope_type}|{scope_id}|{issue_type}|{location}".encode("utf-8")
-    return hashlib.sha1(raw).hexdigest()[:12]
-
-
 class SlideCriticAgent(BaseLLMAgent):
     """LLM-backed agent that reviews a batch of slides for grounding and consistency issues.
 
@@ -115,16 +105,6 @@ class SlideCriticAgent(BaseLLMAgent):
             ordered.append(format_retrieved_artifact_row(row))
         return "\n\n".join(ordered)
 
-    def _load_slides(self, slide_numbers: list[int]) -> list[ProtoSlide]:
-        """Fetch the current persisted draft for each requested slide number from the research database."""
-        slides: list[ProtoSlide] = []
-        with ResearchDatabase() as research_db:
-            for slide_number in slide_numbers:
-                slide = research_db.load_slide(slide_number)
-                if slide is not None:
-                    slides.append(slide)
-        return slides
-
     def _build_user_prompt(self, state: CriticDispatch) -> str:
         """Assemble the full review packet for the LLM.
 
@@ -133,7 +113,14 @@ class SlideCriticAgent(BaseLLMAgent):
         structured prompt consumed by the critic LLM.
         """
         slide_numbers = state.get("target_slide_numbers", [])
-        slides = self._load_slides(slide_numbers)
+        # Fetch the current persisted draft for each requested slide number from the research database.
+        slides: list[ProtoSlide] = []
+        with ResearchDatabase() as research_db:
+            for slide_number in slide_numbers:
+                slide = research_db.load_slide(slide_number)
+                if slide is not None:
+                    slides.append(slide)
+        
         plan_gen = int(state.get("plan_generation", 0))
         retrieval_log = self._load_session_retrieval_log(
             state.get("session_id", ""), plan_generation=plan_gen
@@ -156,14 +143,8 @@ class SlideCriticAgent(BaseLLMAgent):
                     f"WHERE id IN ({placeholders})",
                     chunk_ids,
                 ).fetchall()
-                
-                rows_by_id = {row["id"]: row for row in rows}
-                ordered_texts = []
-                for chunk_id in chunk_ids:
-                    row = rows_by_id.get(chunk_id)
-                    if row:
-                        text = row["contextualized_text"] if row["contextualized_text"] else row["text"]
-                        ordered_texts.append(f"--- Chunk ID: {row['id']} ---\n{text}")
+                # Return chunk text blocks in the caller-provided chunk order (see ordered_chunk_texts in common).
+                ordered_texts = ordered_chunk_texts(rows, chunk_ids)
                 baseline_chunks_block = "\n\n".join(ordered_texts)
 
         image_block = format_image_assets_block(image_metadatas)
@@ -199,6 +180,9 @@ class SlideCriticAgent(BaseLLMAgent):
             model="critic",
         )
         issues: list[dict] = []
+        # Return a short, stable hash that uniquely identifies an issue by its structural attributes.
+        # The fingerprint is scoped to (scope_type, scope_id, issue_type, location) so the
+        # supervisor can track whether the same logical problem recurs across review cycles.
         for issue in result.issues:
             issues.append(
                 {
@@ -206,16 +190,14 @@ class SlideCriticAgent(BaseLLMAgent):
                     "severity": issue.severity,
                     "issue_type": issue.issue_type,
                     "location": issue.location,
-                    "fingerprint": _fingerprint(
-                        scope_type=state["scope_type"],
-                        scope_id=state["scope_id"],
-                        issue_type=issue.issue_type,
-                        location=issue.location,
-                    ),
+                    "fingerprint": hashlib.sha1(
+                        f"{state['scope_type']}|{state['scope_id']}|{issue.issue_type}|{issue.location}".encode("utf-8")
+                    ).hexdigest()[:12],
                     "affected_slide_numbers": issue.affected_slide_numbers,
                     "rewrite_instruction": issue.rewrite_instruction,
                 }
             )
+            
         rewrite_instructions = "\n".join(
             format_rewrite_instruction(issue) for issue in issues if issue["rewrite_instruction"].strip()
         )
