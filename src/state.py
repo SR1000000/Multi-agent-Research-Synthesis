@@ -8,7 +8,6 @@ some node-local ``Send`` payloads live beside the agents that consume them.
 Layout
 ------
  Constants
- Observability helpers (ErrorRecord)
  LLM-facing schemas                  – what the Planner LLM produces (section labels)
  State-facing schemas                – resolved versions stored in ResearchState (chunk IDs)
  Review sub-state                    – coordinator structures for the critic/rewrite cycle
@@ -28,27 +27,11 @@ from pydantic import BaseModel, Field
 MAX_CYCLES = 2
 """Default cap on critic/rewrite cycles before the supervisor must make a terminal decision."""
 
+MAX_REPLANS = 2
+"""Upper bound on full deck replans—running the planner again after a supervisor ``replan`` or
+equivalent structural reset—within one research session.
 
-# ---------------------------------------------------------------------------
-# Observability helpers
-# ---------------------------------------------------------------------------
-
-class ErrorRecord(TypedDict):
-    """A single structured error captured during graph execution.
-
-    Stored in ``ResearchState.errors`` (append-only) so the full error history
-    of a session is available for debugging without interrupting the pipeline.
-
-    Fields
-    ------
-    node:
-        Name of the LangGraph node or agent that raised the error.
-    error:
-        Human-readable description of what went wrong.
-    """
-
-    node: str
-    error: str
+Prevents unbounded plan → review → discard → plan loops while still allowing a few recovery attempts."""
 
 
 # ---------------------------------------------------------------------------
@@ -86,9 +69,10 @@ ReviewPhase = Literal[
 class LLMSlideBlueprint(BaseModel):
     """Slide specification as produced directly by the Planner LLM.
 
-    The LLM populates ``source_sections`` with short section labels (e.g. ``"S0"``)
-    rather than raw chunk IDs.  The Planner resolves these to concrete chunk IDs and
-    stores the result in ``SlideBlueprint.source_chunk_ids`` before committing to state.
+    The LLM populates ``source_sections`` with short section labels (e.g. ``"S0 Attention..."``)
+    rather than raw chunk IDs to prevent mixing up section labels (which would be easier to hallucinate with pure numbers).  
+    The Planner resolves these to concrete chunk IDs and stores the result in ``SlideBlueprint.source_chunk_ids`` 
+    before committing to state.
     """
 
     slide_number: int = Field(
@@ -217,7 +201,7 @@ class SlideBlueprint(BaseModel):
 
 
 class SlideGroup(BaseModel):
-    """A resolved batch of slides assigned to one Slide Writer agent.
+    """A resolved batch of narratively coherent slides assigned to one Slide Writer agent.
 
     Stored in ``PresentationPlan.slide_groups``; mirrors ``LLMSlideGroup`` but
     uses resolved ``SlideBlueprint`` objects instead of ``LLMSlideBlueprint``.
@@ -668,7 +652,7 @@ class ResearchState(TypedDict):
     messages:
         Human-readable log messages emitted by agents for tracing/debugging.
     errors:
-        Structured ``ErrorRecord`` entries for any non-fatal errors encountered.
+        Structured ``{"node": str, "error": str}`` entries for non-fatal errors.
     """
 
     # -- immutable core --
@@ -704,4 +688,4 @@ class ResearchState(TypedDict):
 
     # -- observability --
     messages: Annotated[List[str], operator.add]
-    errors:   Annotated[List[ErrorRecord], operator.add]
+    errors:   Annotated[List[Dict[str, str]], operator.add]
