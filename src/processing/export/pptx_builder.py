@@ -4,7 +4,7 @@ from typing import List
 from pptx import Presentation
 
 from src.memory.research.database import ResearchDatabase
-from src.util import sanitize_xml_text
+from src.processing.export.pandoc_builder import sanitize_xml_text
 from src.memory.research.schema import BulletPoint, ProtoSlide, SlideContent
 
 # ── Layout name constants ─────────────────────────────────────────────────────

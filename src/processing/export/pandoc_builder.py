@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import re
 import tempfile
 from pathlib import Path
 from typing import List
@@ -8,10 +9,35 @@ from typing import List
 import pypandoc
 
 from src.logging.logger import AgentLogger
-from src.util import sanitize_xml_text
 from src.memory.objectstore.provider import ObjectStoreProvider
 from src.memory.research.database import ResearchDatabase
 from src.memory.research.schema import BulletPoint, ProtoSlide, SlideContent
+
+# Known Type 1 PDF encoding artifacts: raw glyph byte promoted to a U+00xx.
+# Some models emit these in proto-slides; Pandoc / pptx-XML are strict about
+# control characters, so we repair to Unicode punctuation and strip the rest.
+_TYPOGRAPHIC_REPAIRS = {
+    "\u0010": "\u2010",  # HYPHEN
+    "\u0011": "\u2011",  # NON-BREAKING HYPHEN
+    "\u0013": "\u2013",  # EN DASH
+    "\u0014": "\u2014",  # EM DASH
+    "\u0018": "\u2018",  # LEFT SINGLE QUOTATION MARK
+    "\u0019": "\u2019",  # RIGHT SINGLE QUOTATION MARK
+    "\u001c": "\u201c",  # LEFT DOUBLE QUOTATION MARK
+    "\u001d": "\u201d",  # RIGHT DOUBLE QUOTATION MARK
+}
+# XML 1.0 allows only #x9 | #xA | #xD | [#x20–#xD7FF] | ...
+_XML_ILLEGAL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def sanitize_xml_text(text: str | None) -> str:
+    """Repair Type 1 font encoding artifacts; strip remaining XML 1.0 illegal chars."""
+    if not text:
+        return text or ""
+    for bad, good in _TYPOGRAPHIC_REPAIRS.items():
+        text = text.replace(bad, good)
+    return _XML_ILLEGAL_RE.sub("", text)
+
 
 # NOTE: This is the default reference doc for the PandocBuilder.
 # Using relative path so export folder can be moved without issue.

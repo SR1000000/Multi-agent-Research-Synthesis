@@ -27,8 +27,7 @@ class CriticDispatch(TypedDict):
     """State payload delivered to a critic node via LangGraph's Send() API.
 
     Carries everything the critic needs: which slides to review, the source
-    chunks those slides were written from, the plan blueprint for intent context,
-    and any rewrite instructions carried over from a prior cycle.
+    chunks those slides were written from, the plan blueprint for intent context.
     """
 
     plan_generation: int
@@ -43,7 +42,6 @@ class CriticDispatch(TypedDict):
     chunk_ids: list[str]
     slide_blueprints: list[dict]
     target_slide_numbers: list[int]
-    rewrite_instructions: str
 
 
 class CriticIssue(BaseModel):

@@ -88,7 +88,6 @@ def _build_critic_send(*, dispatch_id: str, session_id: str, assignment: dict) -
             "chunk_ids": assignment["chunk_ids"],
             "slide_blueprints": assignment["slide_blueprints"],
             "target_slide_numbers": assignment["target_slide_numbers"],
-            "rewrite_instructions": assignment.get("rewrite_instructions", ""),
         },
     )
 

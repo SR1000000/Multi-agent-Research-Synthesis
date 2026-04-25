@@ -41,7 +41,7 @@ PAPER_SUMMARY_MAX_CHARS = 900
 SECTION_SNIPPET_MAX_CHARS = 420
 SECTION_SNIPPET_PER_CHUNK_CHARS = 180
 
-# Matches ATX headings: # / ## / ### / #### at the start of a line
+# Matches ATX headings: # / ## / ### / #### / ##### / ###### at the start of a line
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+\S")
 
 
@@ -80,7 +80,7 @@ def _detect_heading(chunk_text: str) -> str | None:
         if not stripped:
             continue
         if _HEADING_RE.match(line):
-            return re.sub(r"^#{1,4}\s+", "", stripped).strip()
+            return re.sub(r"^#{1,6}\s+", "", stripped).strip()
         # First non-empty line is not a heading
         return None
     return None

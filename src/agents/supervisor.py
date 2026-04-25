@@ -33,11 +33,6 @@ class SupervisorOutput(BaseModel):
     reasoning: str
     feedback:  str = ""
 
-
-# ---------------------------------------------------------------------------
-# Agent (dormant)
-# ---------------------------------------------------------------------------
-
 def _severity_counts(results: list[dict]) -> dict[str, int]:
     """Aggregate issue counts by severity across all critic results for a single cycle."""
     counts = {"critical": 0, "major": 0, "minor": 0}

@@ -12,7 +12,7 @@ from src.memory.research.schema import ImageMetadata, ProtoSlide
 def ordered_chunk_texts(rows: list, chunk_ids: list[str]) -> list[str]:
     """Return chunk text blocks in the caller-provided chunk order.
 
-    Deduplication: shared with slide writer (context load) and critic (baseline
+    Shared with slide writer (context load) and critic (baseline
     source block) so chunk ordering and formatting stay consistent.
     """
     rows_by_id = {row["id"]: row for row in rows}
