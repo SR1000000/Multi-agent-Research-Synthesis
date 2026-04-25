@@ -83,7 +83,7 @@ def _records_complete(records: list[dict], active_dispatch: dict) -> bool:
     length-based wait until enough writer reports exist (see run()).
     """
     expected = set(active_dispatch["expected_assignment_ids"])
-    received = {record.get("assignment_id") for record in records}
+    received = {record["assignment_id"] for record in records}
     return expected <= received
 
 
