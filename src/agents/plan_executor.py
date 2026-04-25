@@ -33,6 +33,60 @@ def _group_chunk_ids(group: SlideGroup) -> list[str]:
     return result
 
 
+def _start_dispatch(
+    review: dict,
+    *,
+    dispatch_id: str,
+    kind: str,
+    plan_generation: int,
+    expected_assignment_ids: list[str],
+) -> None:
+    """Set ``review.active_dispatch`` and increment ``review.dispatch_counter``.
+
+    ``phase`` is not set here. Callers that need ``"phase"`` (e.g. the initial
+    write branch) must set it separately, because _start_dispatch is shared
+    with critic/rewrite where phase is already ``critic_dispatch`` or
+    ``rewrite_dispatch`` from the supervisor.
+    """
+    review.update(
+        {
+            "dispatch_counter": int(review.get("dispatch_counter", 0)) + 1,
+            "active_dispatch": {
+                "dispatch_id": dispatch_id,
+                "kind": kind,
+                "cycle_number": review.get("cycle_number", 0),
+                "plan_generation": plan_generation,
+                "expected_assignment_ids": expected_assignment_ids,
+            },
+        }
+    )
+
+
+def _matching_dispatch_records(records: list[dict], active_dispatch: dict) -> list[dict]:
+    """Return records for the current batch: matching ``dispatch_id`` and ``plan_generation``."""
+    dispatch_id = active_dispatch["dispatch_id"]
+    generation = active_dispatch.get("plan_generation", 0)
+    return [
+        record
+        for record in records
+        if record.get("dispatch_id") == dispatch_id
+        and record.get("plan_generation", 0) == generation
+    ]
+
+
+def _records_complete(records: list[dict], active_dispatch: dict) -> bool:
+    """True when every expected ``assignment_id`` has at least one record.
+
+    Do **not** use this for the initial-write fan-in: retries resend the same
+    assignment ids, so the first wave can already “cover” every id while later
+    retry attempts are still in flight. The initial path must keep the
+    length-based wait until enough writer reports exist (see run()).
+    """
+    expected = set(active_dispatch["expected_assignment_ids"])
+    received = {record.get("assignment_id") for record in records}
+    return expected <= received
+
+
 def _build_slide_writer_send(
     *,
     dispatch_id: str,
@@ -48,9 +102,8 @@ def _build_slide_writer_send(
 
     Centralising the payload shape here ensures initial writes and rewrites produce
     identically-structured dispatch records, preventing subtle fan-in mismatches.
+    LangGraph Send payloads must be JSON-serializable plain dictionaries, not Pydantic models.
     """
-    # Serialize all slide blueprints in a group to plain dicts.
-    # LangGraph Send payloads must be JSON-serializable plain dictionaries, not Pydantic models.
     return Send(
         "slide_writer",
         {
@@ -68,28 +121,16 @@ def _build_slide_writer_send(
 
 
 def _build_critic_send(*, dispatch_id: str, session_id: str, assignment: dict) -> Send:
-    """Build a LangGraph Send targeting the critic node for one review assignment.
+    """Build a ``Send`` to the critic node with executor-stamped fields.
 
-    Preserves all supervisor-created assignment fields and stamps the current dispatch_id
-    so the fan-in logic can match critic results to the correct dispatch round.
+    Uses a shallow copy of the supervisor ``ReviewAssignment`` so new fields
+    flow through automatically. ``rewrite_instructions`` is included (critic
+    builds its own; the critic node reads only known keys, so extra keys are
+    ignored at runtime).
     """
-    return Send(
-        "critic",
-        {
-            "dispatch_id": dispatch_id,
-            "assignment_id": assignment["assignment_id"],
-            "plan_generation": assignment["plan_generation"],
-            "cycle_number": assignment["cycle_number"],
-            "session_id": session_id,
-            "check_type": assignment["check_type"],
-            "scope_type": assignment["scope_type"],
-            "scope_id": assignment["scope_id"],
-            "group_idx": assignment["group_idx"],
-            "chunk_ids": assignment["chunk_ids"],
-            "slide_blueprints": assignment["slide_blueprints"],
-            "target_slide_numbers": assignment["target_slide_numbers"],
-        },
-    )
+    payload = dict(assignment)
+    payload.update({"dispatch_id": dispatch_id, "session_id": session_id})
+    return Send("critic", payload)
 
 
 # ---------------------------------------------------------------------------
@@ -197,30 +238,23 @@ class PlanExecutorAgent:
                     )
                 )
 
-            review.update(
-                {
-                    "phase": "initial_write",
-                    "dispatch_counter": dispatch_counter + 1,
-                    "active_dispatch": {
-                        "dispatch_id": dispatch_id,
-                        "kind": "initial_write",
-                        "cycle_number": 0,
-                        "plan_generation": plan_generation,
-                        "expected_assignment_ids": [f"initial-g{idx}" for idx in range(len(groups))],
-                    },
-                }
+            # ``phase`` is set here, not in ``_start_dispatch`` (see _start_dispatch docstring).
+            review["phase"] = "initial_write"
+            _start_dispatch(
+                review,
+                dispatch_id=dispatch_id,
+                kind="initial_write",
+                plan_generation=plan_generation,
+                expected_assignment_ids=[f"initial-g{idx}" for idx in range(len(groups))],
             )
             return Command(update={"review": review}, goto=sends)
 
         if phase == "initial_write" and active_dispatch is not None:
             # Wait until every parallel writer assignment has reported for this dispatch.
             ag = active_dispatch.get("plan_generation", 0)
-            relevant = [
-                entry
-                for entry in slides_written
-                if entry.get("dispatch_id") == active_dispatch["dispatch_id"]
-                and entry.get("plan_generation", 0) == ag
-            ]
+            relevant = _matching_dispatch_records(slides_written, active_dispatch)
+            # Length-based wait (not _records_complete): retries reuse assignment ids; each
+            # attempt appends another slides_written record per group.
             if len(relevant) < len(active_dispatch["expected_assignment_ids"]):
                 return Command(update={})
             counts_by_group: dict[int, list[int]] = {}
@@ -289,29 +323,18 @@ class PlanExecutorAgent:
                     _build_critic_send(dispatch_id=dispatch_id, session_id=session_id, assignment=assignment)
                     for assignment in assignments
                 ]
-                review.update(
-                    {
-                        "dispatch_counter": dispatch_counter + 1,
-                        "active_dispatch": {
-                            "dispatch_id": dispatch_id,
-                            "kind": "critic",
-                            "cycle_number": review.get("cycle_number", 0),
-                            "plan_generation": plan_generation,
-                            "expected_assignment_ids": [assignment["assignment_id"] for assignment in assignments],
-                        },
-                    }
+                _start_dispatch(
+                    review,
+                    dispatch_id=dispatch_id,
+                    kind="critic",
+                    plan_generation=plan_generation,
+                    expected_assignment_ids=[a["assignment_id"] for a in assignments],
                 )
                 return Command(update={"review": review}, goto=sends)
 
             if active_dispatch:
-                adg = active_dispatch.get("plan_generation", 0)
-                relevant_results = [
-                    result
-                    for result in critic_results
-                    if result.get("dispatch_id") == active_dispatch["dispatch_id"]
-                    and result.get("plan_generation", 0) == adg
-                ]
-                if len(relevant_results) < len(active_dispatch["expected_assignment_ids"]):
+                relevant_results = _matching_dispatch_records(critic_results, active_dispatch)
+                if not _records_complete(relevant_results, active_dispatch):
                     return Command(update={})
                 review.update(
                     {
@@ -347,29 +370,18 @@ class PlanExecutorAgent:
                             target_slide_numbers=assignment.get("target_slide_numbers", []),
                         )
                     )
-                review.update(
-                    {
-                        "dispatch_counter": dispatch_counter + 1,
-                        "active_dispatch": {
-                            "dispatch_id": dispatch_id,
-                            "kind": "rewrite",
-                            "cycle_number": review.get("cycle_number", 0),
-                            "plan_generation": plan_generation,
-                            "expected_assignment_ids": [assignment["assignment_id"] for assignment in assignments],
-                        },
-                    }
+                _start_dispatch(
+                    review,
+                    dispatch_id=dispatch_id,
+                    kind="rewrite",
+                    plan_generation=plan_generation,
+                    expected_assignment_ids=[a["assignment_id"] for a in assignments],
                 )
                 return Command(update={"review": review}, goto=sends)
 
             if active_dispatch:
-                adg = active_dispatch.get("plan_generation", 0)
-                relevant_writes = [
-                    entry
-                    for entry in slides_written
-                    if entry.get("dispatch_id") == active_dispatch["dispatch_id"]
-                    and entry.get("plan_generation", 0) == adg
-                ]
-                if len(relevant_writes) < len(active_dispatch["expected_assignment_ids"]):
+                relevant_writes = _matching_dispatch_records(slides_written, active_dispatch)
+                if not _records_complete(relevant_writes, active_dispatch):
                     return Command(update={})
                 review.update(
                     {
@@ -388,8 +400,9 @@ class PlanExecutorAgent:
 
 
 def plan_executor_node(state: ResearchState) -> Command:
-    """LangGraph node entry point that constructs a fresh PlanExecutorAgent and delegates to run().
+    """LangGraph node entry that builds a new ``PlanExecutorAgent`` and runs it once per tick.
 
-    A new instance is created on each tick; all continuation data is carried in ResearchState.
+    State is fully carried in ``ResearchState``; the agent instance is not reused
+    between graph invocations.
     """
     return PlanExecutorAgent().run(state)
