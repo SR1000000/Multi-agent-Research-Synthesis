@@ -24,6 +24,13 @@ from src.state import (
 
 
 class CriticDispatch(TypedDict):
+    """State payload delivered to a critic node via LangGraph's Send() API.
+
+    Carries everything the critic needs: which slides to review, the source
+    chunks those slides were written from, the plan blueprint for intent context,
+    and any rewrite instructions carried over from a prior cycle.
+    """
+
     plan_generation: int
     dispatch_id: str
     assignment_id: str
@@ -39,24 +46,9 @@ class CriticDispatch(TypedDict):
     rewrite_instructions: str
 
 
-def _critic_log_label(state: CriticDispatch) -> str:
-    """Match SlideWriter-style prefixes so parallel critics are easy to tell apart in logs.
-        Fall back to blueprint slide numbers when the supervisor did not narrow the assignment."""
-    nums = list(state.get("target_slide_numbers") or [])
-    if not nums:
-        for bp in state.get("slide_blueprints") or []:
-            n = bp.get("slide_number")
-            if n is not None:
-                nums.append(n)
-    if not nums:
-        return "Critic[empty]"
-    ordered = sorted(int(n) for n in nums)
-    lo, hi = ordered[0], ordered[-1]
-    span = f"slides {lo}-{hi}" if lo != hi else f"slide {lo}"
-    return f"Critic[{span}, group {state.get('group_idx', '?')}]"
-
-
 class CriticIssue(BaseModel):
+    """A single structured issue identified by the critic LLM for one review assignment."""
+
     issue_code: str = Field(description="Unique issue id like ISS_001")
     severity: Literal["critical", "major", "minor"]
     issue_type: str
@@ -66,6 +58,8 @@ class CriticIssue(BaseModel):
 
 
 class CriticOutput(BaseModel):
+    """Structured output returned by the critic LLM for a single review assignment."""
+
     summary: str = Field(
         description="A concise 1-2 sentence overview of the review. Do NOT list specific issues here; use the issues array for structured issues."
     )
@@ -79,18 +73,37 @@ class CriticOutput(BaseModel):
 
 
 def _fingerprint(*, scope_type: str, scope_id: str, issue_type: str, location: str) -> str:
-    # Stable issue fingerprints let the supervisor detect repeated problems across cycles.
+    """Return a short, stable hash that uniquely identifies an issue by its structural attributes.
+
+    The fingerprint is scoped to (scope_type, scope_id, issue_type, location) so the
+    supervisor can track whether the same logical problem recurs across review cycles.
+    """
     raw = f"{scope_type}|{scope_id}|{issue_type}|{location}".encode("utf-8")
     return hashlib.sha1(raw).hexdigest()[:12]
 
 
 class SlideCriticAgent(BaseLLMAgent):
+    """LLM-backed agent that reviews a batch of slides for grounding and consistency issues.
+
+    Each instance is dispatched for a single critic assignment (one slide group per cycle).
+    It loads the current slide drafts, the baseline source chunks, and the session-wide
+    retrieval log, then asks the LLM to produce a structured list of issues.  Results are
+    fingerprinted and persisted to the research database so the supervisor can detect
+    recurring problems across cycles and avoid infinite rewrite loops on stable findings.
+    """
+
     def __init__(self, *, log_display: str | None = None) -> None:
+        """Initialise with the critic system prompt; ``log_display`` labels parallel critic logs."""
         super().__init__("critic", system_prompt=CRITIC_ROLE, log_display=log_display)
 
     def _load_session_retrieval_log(
         self, session_id: str, plan_generation: int | None = None
     ) -> str:
+        """Load and format all normalized research artifacts retrieved during the session.
+
+        Returns a newline-separated block of artifact rows suitable for injection into
+        the review prompt, or an empty string when no session ID is provided.
+        """
         if not session_id:
             return ""
         with ResearchDatabase() as research_db:
@@ -103,6 +116,7 @@ class SlideCriticAgent(BaseLLMAgent):
         return "\n\n".join(ordered)
 
     def _load_slides(self, slide_numbers: list[int]) -> list[ProtoSlide]:
+        """Fetch the current persisted draft for each requested slide number from the research database."""
         slides: list[ProtoSlide] = []
         with ResearchDatabase() as research_db:
             for slide_number in slide_numbers:
@@ -112,7 +126,12 @@ class SlideCriticAgent(BaseLLMAgent):
         return slides
 
     def _build_user_prompt(self, state: CriticDispatch) -> str:
-        # Assemble slides, plan intent, baseline chunks, retrieved artifacts, and images in one review packet.
+        """Assemble the full review packet for the LLM.
+
+        Combines the plan intent (blueprint block), current slide drafts, baseline source
+        chunks, the session-wide retrieval log, and any embedded image assets into a single
+        structured prompt consumed by the critic LLM.
+        """
         slide_numbers = state.get("target_slide_numbers", [])
         slides = self._load_slides(slide_numbers)
         plan_gen = int(state.get("plan_generation", 0))
@@ -163,7 +182,13 @@ class SlideCriticAgent(BaseLLMAgent):
         )
 
     def run(self, state: CriticDispatch) -> Command:
-        # Persist each issue before returning it so later supervisor cycles can detect recurrence.
+        """Execute the critic review for one assignment and return a LangGraph Command.
+
+        Calls the LLM with the assembled review prompt, converts each issue to a
+        fingerprinted dict, and persists every issue (or a pass event when none are found)
+        to the research database.  Returns a Command carrying a CriticResultRecord for the
+        supervisor to evaluate on its next invocation.
+        """
         self._set_session_id(state)
         self._set_plan_generation(state)
         plan_gen = int(state.get("plan_generation", 0))
@@ -246,5 +271,28 @@ class SlideCriticAgent(BaseLLMAgent):
 
 
 def critic_node(state: CriticDispatch | ResearchState) -> Command:
-    # Type ignore is intentional: LangGraph supplies the narrower CriticDispatch at runtime.
-    return SlideCriticAgent(log_display=_critic_log_label(state)).run(state)  # type: ignore[arg-type]
+    """LangGraph node entry point for a critic assignment.
+
+    Constructs a labelled SlideCriticAgent and delegates to its run() method.
+    The type annotation is wider than the runtime type because LangGraph routes
+    through ResearchState; the narrower CriticDispatch is always received at runtime.
+    """
+
+    # Modify log prefixes so parallel critics are easy to tell apart in logs.
+    # Fall back to blueprint slide numbers when the supervisor did not narrow the assignment.
+    nums = list(state.get("target_slide_numbers") or [])
+    if not nums:
+        for bp in state.get("slide_blueprints") or []:
+            n = bp.get("slide_number")
+            if n is not None:
+                nums.append(n)
+    if not nums:
+        log_display = "Critic[empty]"
+    else:
+        ordered = sorted(int(n) for n in nums)
+        lo, hi = ordered[0], ordered[-1]
+        span = f"slides {lo}-{hi}" if lo != hi else f"slide {lo}"
+        log_display = f"Critic[{span}, group {state.get('group_idx', '?')}]"
+
+    # type: ignore[arg-type] is intentional — see docstring above.
+    return SlideCriticAgent(log_display=log_display).run(state)  # type: ignore[arg-type]

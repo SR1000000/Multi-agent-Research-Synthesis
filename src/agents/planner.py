@@ -61,7 +61,7 @@ class _Section:
         word_count: int,
         snippet: str,
     ):
-        # Store only lightweight section metadata; full chunk text stays in research.db.
+        """Store lightweight section metadata; full chunk text remains in research.db."""
         self.label      = label
         self.heading    = heading
         self.chunk_ids  = chunk_ids
@@ -87,8 +87,8 @@ def _detect_heading(chunk_text: str) -> str | None:
 
 
 def _normalize_planner_text(text: str) -> str:
-    """Collapse markdown-ish chunk text into one readable snippet line."""
-    # Remove headings from snippets because headings already appear separately in the outline.
+    """Collapse markdown-ish chunk text into one readable snippet line.
+    Remove headings from snippets because headings already appear separately in the outline."""
     cleaned_lines: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
@@ -104,7 +104,11 @@ def _normalize_planner_text(text: str) -> str:
 
 
 def _truncate_text(text: str, max_chars: int) -> str:
-    """Trim text without cutting too harshly in the middle of a clause."""
+    """Trim text to at most max_chars without splitting mid-clause.
+
+    Tries natural punctuation boundaries (". ", "; ", ": ", ", ") before falling back
+    to a word boundary, keeping prompt snippets readable even when truncated.
+    """
     clean = " ".join(text.split()).strip()
     if len(clean) <= max_chars:
         return clean
@@ -242,7 +246,13 @@ def _build_outline(
     max_slides: int,
     total_chunks: int,
 ) -> str:
-    # Keep the outline compact but information-rich enough for the LLM to choose a narrative arc.
+    """Format a compact paper outline string for the LLM planning prompt.
+
+    Includes paper-level summaries, per-section headings with word counts and representative
+    snippets, a slide-count target, and the structural constraint instructions.  Kept compact
+    to avoid bloating the context window while giving the LLM enough narrative signal to choose
+    a coherent arc across one or more papers.
+    """
     total_words = sum(s.word_count for s in all_sections)
     lines = [
         f"PAPER OUTLINE ({len(all_sections)} sections across {len(paper_contexts)} paper(s), "
@@ -290,8 +300,13 @@ def _validate_llm_plan(
     valid_labels: set[str],
     max_slides: int,
 ) -> list[str]:
-    """Return a list of validation failure messages (empty = valid)."""
-    # Validate all cross-field invariants before resolving labels into concrete chunk ids.
+    """Return a list of validation failure messages; an empty list means the plan is valid.
+
+    Checks all cross-field invariants — title length, group size bounds, unique and contiguous
+    slide numbering, valid section label references — before section labels are resolved to
+    concrete chunk IDs.  Failures are collected rather than raised so every problem is visible
+    in a single retry prompt, reducing the number of LLM round-trips needed to converge.
+    """
     failures: list[str] = []
     seen_slide_numbers: set[int] = set()
     slide_numbers_in_order: list[int] = []
@@ -367,10 +382,23 @@ def _validate_llm_plan(
 # ---------------------------------------------------------------------------
 
 class PlannerAgent(BaseLLMAgent):
+    """LLM-backed agent that converts ingested document chunks into a validated PresentationPlan.
+
+    Operates in three phases:
+      1a. Data loading: reads all chunks per document, detects section boundaries via Markdown
+          heading analysis, and builds paper-level summaries and a section label map.
+      1b. Outline formatting: compresses section metadata into a compact planning brief with
+          structural constraint instructions for the LLM.
+      1c+2. LLM call + validation: asks the LLM for a structured LLMPresentationPlan, validates
+            all structural invariants via _validate_llm_plan, and resolves section labels to
+            concrete chunk IDs.  The full call is retried up to PLAN_MAX_RETRIES times on failure.
+    """
+
     def __init__(
         self,
         tools_for_agent: dict | None = None,
     ):
+        """Initialise with the planner system prompt and optional agent tools."""
         super().__init__(
             "planner",
             system_prompt=PLANNER_ROLE,
@@ -378,7 +406,22 @@ class PlannerAgent(BaseLLMAgent):
         )
 
     def run(self, state: ResearchState) -> Command[Literal["plan_executor"]]:
-        # Convert stored document chunks into a strict, section-referenced presentation plan.
+        """Load document chunks, build an outline, call the LLM, validate, resolve, and store the plan.
+
+        Detailed flow:
+          Phase 1a — For each doc_id, fetches raw chunks from research.db, detects section
+                     boundaries via heading analysis, and builds a paper summary and section map.
+          Phase 1b — Formats all sections into a compact outline string that names each section
+                     by label (S0, S1, …) with heading, word count, and a representative snippet.
+          Phase 1c — Calls the LLM with the user query + outline, requesting a LLMPresentationPlan.
+                     The runtime_validator applies _validate_llm_plan before accepting the response;
+                     validation failures cause the structured call to retry up to PLAN_MAX_RETRIES times.
+          Phase 2  — Resolves each blueprint's source_sections labels to concrete chunk IDs using
+                     the section_map built in Phase 1a, producing the final PresentationPlan.
+
+        Raises ValueError when no doc_ids are present or no sections could be detected.
+        Routes unconditionally to plan_executor on success.
+        """
         self._set_session_id(state)
 
         doc_ids      = state.get("doc_ids", [])
@@ -532,6 +575,7 @@ def planner_node(
     *,
     tools_for_agent: dict | None = None,
 ) -> Command:
+    """LangGraph node entry point that constructs a PlannerAgent and delegates to its run() method."""
     return PlannerAgent(
         tools_for_agent=tools_for_agent,
     ).run(state)

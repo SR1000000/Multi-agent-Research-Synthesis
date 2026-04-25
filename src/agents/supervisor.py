@@ -1,5 +1,10 @@
 """
-Slide-native SupervisorAgent.
+SupervisorAgent — orchestrates the critic-and-rewrite quality gate for slide decks.
+
+The supervisor sits between critic cycles and rewrite cycles in the LangGraph pipeline.
+After critics report their findings it decides whether to accept the deck, dispatch targeted
+rewrites, or trigger a full replan.  Decisions are forced to be conservative: critical issues
+always override an LLM "accept", and the cycle cap prevents infinite rewrite loops.
 """
 import json
 
@@ -18,6 +23,12 @@ from src.state import MAX_CYCLES, ResearchState, ReviewAssignment, make_initial_
 # ---------------------------------------------------------------------------
 
 class SupervisorOutput(BaseModel):
+    """Structured decision returned by the supervisor LLM call.
+
+    The LLM proposes a decision; the agent then applies override rules (e.g. forcing
+    "revise" when critical issues are present) before acting on the final decision.
+    """
+
     decision:  str   # "accept" | "revise" | "replan"
     reasoning: str
     feedback:  str = ""
@@ -28,6 +39,7 @@ class SupervisorOutput(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _severity_counts(results: list[dict]) -> dict[str, int]:
+    """Aggregate issue counts by severity across all critic results for a single cycle."""
     counts = {"critical": 0, "major": 0, "minor": 0}
     for result in results:
         for issue in result.get("issues", []):
@@ -38,6 +50,7 @@ def _severity_counts(results: list[dict]) -> dict[str, int]:
 
 
 def _rewrite_map(results: list[dict]) -> dict[str, bool]:
+    """Map each assignment ID to whether its critic result was actionable."""
     return {
         result["assignment_id"]: bool(result.get("actionable"))
         for result in results
@@ -45,6 +58,7 @@ def _rewrite_map(results: list[dict]) -> dict[str, bool]:
 
 
 def _has_actionable_critical_issue(results: list[dict]) -> bool:
+    """Return True if any actionable critic result contains at least one critical-severity issue."""
     for result in results:
         if not result.get("actionable"):
             continue
@@ -55,6 +69,7 @@ def _has_actionable_critical_issue(results: list[dict]) -> bool:
 
 
 def _has_actionable_major_issue(results: list[dict]) -> bool:
+    """Return True if any actionable critic result contains at least one major-severity issue."""
     for result in results:
         if not result.get("actionable"):
             continue
@@ -68,7 +83,12 @@ def _all_actionable_issues_are_persistent_minor(
     results: list[dict],
     recurring_counts: dict[str, int],
 ) -> bool:
-    # Persistent minor findings can be accepted to avoid endless rewrite loops on low-risk issues.
+    """Return True when every outstanding issue is minor and has recurred at least twice.
+
+    Persistent minor findings can be accepted to break endless rewrite loops where the LLM
+    repeatedly flags low-risk stylistic concerns it is unable to resolve.
+    Returns False when there are no actionable issues at all (caller must not accept on vacuous truth).
+    """
     saw_issue = False
     for result in results:
         if not result.get("actionable"):
@@ -86,7 +106,11 @@ def _all_actionable_issues_are_persistent_minor(
 def _build_group_assignments(
     *, plan, cycle_number: int, plan_generation: int
 ) -> list[ReviewAssignment]:
-    # Critics review by group so each assignment shares the same source chunks and narrative context.
+    """Build one critic ReviewAssignment per slide group in the presentation plan.
+
+    Critics are scoped to groups so each assignment shares the same source chunks and
+    narrative context, keeping review prompts focused and findings comparable across cycles.
+    """
     assignments: list[ReviewAssignment] = []
     for idx, group in enumerate(plan.slide_groups):
         target_slide_numbers = [bp.slide_number for bp in group.slide_blueprints]
@@ -126,6 +150,7 @@ def _format_dispatch_targets(assignments: list[ReviewAssignment]) -> str:
 
 
 def _short_reasoning(text: str, max_len: int = 240) -> str:
+    """Collapse multi-line LLM reasoning to a single truncated line suitable for terminal logs."""
     one_line = " ".join((text or "").split())
     if len(one_line) <= max_len:
         return one_line
@@ -135,7 +160,12 @@ def _short_reasoning(text: str, max_len: int = 240) -> str:
 def _build_rewrite_assignments(
     *, plan, results: list[dict], cycle_number: int, plan_generation: int
 ) -> list[ReviewAssignment]:
-    # Rewrite only affected slides when the critic names them; otherwise rewrite the whole group.
+    """Build targeted rewrite ReviewAssignments from actionable critic results.
+
+    Prefers to rewrite only the specific slides named by the critic; falls back to the
+    full group when no individual slide numbers are provided or when all named slides are
+    outside the valid group range (i.e. the critic hallucinated out-of-bounds numbers).
+    """
     assignments: list[ReviewAssignment] = []
     for result in results:
         group = plan.slide_groups[result["group_idx"]]
@@ -183,11 +213,30 @@ def _build_rewrite_assignments(
 
 
 class SupervisorAgent(BaseLLMAgent):
+    """Stateful control-plane agent that evaluates critic results and routes the pipeline.
+
+    On each invocation it inspects the current review state and critic findings to decide
+    between three outcomes:
+      - accept:  deck meets the quality bar → route to END (or force-export on cycle cap).
+      - revise:  targeted issues found → dispatch rewrite assignments then re-run critics.
+      - replan:  fundamental structural problems → reset review state and call the planner.
+
+    Override rules ensure critical issues are never silently accepted and that cycle limits
+    are respected regardless of what the LLM proposes.
+    """
+
     def __init__(self) -> None:
+        """Initialise with the supervisor system prompt."""
         super().__init__("supervisor", system_prompt=SUPERVISOR_ROLE)
 
     def run(self, state: ResearchState) -> Command:
-        # Mutate review state as the durable control plane for critic and rewrite cycles.
+        """Evaluate the current critic cycle and return the next routing Command.
+
+        Reads ``critic_results`` filtered to the current cycle and plan generation, queries
+        the database for recurring issue fingerprints, calls the LLM for a proposed decision,
+        then applies conservative override rules before returning a Command routed to the next
+        node.  Review state is mutated in-place and written back to the graph state on every path.
+        """
         self._set_session_id(state)
         review = dict(state.get("review") or {})
         plan = state.get("presentation_plan")
@@ -456,4 +505,5 @@ class SupervisorAgent(BaseLLMAgent):
 
 
 def supervisor_node(state: ResearchState) -> Command:
+    """LangGraph node entry point that constructs a SupervisorAgent and delegates to its run() method."""
     return SupervisorAgent().run(state)

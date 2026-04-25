@@ -42,19 +42,6 @@ class SlideWriterDispatch(TypedDict):
     target_slide_numbers:  List[int]
 
 
-# ---------------------------------------------------------------------------
-# Label helper
-# ---------------------------------------------------------------------------
-
-def _group_log_label(state: SlideWriterDispatch) -> str:
-    # Use the assigned slide span in logs so interleaved parallel writer log output stays traceable.
-    blueprints = state.get("slide_blueprints", [])
-    if not blueprints:
-        return "SlideWriter[empty]"
-    nums = [bp.get("slide_number", "?") for bp in blueprints]
-    return f"SlideWriter[slides {nums[0]}-{nums[-1]}, group {state.get('group_idx', '?')}]"
-
-
 def _ordered_chunk_texts(rows: list, chunk_ids: list[str]) -> list[str]:
     """Return chunk text blocks in the caller-provided chunk order."""
     rows_by_id = {row["id"]: row for row in rows}
@@ -73,6 +60,14 @@ def _ordered_chunk_texts(rows: list, chunk_ids: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 class _BaseSlideWorkerAgent(BaseLLMAgent):
+    """Abstract base for slide-writing agents that share a two-phase retrieval-then-generation loop.
+
+    Subclasses override ``_build_user_prompt()`` to supply a different prompt contract
+    (initial generation vs. critic-driven rewrite).  The shared ``run()`` method handles
+    retrieval tool calls, context loading, structured LLM generation, slide count validation,
+    and persistence to the research database.
+    """
+
     def __init__(
         self,
         *,
@@ -80,6 +75,7 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         log_display: str | None = None,
         tools_for_agent: dict[str, dict[str, Any]] | None = None,
     ):
+        """Initialise the base worker, forwarding the role-specific system prompt to BaseLLMAgent."""
         super().__init__(
             "slide_writer",
             system_prompt=system_prompt,
@@ -98,7 +94,12 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         target_slide_numbers: list[int],
         tag: str,
     ) -> Command:
-        # Report a zero-count write so PlanExecutor can make progress instead of waiting forever.
+        """Build a zero-count error Command so the graph can make progress after an unhandled exception.
+
+        Emits a slides_written record with count=0 so PlanExecutor's completion checks do not
+        wait indefinitely for a result that will never arrive.  The exception is also surfaced
+        in the ``errors`` state key for downstream inspection.
+        """
         err_str = f"{type(error).__name__}: {error}"
         self._logger.log(f"[{tag}] ERROR: {err_str}", level="error")
         err_msg = f"[{tag}] FAILED: {err_str}"
@@ -122,6 +123,12 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         slide_blueprints: list[dict],
         include_existing_slides: bool,
     ) -> tuple[str, list[ProtoSlide], list[ImageMetadata]]:
+        """Load source chunks, optionally existing slide drafts, and image metadata from the database.
+
+        Returns a 3-tuple of ``(combined_chunk_text, existing_slides, image_metadatas)``.
+        Existing slides are only fetched when ``include_existing_slides`` is True (i.e. during
+        rewrites) so initial generation cannot accidentally see stale drafts from a prior pass.
+        """
         with ResearchDatabase() as research_db:
             rows = []
             if chunk_ids:
@@ -147,7 +154,12 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         return "\n\n".join(chunk_texts), existing_slides, image_metadatas
 
     def _tool_payload_text(self, tool_results: list[dict[str, Any]]) -> str:
-        # Preserve tool payloads as JSON text because the structured slide call cannot consume tool objects.
+        """Serialize tool-call payloads to a single JSON text block.
+
+        Tool-use mode and structured-schema mode are separate LLM call paths; converting
+        the retrieved payloads to plain text bridges the gap so evidence from the retrieval
+        phase reaches the structured generation call as part of the user prompt.
+        """
         payloads: list[str] = []
         for result in tool_results:
             payload = result.get("payload")
@@ -166,10 +178,26 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
         existing_slides: list[ProtoSlide],
         image_metadatas: list[ImageMetadata],
     ) -> str:
-        # Subclasses choose the prompt contract while the shared run loop handles retrieval and saving.
+        """Build the user-turn prompt for the structured slide generation call.
+
+        Must be overridden by each concrete subclass with its own prompt contract.
+        The shared ``run()`` loop calls this after retrieval is complete, passing in
+        all available context; subclasses may ignore inputs irrelevant to their role.
+        """
         raise NotImplementedError
 
     def run(self, state: SlideWriterDispatch) -> Command:
+        """Orchestrate the two-phase write loop for one slide group assignment.
+
+        Phase 1 — Retrieval: issues a tool-calling LLM pass to fetch relevant evidence
+            from the research database against the slide blueprints.
+        Phase 2 — Generation: sends the retrieved context to a structured LLM call that
+            produces exactly one typed slide object per blueprint.
+
+        Validates the output slide count, persists each ProtoSlide to research.db, and
+        returns a Command carrying a slides_written record for the plan executor.
+        All exceptions are caught and forwarded via ``_failure()`` so the graph never stalls.
+        """
         self._set_session_id(state)
         self._set_plan_generation(state)
         plan_generation      = int(state.get("plan_generation", 0))
@@ -344,12 +372,19 @@ class _BaseSlideWorkerAgent(BaseLLMAgent):
 # ---------------------------------------------------------------------------
 
 class InitialSlideWriterAgent(_BaseSlideWorkerAgent):
+    """Writes first-draft slides from source chunks and plan blueprints.
+
+    Uses the initial-writer system prompt and ignores any rewrite instructions or existing
+    slide drafts, ensuring first drafts are generated cleanly from source evidence only.
+    """
+
     def __init__(
         self,
         *,
         log_display: str | None = None,
         tools_for_agent: dict[str, dict[str, Any]] | None = None,
     ) -> None:
+        """Initialise with the initial-writer role prompt."""
         super().__init__(
             system_prompt=SLIDE_WRITER_ROLE,
             log_display=log_display,
@@ -366,7 +401,11 @@ class InitialSlideWriterAgent(_BaseSlideWorkerAgent):
         existing_slides: list[ProtoSlide],
         image_metadatas: list[ImageMetadata],
     ) -> str:
-        # Drop rewrite-only inputs here so accidental caller state cannot leak into first drafts.
+        """Build the initial-generation prompt, discarding rewrite-only inputs.
+
+        Explicitly deletes ``rewrite_instructions`` and ``existing_slides`` to prevent
+        accidental state leakage into first-draft generation.
+        """
         del rewrite_instructions, existing_slides
         return build_initial_slide_user_prompt(
             slide_count=slide_count,
@@ -377,12 +416,20 @@ class InitialSlideWriterAgent(_BaseSlideWorkerAgent):
 
 
 class SlideRewriterAgent(_BaseSlideWorkerAgent):
+    """Revises existing slide drafts in response to structured critic feedback.
+
+    Uses the rewriter system prompt and supplies both the current slide content and the
+    rewrite instructions so the LLM can apply targeted fixes while preserving valid
+    content from the prior draft.
+    """
+
     def __init__(
         self,
         *,
         log_display: str | None = None,
         tools_for_agent: dict[str, dict[str, Any]] | None = None,
     ) -> None:
+        """Initialise with the rewriter role prompt."""
         super().__init__(
             system_prompt=SLIDE_REWRITER_ROLE,
             log_display=log_display,
@@ -399,7 +446,11 @@ class SlideRewriterAgent(_BaseSlideWorkerAgent):
         existing_slides: list[ProtoSlide],
         image_metadatas: list[ImageMetadata],
     ) -> str:
-        # Feed both the current slide draft and critique text so rewrites can preserve valid content.
+        """Build the rewrite prompt, supplying both the existing draft and critic instructions.
+
+        Passing the current slide content alongside the critique lets the LLM preserve
+        valid material and make only the targeted changes the critic requested.
+        """
         return build_slide_rewrite_user_prompt(
             slide_count=slide_count,
             slide_blueprints=slide_blueprints,
@@ -409,20 +460,29 @@ class SlideRewriterAgent(_BaseSlideWorkerAgent):
             existing_slides=existing_slides,
         )
 
-
-class SlideWriterAgent(InitialSlideWriterAgent):
-    """Backward-compatible alias for the initial slide writer."""
-
-
 def slide_writer_node(
     state: SlideWriterDispatch,
     *,
     tools_for_agent: dict[str, dict[str, Any]] | None = None,
 ) -> Command:
-    # The same graph node handles first drafts and rewrites; non-empty instructions select the rewriter.
+    """LangGraph node entry point shared by initial write and rewrite passes.
+
+    Inspects ``rewrite_instructions`` to decide whether to delegate to
+    ``SlideRewriterAgent`` (non-empty) or ``InitialSlideWriterAgent`` (empty/absent),
+    then runs the selected agent against the dispatched state.
+    """
+    blueprints = state.get("slide_blueprints", [])
+
+    # Modify log prefixes so parallel writers are easy to tell apart in logs.
+    if not blueprints:
+        log_display = "SlideWriter[empty]"
+    else:
+        nums = [bp.get("slide_number", "?") for bp in blueprints]
+        log_display = f"SlideWriter[slides {nums[0]}-{nums[-1]}, group {state.get('group_idx', '?')}]"
+    
     rewrite_instructions = state.get("rewrite_instructions", "")
     agent_cls = SlideRewriterAgent if rewrite_instructions.strip() else InitialSlideWriterAgent
     return agent_cls(
-        log_display=_group_log_label(state),
+        log_display=log_display,
         tools_for_agent=tools_for_agent,
     ).run(state)

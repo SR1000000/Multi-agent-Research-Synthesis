@@ -34,7 +34,10 @@ def _group_chunk_ids(group: SlideGroup) -> list[str]:
 
 
 def _blueprints_as_dicts(group: SlideGroup) -> list[dict]:
-    # LangGraph Send payloads must be plain dictionaries, not Pydantic models.
+    """Serialize all slide blueprints in a group to plain dicts.
+
+    LangGraph Send payloads must be JSON-serializable plain dictionaries, not Pydantic models.
+    """
     return [bp.model_dump() for bp in group.slide_blueprints]
 
 
@@ -49,7 +52,11 @@ def _build_slide_writer_send(
     rewrite_instructions: str = "",
     target_slide_numbers: list[int] | None = None,
 ) -> Send:
-    # Centralize writer payload shape so initial writes and rewrites stay aligned.
+    """Build a LangGraph Send targeting the slide_writer node for one group assignment.
+
+    Centralising the payload shape here ensures initial writes and rewrites produce
+    identically-structured dispatch records, preventing subtle fan-in mismatches.
+    """
     return Send(
         "slide_writer",
         {
@@ -67,7 +74,11 @@ def _build_slide_writer_send(
 
 
 def _build_critic_send(*, dispatch_id: str, session_id: str, assignment: dict) -> Send:
-    # Preserve the supervisor-created assignment fields while stamping this dispatch id.
+    """Build a LangGraph Send targeting the critic node for one review assignment.
+
+    Preserves all supervisor-created assignment fields and stamps the current dispatch_id
+    so the fan-in logic can match critic results to the correct dispatch round.
+    """
     return Send(
         "critic",
         {
@@ -104,20 +115,56 @@ def _exhausted_group_message(group: SlideGroup, group_idx: int) -> str:
 # ---------------------------------------------------------------------------
 
 class PlanExecutorAgent:
-    """Stateless dispatcher — all state lives in ResearchState."""
+    """Deterministic fan-out/fan-in coordinator for slide writing, critic review, and rewrites.
+
+    All persistent state (phases, dispatch IDs, assignment lists) lives in ResearchState so
+    this agent is fully stateless and safe to instantiate fresh on every graph tick.  It drives
+    three sequential sub-phases — initial_write → critic_dispatch → rewrite_dispatch — separated
+    by awaiting_supervisor checkpoints where the SupervisorAgent decides the next step.
+    """
 
     def __init__(self) -> None:
+        """Initialise the logger; no other instance state is needed."""
         self._logger = AgentLogger()
 
     def _set_session_id(self, state: dict) -> None:
+        """Propagate the session ID into the current_session_id context var.
+
+        This ensures nested LLM and tool calls made later in the same graph tick are attributed
+        to the correct session without requiring explicit parameter threading through every caller.
+        """
         from src.llm.llm import current_session_id
-        # Propagate session context into nested LLM/tool calls made later in the graph.
         sid = state.get("session_id") if isinstance(state, dict) else None
         if sid:
             current_session_id.set(sid)
 
     def run(self, state: ResearchState) -> Command:
-        # Drive the fan-out/fan-in state machine entirely from the persisted review state.
+        """Advance the fan-out/fan-in state machine by one tick and return the next routing Command.
+
+        Reads the current review phase from state and handles one of five cases:
+
+        1. initial_write (no active dispatch):
+           Cleans stale slides from a prior plan generation, fans out one slide_writer Send
+           per group, and records the expected assignment IDs in the active dispatch.
+
+        2. initial_write (active dispatch):
+           Waits until all writer results have reported; retries zero-count groups up to
+           MAX_RETRIES_PER_GROUP times, then routes to the supervisor or directly to END
+           if skip_supervisor is set in state.
+
+        3. critic_dispatch (no active dispatch):
+           Fans out one critic Send per supervisor-built review assignment.
+
+        4. critic_dispatch (active dispatch):
+           Waits until all critic results have arrived, then routes to the supervisor.
+
+        5. rewrite_dispatch (no/active dispatch):
+           Same fan-out/fan-in pattern as critics but sends to slide_writer with
+           rewrite_instructions and a narrowed target_slide_numbers list.
+
+        In all waiting states the method returns an empty ``Command(update={})`` to yield
+        control back to LangGraph without advancing the phase.
+        """
         self._set_session_id(state)
 
         session_id        = state.get("session_id", "")
@@ -351,5 +398,8 @@ class PlanExecutorAgent:
 
 
 def plan_executor_node(state: ResearchState) -> Command:
-    # Construct a fresh dispatcher for each graph tick; continuation data is carried in state.
+    """LangGraph node entry point that constructs a fresh PlanExecutorAgent and delegates to run().
+
+    A new instance is created on each tick; all continuation data is carried in ResearchState.
+    """
     return PlanExecutorAgent().run(state)
