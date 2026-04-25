@@ -117,7 +117,7 @@ def build_slide_base_prompt_parts(
         "- Use sub-bullets when they help unpack evidence, examples, caveats, or stepwise logic under a main claim.",
         "- Speaker notes should be professional, conversational, and cover the core bullets with added context.  Pretend you are the presenter of the slide, and you are speaking to the audience.",
         "- Avoid academic jargon unless the original terminology is important to preserve.",
-        "- Only populate `media_id` and choose a media-based layoutwhen an image genuinely reinforces the slide's narrative intent. Do not force image inclusion; omit `media_id` (leave it null) if no available asset meaningfully supports the slide.",
+        "- Only populate `media_id` and choose a media-based layout when an image genuinely reinforces the slide's narrative intent. Do not force image inclusion; omit `media_id` (leave it null) if no available asset meaningfully supports the slide.",
         "- Choose the layout that best supports the contents of the slide.",
     ]
     image_block = format_image_assets_block(image_metadatas)
