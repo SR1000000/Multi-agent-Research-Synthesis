@@ -68,7 +68,7 @@ set of slides so they satisfy reviewer feedback while remaining grounded in the 
 
 If the reviewer instructions conflict with the prior slide assignment or prior wording, follow the \
 reviewer instructions. Treat this as an edit pass, not a fresh unconstrained rewrite.
-Only deviate from the reviewer instructions if it counters your imperitive to ground the slides in the associated research chunks.
+Only deviate from the reviewer instructions if it counters your imperative to ground the slides in the associated research chunks.
 
 ### REVISION DIRECTIVES:
 1. Preserve what already works; change only what is necessary to resolve the review feedback.
