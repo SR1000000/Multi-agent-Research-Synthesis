@@ -127,7 +127,7 @@ def build_critic_user_prompt(
             "If no changes are needed, set actionable=false and issues=[].",
             "Review the slides against the BASELINE SOURCE MATERIAL and IN-SESSION RETRIEVAL LOG. Treat this combined evidence as the source of truth for grounding checks.",
             "If the combined evidence is missing support for a concrete claim on a slide, treat that as a grounding issue.",
-            "Identify only significant issues that break grounding, clarity, coherence, or the review criteria. If no changes are needed, set actionable=false and issues=[].",
+            "Review the slides against the BASELINE SOURCE MATERIAL and IN-SESSION RETRIEVAL LOG. Treat this combined evidence as the source of truth for grounding checks.",
             "",
             build_critic_output_format(output_model),
         ]
