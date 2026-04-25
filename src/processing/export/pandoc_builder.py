@@ -112,6 +112,20 @@ def _bullet_lines(content: SlideContent) -> List[str]:
     return lines
 
 
+def _split_bullets_for_two_columns(content: SlideContent) -> tuple[List[str], List[str]]:
+    """Split top-level bullets into two columns, keeping sub-bullets with parents."""
+    midpoint = (len(content.bullets) + 1) // 2
+    left_lines: List[str] = []
+    right_lines: List[str] = []
+
+    for bullet in content.bullets[:midpoint]:
+        left_lines.extend(_render_bullet(bullet))
+    for bullet in content.bullets[midpoint:]:
+        right_lines.extend(_render_bullet(bullet))
+
+    return left_lines, right_lines
+
+
 def _render_bullet(bullet: BulletPoint) -> List[str]:
     """Returns a list of Markdown lines for a single BulletPoint."""
     lines = [f"- {sanitize_xml_text(bullet.text)}"]

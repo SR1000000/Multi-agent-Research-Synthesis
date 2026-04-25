@@ -64,6 +64,10 @@ ReviewPhase = Literal[
 # The LLM works with section labels (e.g. "S0", "S3"), never raw chunk IDs.
 # Planner Python code is responsible for resolving labels to chunk IDs before
 # writing anything to ResearchState.
+#
+# Kept separate because these schemas are fed into the LLM, so they need to only contain
+# relevant fields for the LLM to generate.  We don't want to give the LLM fields and then
+# tell it to ignore them.
 # ---------------------------------------------------------------------------
 
 class LLMSlideBlueprint(BaseModel):
