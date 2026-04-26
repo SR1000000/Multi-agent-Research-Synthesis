@@ -13,9 +13,10 @@ from langgraph.types import Command
 from pydantic import BaseModel
 
 from src.memory.research.database import ResearchDatabase
+from src.memory.research.replan_backup import backup_replan_debug_snapshot
 from src.agents.base import BaseLLMAgent
 from src.agents.prompts.supervisor_prompts import SUPERVISOR_ROLE, build_supervisor_user_prompt
-from src.state import MAX_CYCLES, ResearchState, ReviewAssignment, make_initial_review_state
+from src.state import MAX_CYCLES, MAX_REPLANS, ResearchState, ReviewAssignment, make_initial_review_state
 
 
 # ---------------------------------------------------------------------------
@@ -68,9 +69,7 @@ def _all_actionable_issues_are_persistent_minor(
     return saw_issue
 
 
-def _build_group_assignments(
-    *, plan, cycle_number: int, plan_generation: int
-) -> list[ReviewAssignment]:
+def _build_group_assignments(*, plan, cycle_number: int) -> list[ReviewAssignment]:
     """Build one critic ReviewAssignment per slide group in the presentation plan.
 
     Critics are scoped to groups so each assignment shares the same source chunks and
@@ -81,7 +80,6 @@ def _build_group_assignments(
         target_slide_numbers = [bp.slide_number for bp in group.slide_blueprints]
         assignments.append(
             {
-                "plan_generation": plan_generation,
                 "assignment_id": f"critic-c{cycle_number}-g{idx}",
                 "cycle_number": cycle_number,
                 "check_type": "grounding_consistency",
@@ -115,7 +113,7 @@ def _format_dispatch_targets(assignments: list[ReviewAssignment]) -> str:
 
 
 def _build_rewrite_assignments(
-    *, plan, results: list[dict], cycle_number: int, plan_generation: int
+    *, plan, results: list[dict], cycle_number: int
 ) -> list[ReviewAssignment]:
     """Build targeted rewrite ReviewAssignments from actionable critic results.
 
@@ -135,17 +133,16 @@ def _build_rewrite_assignments(
         )
         issues = result.get("issues", [])
         valid_group_slides = set(result.get("target_slide_numbers", []))
-        
+
         all_have_slide_numbers = bool(issues) and all(
             issue.get("affected_slide_numbers") for issue in issues
         )
-        
+
         if all_have_slide_numbers:
             affected = list(dict.fromkeys(
                 n for issue in issues for n in issue["affected_slide_numbers"]
                 if n in valid_group_slides
             ))
-            # Fallback if the critic only hallucinated out-of-bounds slide numbers
             if not affected:
                 affected = result.get("target_slide_numbers", [])
         else:
@@ -153,7 +150,6 @@ def _build_rewrite_assignments(
 
         assignments.append(
             {
-                "plan_generation": plan_generation,
                 "assignment_id": f"rewrite-{result['assignment_id']}",
                 "cycle_number": cycle_number,
                 "check_type": result["check_type"],
@@ -186,40 +182,106 @@ class SupervisorAgent(BaseLLMAgent):
         """Initialise with the supervisor system prompt."""
         super().__init__("supervisor", system_prompt=SUPERVISOR_ROLE)
 
-    def run(self, state: ResearchState) -> Command:
-        """Evaluate the current critic cycle and return the next routing Command.
+    def _replan(
+        self,
+        state: ResearchState,
+        review: dict,
+        cycle_number: int,
+        result: SupervisorOutput | None = None,
+        severity_counts: dict[str, int] | None = None,
+    ) -> Command:
+        """Full replan: optional debug DB backup, then reset review and bump ``plan_number``."""
+        plan = state.get("presentation_plan")
+        plan_json: str | None
+        if plan is not None:
+            plan_json = plan.model_dump_json()
+        else:
+            plan_json = None
 
-        Reads ``critic_results`` filtered to the current cycle and plan generation, queries
-        the database for recurring issue fingerprints, calls the LLM for a proposed decision,
-        then applies conservative override rules before returning a Command routed to the next
-        node.  Review state is mutated in-place and written back to the graph state on every path.
-        """
+        graph_metadata = {
+            "review_phase": review.get("phase"),
+            "cycle_number": cycle_number,
+            "pending_critic": review.get("pending_critic_assignments", []),
+            "pending_rewrite": review.get("pending_rewrite_assignments", []),
+            "last_critic_dispatch_id": review.get("last_critic_dispatch_id"),
+            "last_rewrite_ids": review.get("last_rewrite_assignment_ids", []),
+            "review_summaries": state.get("review_summaries", []),
+        }
+        if result is not None:
+            graph_metadata["supervisor_model_reasoning"] = result.reasoning
+            graph_metadata["supervisor_model_feedback"] = result.feedback
+        if severity_counts is not None:
+            graph_metadata["severity_counts"] = severity_counts
+
+        with ResearchDatabase() as research_db:
+            backup_replan_debug_snapshot(
+                research_db,
+                plan_number=int(state.get("plan_number", 1)),
+                session_id=state["session_id"],
+                graph_metadata=graph_metadata,
+                presentation_plan_json=plan_json,
+            )
+            research_db.save_review_event(
+                session_id=state["session_id"],
+                cycle_number=cycle_number,
+                plan_number=int(state.get("plan_number", 1)),
+                scope_type="deck",
+                scope_id="deck",
+                check_type="grounding_consistency",
+                decision="replan",
+            )
+
+        old_counter = int(review.get("dispatch_counter", 0))
+        new_review = make_initial_review_state(max_cycles=review.get("max_cycles", MAX_CYCLES))
+        new_review["dispatch_counter"] = old_counter
+
+        return Command(
+            update={
+                "plan_number": int(state.get("plan_number", 1)) + 1,
+                "presentation_plan": None,
+                "review": new_review,
+                "messages": ["[supervisor] replan: returning to planner"],
+            },
+            goto="planner",
+        )
+
+    def run(self, state: ResearchState) -> Command:
+        """Evaluate the current critic cycle and return the next routing Command."""
         self._set_session_id(state)
+        self._set_plan_number(state)
+
         review = dict(state.get("review") or {})
         plan = state.get("presentation_plan")
         if plan is None:
             raise ValueError("[Supervisor] No presentation_plan in state.")
 
+        plan_number = int(state.get("plan_number", 1))
         cycle_number = review.get("cycle_number", 0)
-        plan_generation = review.get("plan_generation", 0)
         phase = review.get("phase", "awaiting_supervisor")
+        max_cycles = review.get("max_cycles", MAX_CYCLES)
+        at_cycle_cap = cycle_number >= max_cycles
+        at_cap_forced = (
+            bool(state.get("force_replan_at_max_cycles"))
+            and at_cycle_cap
+            and plan_number <= MAX_REPLANS
+        )
+
+        last_did = review.get("last_critic_dispatch_id")
         critic_results = [
-            result
-            for result in state.get("critic_results", [])
-            if result.get("cycle_number") == cycle_number
-            and result.get("plan_generation", 0) == plan_generation
+            r
+            for r in state.get("critic_results", [])
+            if last_did and r.get("dispatch_id") == last_did
         ]
         severity_counts = _severity_counts(critic_results)
-        # Map each assignment ID to whether its critic result was actionable.
         rewrites_required = {
             r["assignment_id"]: bool(r.get("actionable")) for r in critic_results
         }
         history = []
         with ResearchDatabase() as research_db:
             history = research_db.list_review_events(
-                state["session_id"], plan_generation=plan_generation
+                state["session_id"], plan_number=plan_number
             )
-        recurring = {}
+        recurring: dict[str, int] = {}
         for event in history:
             fingerprint = event.get("fingerprint")
             if fingerprint:
@@ -235,14 +297,22 @@ class SupervisorAgent(BaseLLMAgent):
             if count >= 2
         ) or "(none)"
 
-        # No critic results yet for the current checkpoint means the supervisor should
-        # launch or relaunch a critic cycle, not attempt acceptance from stale state.
+        # No critic results yet for the current checkpoint — launch or relaunch a critic cycle.
         if not critic_results:
             next_cycle = max(1, cycle_number + 1)
-            if cycle_number >= review.get("max_cycles", MAX_CYCLES) and review.get("last_rewrite_assignment_ids"):
+            if at_cycle_cap and review.get("last_rewrite_assignment_ids"):
+                if at_cap_forced:
+                    return self._replan(
+                        state,
+                        review,
+                        cycle_number,
+                        severity_counts=review.get(
+                            "last_issue_counts", {"critical": 0, "major": 0, "minor": 0}
+                        ),
+                    )
                 review.update({"final_decision": "accept", "export_ready": True, "phase": "complete"})
                 summary = {
-                    "plan_generation": plan_generation,
+                    "plan_number": plan_number,
                     "cycle_number": cycle_number,
                     "issue_counts": review.get("last_issue_counts", {"critical": 0, "major": 0, "minor": 0}),
                     "decision": "accept",
@@ -262,9 +332,7 @@ class SupervisorAgent(BaseLLMAgent):
                     goto=END,
                 )
 
-            assignments = _build_group_assignments(
-                plan=plan, cycle_number=next_cycle, plan_generation=plan_generation
-            )
+            assignments = _build_group_assignments(plan=plan, cycle_number=next_cycle)
             review.update(
                 {
                     "cycle_number": next_cycle,
@@ -286,13 +354,14 @@ class SupervisorAgent(BaseLLMAgent):
             )
             return Command(update={"review": review, "messages": [msg]}, goto="plan_executor")
 
-        # If rewrites already ran for this cycle, the next step is another critic pass
-        # over the updated slides rather than acceptance based on stale critic findings.
+        # Post-rewrite: need another critic pass over updated slides.
         if review.get("last_rewrite_assignment_ids"):
-            if cycle_number >= review.get("max_cycles", MAX_CYCLES):
+            if at_cycle_cap:
+                if at_cap_forced:
+                    return self._replan(state, review, cycle_number, severity_counts=severity_counts)
                 review.update({"final_decision": "accept", "export_ready": True, "phase": "complete"})
                 summary = {
-                    "plan_generation": plan_generation,
+                    "plan_number": plan_number,
                     "cycle_number": cycle_number,
                     "issue_counts": severity_counts,
                     "decision": "accept",
@@ -313,9 +382,7 @@ class SupervisorAgent(BaseLLMAgent):
                 )
 
             next_cycle = cycle_number + 1
-            assignments = _build_group_assignments(
-                plan=plan, cycle_number=next_cycle, plan_generation=plan_generation
-            )
+            assignments = _build_group_assignments(plan=plan, cycle_number=next_cycle)
             review.update(
                 {
                     "cycle_number": next_cycle,
@@ -328,7 +395,7 @@ class SupervisorAgent(BaseLLMAgent):
                 }
             )
             summary = {
-                "plan_generation": plan_generation,
+                "plan_number": plan_number,
                 "cycle_number": cycle_number,
                 "issue_counts": severity_counts,
                 "decision": "revise",
@@ -349,8 +416,10 @@ class SupervisorAgent(BaseLLMAgent):
                 goto="plan_executor",
             )
 
+        if at_cap_forced:
+            return self._replan(state, review, cycle_number, severity_counts=severity_counts)
+
         actionable_results = [r for r in critic_results if r.get("actionable")]
-        max_cycles = review.get("max_cycles", MAX_CYCLES)
 
         user = build_supervisor_user_prompt(
             query=state["query"],
@@ -366,10 +435,8 @@ class SupervisorAgent(BaseLLMAgent):
             schema=SupervisorOutput,
         )
         model_decision = result.decision
-        at_cycle_cap = cycle_number >= max_cycles
         # Return True if any actionable critic result contains at least one
-        # critical- or major-severity issue. (actionable_results is pre-filtered
-        # to actionable=True, so the old per-result actionable guard is redundant here.)
+        # critical- or major-severity issue.
         has_critical_actionable = any(
             i.get("severity") == "critical"
             for r in actionable_results
@@ -394,10 +461,11 @@ class SupervisorAgent(BaseLLMAgent):
                 decision = "revise"
         elif decision == "revise" and not actionable_results:
             decision = "accept"
-
+        if at_cycle_cap and decision == "revise":
+            decision = "replan"
 
         summary = {
-            "plan_generation": plan_generation,
+            "plan_number": plan_number,
             "cycle_number": cycle_number,
             "issue_counts": severity_counts,
             "decision": decision,
@@ -415,7 +483,6 @@ class SupervisorAgent(BaseLLMAgent):
             "messages": [json.dumps({"supervisor_cycle_summary": summary}, sort_keys=True)],
         }
 
-        # Collapse multi-line LLM reasoning to a single truncated line suitable for terminal logs.
         _reasoning_one = " ".join((result.reasoning or "").split())
         _short_reasoning = (
             _reasoning_one
@@ -428,22 +495,7 @@ class SupervisorAgent(BaseLLMAgent):
         )
 
         if decision == "replan":
-            old_plan_generation = review.get("plan_generation", 0)
-            with ResearchDatabase() as research_db:
-                research_db.save_review_event(
-                    session_id=state["session_id"],
-                    cycle_number=cycle_number,
-                    plan_generation=old_plan_generation,
-                    scope_type="deck",
-                    scope_id="deck",
-                    check_type="grounding_consistency",
-                    decision="replan",
-                )
-            new_review = make_initial_review_state(max_cycles=review.get("max_cycles", MAX_CYCLES))
-            new_review["dispatch_counter"] = review.get("dispatch_counter", 0)
-            new_review["plan_generation"] = old_plan_generation + 1
-            updates["review"] = new_review
-            return Command(update=updates, goto="planner")
+            return self._replan(state, review, cycle_number, result=result, severity_counts=severity_counts)
 
         if decision == "accept":
             review.update({"final_decision": "accept", "export_ready": True, "phase": "complete"})
@@ -452,7 +504,7 @@ class SupervisorAgent(BaseLLMAgent):
                 research_db.save_review_event(
                     session_id=state["session_id"],
                     cycle_number=cycle_number,
-                    plan_generation=plan_generation,
+                    plan_number=plan_number,
                     scope_type="deck",
                     scope_id="deck",
                     check_type="grounding_consistency",
@@ -464,7 +516,6 @@ class SupervisorAgent(BaseLLMAgent):
             plan=plan,
             results=actionable_results,
             cycle_number=cycle_number,
-            plan_generation=plan_generation,
         )
         self._logger.log(
             f"[supervisor] dispatch {len(rewrite_assignments)} slide rewriter(s): "

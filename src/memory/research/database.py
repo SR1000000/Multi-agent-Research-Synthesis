@@ -209,24 +209,33 @@ class ResearchDatabase(DatabaseProvider):
                         self._conn.execute(
                             "ALTER TABLE slide_review_events ADD COLUMN location TEXT;"
                         )
-                    if "plan_generation" not in review_event_columns:
+                    if "plan_number" not in review_event_columns and "plan_generation" not in review_event_columns:
                         self._conn.execute(
                             "ALTER TABLE slide_review_events "
-                            "ADD COLUMN plan_generation INTEGER NOT NULL DEFAULT 0;"
+                            "ADD COLUMN plan_number INTEGER NOT NULL DEFAULT 0;"
                         )
+
+                # Rename legacy plan_generation -> plan_number on slide_review_events (column rename via rebuild).
+                sre_info = self._conn.execute("PRAGMA table_info(slide_review_events)").fetchall()
+                sre_names = {r["name"] for r in sre_info}
+                if sre_names and "plan_generation" in sre_names and "plan_number" not in sre_names:
+                    self._conn.execute("ALTER TABLE slide_review_events RENAME TO slide_review_events_old;")
+                    self._conn.execute(CREATE_SLIDE_REVIEW_EVENTS_TABLE)
+                    self._conn.execute("INSERT INTO slide_review_events SELECT * FROM slide_review_events_old;")
+                    self._conn.execute("DROP TABLE slide_review_events_old;")
 
                 rc_columns = [
                     info["name"]
                     for info in self._conn.execute("PRAGMA table_info(retrieved_chunks)").fetchall()
                 ]
-                if rc_columns and "plan_generation" not in rc_columns:
+                if rc_columns and "plan_number" not in rc_columns and "plan_generation" not in rc_columns:
                     self._conn.execute("ALTER TABLE retrieved_chunks RENAME TO retrieved_chunks_old;")
                     self._conn.execute(CREATE_RETRIEVED_CHUNKS_TABLE)
                     self._conn.execute(
                         """
                         INSERT INTO retrieved_chunks (
                             row_id, session_id, call_id, kind, artifact_id, document_id, text_content,
-                            score, rank, strategy, retrieved_at, agent_type, query, plan_generation
+                            score, rank, strategy, retrieved_at, agent_type, query, plan_number
                         )
                         SELECT
                             row_id, session_id, call_id, kind, artifact_id, document_id, text_content,
@@ -244,24 +253,41 @@ class ResearchDatabase(DatabaseProvider):
                         "ON retrieved_chunks(session_id, call_id);",
                     ):
                         self._conn.execute(idx_sql)
+                rcc_names = {
+                    r["name"] for r in self._conn.execute("PRAGMA table_info(retrieved_chunks)").fetchall()
+                }
+                if rcc_names and "plan_generation" in rcc_names and "plan_number" not in rcc_names:
+                    self._conn.execute("ALTER TABLE retrieved_chunks RENAME TO retrieved_chunks_old;")
+                    self._conn.execute(CREATE_RETRIEVED_CHUNKS_TABLE)
+                    self._conn.execute("INSERT INTO retrieved_chunks SELECT * FROM retrieved_chunks_old;")
+                    self._conn.execute("DROP TABLE retrieved_chunks_old;")
+                    for idx_sql in (
+                        "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_session_id "
+                        "ON retrieved_chunks(session_id);",
+                        "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_call_id "
+                        "ON retrieved_chunks(call_id);",
+                        "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_session_call "
+                        "ON retrieved_chunks(session_id, call_id);",
+                    ):
+                        self._conn.execute(idx_sql)
 
                 # Per-plan columns must exist before these indexes (migrations add columns on old DBs).
-                sre_columns = [
+                sre_columns2 = [
                     info["name"]
                     for info in self._conn.execute("PRAGMA table_info(slide_review_events)").fetchall()
                 ]
-                if sre_columns and "plan_generation" in sre_columns:
+                if sre_columns2 and "plan_number" in sre_columns2:
                     self._conn.execute(
                         "CREATE INDEX IF NOT EXISTS idx_slide_review_events_session_plan "
-                        "ON slide_review_events(session_id, plan_generation);"
+                        "ON slide_review_events(session_id, plan_number);"
                     )
-                rcc_columns = [
+                rcc_names2 = [
                     info["name"] for info in self._conn.execute("PRAGMA table_info(retrieved_chunks)").fetchall()
                 ]
-                if rcc_columns and "plan_generation" in rcc_columns:
+                if rcc_names2 and "plan_number" in rcc_names2:
                     self._conn.execute(
                         "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_session_plan "
-                        "ON retrieved_chunks(session_id, plan_generation);"
+                        "ON retrieved_chunks(session_id, plan_number);"
                     )
             except Exception as e:
                 self._logger.log(f"[ResearchDatabase] Schema migration error: {e}")
@@ -323,9 +349,9 @@ class ResearchDatabase(DatabaseProvider):
         return slide.save_review_event(self, **kwargs)
 
     def list_review_events(
-        self, session_id: str, plan_generation: int | None = None
+        self, session_id: str, plan_number: int | None = None
     ) -> list[dict]:
-        return slide.list_review_events(self, session_id, plan_generation=plan_generation)
+        return slide.list_review_events(self, session_id, plan_number=plan_number)
 
     def delete_slides_not_in(self, slide_numbers: list[int]) -> None:
         return slide.delete_slides_not_in(self, slide_numbers)
@@ -359,7 +385,7 @@ class ResearchDatabase(DatabaseProvider):
         query: str,
         strategy: str,
         agent_type: str,
-        plan_generation: int = 0,
+        plan_number: int = 0,
     ) -> None:
         return retrieval_save_session_retrieval_batch(
             self,
@@ -369,7 +395,7 @@ class ResearchDatabase(DatabaseProvider):
             query,
             strategy,
             agent_type,
-            plan_generation=plan_generation,
+            plan_number=plan_number,
         )
 
     def load_normalized_artifacts_for_keys(
@@ -383,10 +409,10 @@ class ResearchDatabase(DatabaseProvider):
         return retrieval_load_normalized_artifacts_for_call(self, session_id, call_id)
 
     def load_normalized_artifacts_for_session(
-        self, session_id: str, plan_generation: int | None = None
+        self, session_id: str, plan_number: int | None = None
     ) -> list[dict[str, Any]]:
         return retrieval_load_normalized_artifacts_for_session(
-            self, session_id, plan_generation=plan_generation
+            self, session_id, plan_number=plan_number
         )
 
     def load_retrieved_chunks(self, session_id: str | None = None) -> list[dict[str, Any]]:

@@ -294,7 +294,7 @@ CREATE TABLE IF NOT EXISTS slide_review_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
     cycle_number INTEGER NOT NULL,
-    plan_generation INTEGER NOT NULL DEFAULT 0,
+    plan_number INTEGER NOT NULL DEFAULT 0,
     scope_type TEXT NOT NULL,
     scope_id TEXT NOT NULL,
     check_type TEXT NOT NULL,
@@ -326,8 +326,8 @@ CREATE TABLE IF NOT EXISTS retrieved_chunks (
     retrieved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     agent_type TEXT,
     query TEXT,
-    plan_generation INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(session_id, call_id, kind, artifact_id, plan_generation)
+    plan_number INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(session_id, call_id, kind, artifact_id, plan_number)
 );
 """
 
@@ -346,4 +346,5 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_call_id ON retrieved_chunks(call_id);",
     "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_session_call ON retrieved_chunks(session_id, call_id);",
     "CREATE INDEX IF NOT EXISTS idx_slide_review_events_session_cycle ON slide_review_events(session_id, cycle_number);",
+    "CREATE INDEX IF NOT EXISTS idx_slide_review_events_session_plan ON slide_review_events(session_id, plan_number);",
 ]

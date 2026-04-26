@@ -30,7 +30,7 @@ class CriticDispatch(TypedDict):
     chunks those slides were written from, the plan blueprint for intent context.
     """
 
-    plan_generation: int
+    plan_number: int
     dispatch_id: str
     assignment_id: str
     cycle_number: int
@@ -85,7 +85,7 @@ class SlideCriticAgent(BaseLLMAgent):
         super().__init__("critic", system_prompt=CRITIC_ROLE, log_display=log_display)
 
     def _load_session_retrieval_log(
-        self, session_id: str, plan_generation: int | None = None
+        self, session_id: str, plan_number: int | None = None
     ) -> str:
         """Load and format all normalized research artifacts retrieved during the session.
 
@@ -96,7 +96,7 @@ class SlideCriticAgent(BaseLLMAgent):
             return ""
         with ResearchDatabase() as research_db:
             rows = research_db.load_normalized_artifacts_for_session(
-                session_id, plan_generation=plan_generation
+                session_id, plan_number=plan_number
             )
         ordered: list[str] = []
         for row in rows:
@@ -119,9 +119,9 @@ class SlideCriticAgent(BaseLLMAgent):
                 if slide is not None:
                     slides.append(slide)
         
-        plan_gen = int(state.get("plan_generation", 0))
+        pnum = int(state.get("plan_number", 1))
         retrieval_log = self._load_session_retrieval_log(
-            state.get("session_id", ""), plan_generation=plan_gen
+            state.get("session_id", ""), plan_number=pnum
         )
         blueprints = state.get("slide_blueprints", [])
         blueprint_block = "\n".join(
@@ -169,8 +169,8 @@ class SlideCriticAgent(BaseLLMAgent):
         supervisor to evaluate on its next invocation.
         """
         self._set_session_id(state)
-        self._set_plan_generation(state)
-        plan_gen = int(state.get("plan_generation", 0))
+        self._set_plan_number(state)
+        plan_num = int(state.get("plan_number", 1))
         prompt = self._build_user_prompt(state)
         result: CriticOutput = self._call(
             [{"role": "user", "content": prompt}],
@@ -200,7 +200,6 @@ class SlideCriticAgent(BaseLLMAgent):
             format_rewrite_instruction(issue) for issue in issues if issue["rewrite_instruction"].strip()
         )
         critic_result: CriticResultRecord = {
-            "plan_generation": plan_gen,
             "dispatch_id": state["dispatch_id"],
             "assignment_id": state["assignment_id"],
             "cycle_number": state["cycle_number"],
@@ -223,7 +222,7 @@ class SlideCriticAgent(BaseLLMAgent):
                 research_db.save_review_event(
                     session_id=state["session_id"],
                     cycle_number=state["cycle_number"],
-                    plan_generation=plan_gen,
+                    plan_number=plan_num,
                     scope_type=state["scope_type"],
                     scope_id=state["scope_id"],
                     check_type=state["check_type"],
@@ -239,7 +238,7 @@ class SlideCriticAgent(BaseLLMAgent):
                 research_db.save_review_event(
                     session_id=state["session_id"],
                     cycle_number=state["cycle_number"],
-                    plan_generation=plan_gen,
+                    plan_number=plan_num,
                     scope_type=state["scope_type"],
                     scope_id=state["scope_id"],
                     check_type=state["check_type"],

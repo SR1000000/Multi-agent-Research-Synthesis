@@ -95,7 +95,7 @@ def save_review_event(
     *,
     session_id: str,
     cycle_number: int,
-    plan_generation: int = 0,
+    plan_number: int = 0,
     scope_type: str,
     scope_id: str,
     check_type: str,
@@ -120,7 +120,7 @@ def save_review_event(
             INSERT INTO slide_review_events (
                 session_id,
                 cycle_number,
-                plan_generation,
+                plan_number,
                 scope_type,
                 scope_id,
                 check_type,
@@ -138,7 +138,7 @@ def save_review_event(
             (
                 session_id,
                 cycle_number,
-                plan_generation,
+                plan_number,
                 scope_type,
                 scope_id,
                 check_type,
@@ -174,24 +174,24 @@ def _row_affected_slide_numbers(row: sqlite3.Row) -> list[int] | None:
 
 
 def list_review_events(
-    db, session_id: str, plan_generation: int | None = None
+    db, session_id: str, plan_number: int | None = None
 ) -> list[dict]:
-    if plan_generation is not None:
+    if plan_number is not None:
         rows = db._conn.execute(
             """
-            SELECT session_id, cycle_number, plan_generation, scope_type, scope_id, check_type,
+            SELECT session_id, cycle_number, plan_number, scope_type, scope_id, check_type,
                    assignment_id, issue_code, severity, location, fingerprint,
                    rewrite_instruction_summary, affected_slide_numbers, decision, created_at
             FROM slide_review_events
-            WHERE session_id = ? AND plan_generation = ?
+            WHERE session_id = ? AND plan_number = ?
             ORDER BY cycle_number ASC, id ASC
             """,
-            (session_id, plan_generation),
+            (session_id, plan_number),
         ).fetchall()
     else:
         rows = db._conn.execute(
             """
-            SELECT session_id, cycle_number, plan_generation, scope_type, scope_id, check_type,
+            SELECT session_id, cycle_number, plan_number, scope_type, scope_id, check_type,
                    assignment_id, issue_code, severity, location, fingerprint,
                    rewrite_instruction_summary, affected_slide_numbers, decision, created_at
             FROM slide_review_events
