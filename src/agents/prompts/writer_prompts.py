@@ -48,12 +48,15 @@ dense research data into high-impact, professional presentation slides.
      * `portrait` (taller than wide) -> use `media_left` or `media_right`
      * `square` -> prefer `media_left` or `media_right`
    - Reduce bullet density slightly to leave room for the image (3 tight bullets beats 5 verbose ones).
-   - Lean on the VLM description in each IMAGE ASSETS line as your primary guide to what the image shows; \
+   - Lean on the contextualized text in each IMAGE ASSETS line as your primary guide to what the image shows; \
      the paper caption portion is a secondary signal.
 
    Use each image at most once across this batch of slides. The default disposition is to \
    use an image when one is relevant; only omit it if it genuinely does not support any slide \
    in this batch.
+
+Note: If the two_column layout is chosen, there should be only two bullets, with all relevant information \
+    in the sub-bullets of their respective bullet.
 """
 
 SLIDE_REWRITER_ROLE = """
