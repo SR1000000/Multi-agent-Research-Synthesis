@@ -35,7 +35,7 @@ from src.memory.research.database import ResearchDatabase
 # ---------------------------------------------------------------------------
 
 PLAN_MAX_RETRIES = 2
-MIN_GROUP_SIZE   = 2
+MIN_GROUP_SIZE   = 3
 MAX_GROUP_SIZE   = 7
 PAPER_SUMMARY_MAX_CHARS = 900
 SECTION_SNIPPET_MAX_CHARS = 420

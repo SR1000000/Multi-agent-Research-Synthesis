@@ -25,7 +25,6 @@ from src.processing.document import DocProcessor
 from src.processing.embedder.provider import get_text_embedder
 from src.processing.context.contextualizer import Contextualizer, ContextConfig
 from src.processing.context.document import DocumentContextualizer, DocumentContextConfig
-from src.state import make_initial_review_state
 from src.state import MAX_CYCLES, make_initial_review_state
 
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "output"
@@ -145,6 +144,16 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Skip supervisor/critic review cycles and export proto-slides directly via Pandoc",
+    )
+    parser.add_argument(
+        "--force-replan",
+        action="store_true",
+        default=False,
+        help=(
+            "Test/debug only: at critic/rewrite cap, force up to two replans then allow "
+            "normal acceptance. For exercising replan orchestration without the Supervisor "
+            "LLM choosing replan."
+        ),
     )
     parser.add_argument(
         "--no-cache-control",
@@ -302,6 +311,8 @@ def _build_initial_state(
         "paper_titles":      paper_titles,
         "max_slides":        args.max_slides,
         "skip_supervisor":   args.skip_supervisor,
+        "plan_number":       1,
+        "force_replan_at_max_cycles": args.force_replan,
         "slide_numbers":     [],
         "presentation_plan": None,
         "review":            make_initial_review_state(max_cycles=args.max_cycles),

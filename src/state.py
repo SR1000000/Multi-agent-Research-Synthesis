@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 # Constants
 # ---------------------------------------------------------------------------
 
-MAX_CYCLES = 2
+MAX_CYCLES = 4
 """Default cap on critic/rewrite cycles before the supervisor must make a terminal decision."""
 
 MAX_REPLANS = 2
@@ -246,17 +246,14 @@ class ReviewAssignment(TypedDict):
 
     Created by the Supervisor and consumed by Plan Executor fan-out.  Current
     assignments are group-scoped, with rewrites optionally narrowed to the
-    affected slide numbers within that group.
+    affected slide numbers within that group.  Correlating writes uses
+    ``dispatch_id`` (session-unique) rather than a per-plan counter on each
+    record.
 
     Fields
     ------
-    plan_generation:
-        Monotonically increasing counter; incremented each time the Planner
-        produces a new ``PresentationPlan``.  Used to discard stale results.
     assignment_id:
-        Identifier for this assignment within its dispatch pattern.  It can
-        repeat across plan generations, so pair it with ``plan_generation`` or
-        ``dispatch_id`` when correlating records.
+        Identifier for this assignment within its dispatch pattern.
     cycle_number:
         Which critic/rewrite iteration this assignment belongs to (0-based).
     check_type:
@@ -279,7 +276,6 @@ class ReviewAssignment(TypedDict):
         what to fix.  Empty string for critic assignments.
     """
 
-    plan_generation: int
     assignment_id: str
     cycle_number: int
     check_type: ReviewCheckType
@@ -307,9 +303,6 @@ class ActiveDispatch(TypedDict):
         Whether the batch is an initial write, a critic pass, or a rewrite pass.
     cycle_number:
         Review cycle this dispatch belongs to.
-    plan_generation:
-        Plan generation this dispatch belongs to; results from older generations
-        are ignored.
     expected_assignment_ids:
         IDs of all assignments expected in this batch.  Plan Executor uses this
         list to know how many matching writer/critic records must arrive before
@@ -319,7 +312,6 @@ class ActiveDispatch(TypedDict):
     dispatch_id: str
     kind: ReviewDispatchKind
     cycle_number: int
-    plan_generation: int
     expected_assignment_ids: List[str]
 
 
@@ -331,8 +323,6 @@ class SlideWriteRecord(TypedDict):
 
     Fields
     ------
-    plan_generation:
-        Generation of the plan this write belongs to.
     dispatch_id:
         Dispatch batch that triggered this write.
     assignment_id:
@@ -346,7 +336,6 @@ class SlideWriteRecord(TypedDict):
         The slide numbers the writer was instructed to produce.
     """
 
-    plan_generation: int
     dispatch_id: str
     assignment_id: str
     group_idx: int
@@ -396,8 +385,6 @@ class CriticResultRecord(TypedDict):
 
     Fields
     ------
-    plan_generation:
-        Generation of the plan that was critiqued.
     dispatch_id:
         Dispatch batch this result belongs to.
     assignment_id:
@@ -425,7 +412,6 @@ class CriticResultRecord(TypedDict):
         Detailed list of individual ``CriticIssueRecord`` objects.
     """
 
-    plan_generation: int
     dispatch_id: str
     assignment_id: str
     cycle_number: int
@@ -448,8 +434,8 @@ class ReviewCycleSummary(TypedDict):
 
     Fields
     ------
-    plan_generation:
-        Plan generation this cycle belongs to.
+    plan_number:
+        Which plan (1-based session plan counter) this summary belongs to.
     cycle_number:
         Which iteration this summary covers (0-based).
     issue_counts:
@@ -464,7 +450,7 @@ class ReviewCycleSummary(TypedDict):
         required for that assignment's slides.
     """
 
-    plan_generation: int
+    plan_number: int
     cycle_number: int
     issue_counts: dict[str, int]
     decision: str
@@ -485,9 +471,11 @@ class ReviewState(TypedDict):
     cycle_number:
         Current critic/rewrite cycle number.  It starts at 0 before the first
         critic dispatch and is advanced when a new critic cycle is launched.
-    plan_generation:
-        Monotonically increasing counter; incremented on each replan so that
-        stale write/critic results from a previous plan can be filtered out.
+    last_critic_dispatch_id:
+        ``dispatch_id`` of the most recently completed critic batch; the
+        Supervisor filters ``critic_results`` to this id so only the current
+        batch is read. ``dispatch_id`` values stay unique across the session
+        because ``dispatch_counter`` is carried on replan.
     max_cycles:
         Upper bound on critic/rewrite iterations before the Supervisor must make
         a terminal decision or route to a full replan.
@@ -522,7 +510,7 @@ class ReviewState(TypedDict):
 
     phase: ReviewPhase
     cycle_number: int
-    plan_generation: int
+    last_critic_dispatch_id: Optional[str]
     max_cycles: int
     dispatch_counter: int
     active_dispatch: Optional[ActiveDispatch]
@@ -558,7 +546,7 @@ def make_initial_review_state(*, max_cycles: int = MAX_CYCLES) -> ReviewState:
     return {
         "phase": "initial_write",
         "cycle_number": 0,
-        "plan_generation": 0,
+        "last_critic_dispatch_id": None,
         "max_cycles": max_cycles,
         "dispatch_counter": 0,
         "active_dispatch": None,
@@ -629,6 +617,14 @@ class ResearchState(TypedDict):
         Mutable ``ReviewState`` sub-dict tracking where the session is in the
         critic/rewrite loop.
 
+    plan_number:
+        1-based count of which presentation plan the session is on; incremented
+        on each full replan.
+    force_replan_at_max_cycles:
+        Test-only: when true, first ``MAX_REPLANS`` times the supervisor is at
+        the critic/rewrite cap, force ``replan`` so the test harness can
+        exercise replan without LLM choice.
+
     Append-only execution records
     -----------------------------
     slides_written:
@@ -672,6 +668,8 @@ class ResearchState(TypedDict):
     max_slides:    int
     slide_numbers: List[int]
     skip_supervisor: bool
+    plan_number: int
+    force_replan_at_max_cycles: bool
 
     # -- presentation plan (set by Planner, read by Plan Executor + Slide Writers) --
     presentation_plan: Optional[PresentationPlan]

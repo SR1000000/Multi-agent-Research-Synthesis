@@ -145,7 +145,7 @@ def retrieve_artifacts(
 
     session_id = context.get("session_id")
     agent_type = context.get("agent_type", "writer")
-    plan_generation = int(context.get("plan_generation", 0))
+    plan_number = int(context.get("plan_number", 0))
     if session_id:
         try:
             research_db.save_session_retrieval_batch(
@@ -155,7 +155,7 @@ def retrieve_artifacts(
                 query=query,
                 strategy=args.strategy,
                 agent_type=agent_type,
-                plan_generation=plan_generation,
+                plan_number=plan_number,
             )
         except Exception as exc:
             research_db._logger.log(

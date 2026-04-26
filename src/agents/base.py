@@ -26,8 +26,8 @@ from src.tools.rag import format_tool_result_for_llm
 # of a plain BaseModel.
 T = TypeVar("T", bound=BaseModel)
 
-# Propagated from slide writer / critic dispatch state so RAG can tag retrieval rows by plan.
-current_plan_generation: ContextVar[int] = ContextVar("current_plan_generation", default=0)
+# Propagated from graph / dispatch state so RAG and DB can tag rows by plan (1-based session counter).
+current_plan_number: ContextVar[int] = ContextVar("current_plan_number", default=0)
 
 
 @dataclass
@@ -69,13 +69,13 @@ class BaseLLMAgent:
         if sid:
             current_session_id.set(sid)
 
-    def _set_plan_generation(self, state: dict) -> None:
-        """Tag tool execution with the active presentation plan generation (replan epoch)."""
+    def _set_plan_number(self, state: dict) -> None:
+        """Set ``current_plan_number`` for tool/RAG context from node state (top-level or dispatch)."""
         if not isinstance(state, dict):
             return
-        g = state.get("plan_generation")
+        g = state.get("plan_number")
         if g is not None:
-            current_plan_generation.set(int(g))
+            current_plan_number.set(int(g))
 
     def _build_messages(
         self,
@@ -482,7 +482,7 @@ class BaseLLMAgent:
                     context={
                         "session_id": session_id,
                         "agent_type": self.role,
-                        "plan_generation": current_plan_generation.get(),
+                        "plan_number": current_plan_number.get(),
                     },
                 )
 

@@ -38,7 +38,6 @@ def _start_dispatch(
     *,
     dispatch_id: str,
     kind: str,
-    plan_generation: int,
     expected_assignment_ids: list[str],
 ) -> None:
     """Set ``review.active_dispatch`` and increment ``review.dispatch_counter``.
@@ -55,7 +54,6 @@ def _start_dispatch(
                 "dispatch_id": dispatch_id,
                 "kind": kind,
                 "cycle_number": review.get("cycle_number", 0),
-                "plan_generation": plan_generation,
                 "expected_assignment_ids": expected_assignment_ids,
             },
         }
@@ -63,15 +61,9 @@ def _start_dispatch(
 
 
 def _matching_dispatch_records(records: list[dict], active_dispatch: dict) -> list[dict]:
-    """Return records for the current batch: matching ``dispatch_id`` and ``plan_generation``."""
+    """Return records for the current batch: matching ``dispatch_id`` (unique per session)."""
     dispatch_id = active_dispatch["dispatch_id"]
-    generation = active_dispatch["plan_generation"]
-    return [
-        record
-        for record in records
-        if record.get("dispatch_id") == dispatch_id
-        and record.get("plan_generation", 0) == generation
-    ]
+    return [record for record in records if record.get("dispatch_id") == dispatch_id]
 
 
 def _records_complete(records: list[dict], active_dispatch: dict) -> bool:
@@ -94,7 +86,7 @@ def _build_slide_writer_send(
     group: SlideGroup,
     group_idx: int,
     session_id: str,
-    plan_generation: int = 0,
+    plan_number: int,
     rewrite_instructions: str = "",
     target_slide_numbers: list[int] | None = None,
 ) -> Send:
@@ -109,7 +101,7 @@ def _build_slide_writer_send(
         {
             "dispatch_id":        dispatch_id,
             "assignment_id":      assignment_id,
-            "plan_generation":   plan_generation,
+            "plan_number":        plan_number,
             "chunk_ids":          _group_chunk_ids(group),
             "slide_blueprints":   [bp.model_dump() for bp in group.slide_blueprints],
             "group_idx":          group_idx,
@@ -120,16 +112,18 @@ def _build_slide_writer_send(
     )
 
 
-def _build_critic_send(*, dispatch_id: str, session_id: str, assignment: dict) -> Send:
+def _build_critic_send(
+    *, dispatch_id: str, session_id: str, plan_number: int, assignment: dict
+) -> Send:
     """Build a ``Send`` to the critic node with executor-stamped fields.
 
     Uses a shallow copy of the supervisor ``ReviewAssignment`` so new fields
-    flow through automatically. ``rewrite_instructions`` is included (critic
-    builds its own; the critic node reads only known keys, so extra keys are
-    ignored at runtime).
+    flow through automatically. ``plan_number`` tags RAG / DB rows for the active plan.
     """
     payload = dict(assignment)
-    payload.update({"dispatch_id": dispatch_id, "session_id": session_id})
+    payload.update(
+        {"dispatch_id": dispatch_id, "session_id": session_id, "plan_number": plan_number}
+    )
     return Send("critic", payload)
 
 
@@ -189,13 +183,16 @@ class PlanExecutorAgent:
         control back to LangGraph without advancing the phase.
         """
         self._set_session_id(state)
+        from src.agents.base import current_plan_number
+
+        pn = int(state.get("plan_number", 1))
+        current_plan_number.set(pn)
 
         session_id        = state.get("session_id", "")
         presentation_plan: PresentationPlan | None = state.get("presentation_plan")
         slides_written:    list[dict]               = state.get("slides_written", [])
         critic_results:    list[dict]               = state.get("critic_results", [])
         review = dict(state.get("review") or {})
-        plan_generation = int(review.get("plan_generation", 0))
 
         if presentation_plan is None:
             raise ValueError("[PlanExecutor] No presentation_plan in state.")
@@ -234,7 +231,7 @@ class PlanExecutorAgent:
                         group=group,
                         group_idx=idx,
                         session_id=session_id,
-                        plan_generation=plan_generation,
+                        plan_number=pn,
                     )
                 )
 
@@ -244,14 +241,12 @@ class PlanExecutorAgent:
                 review,
                 dispatch_id=dispatch_id,
                 kind="initial_write",
-                plan_generation=plan_generation,
                 expected_assignment_ids=[f"initial-g{idx}" for idx in range(len(groups))],
             )
             return Command(update={"review": review}, goto=sends)
 
         if phase == "initial_write" and active_dispatch is not None:
             # Wait until every parallel writer assignment has reported for this dispatch.
-            ag = active_dispatch.get("plan_generation", 0)
             relevant = _matching_dispatch_records(slides_written, active_dispatch)
             # Length-based wait (not _records_complete): retries reuse assignment ids; each
             # attempt appends another slides_written record per group.
@@ -280,7 +275,7 @@ class PlanExecutorAgent:
                                 group=groups[idx],
                                 group_idx=idx,
                                 session_id=session_id,
-                                plan_generation=ag,
+                                plan_number=pn,
                             )
                         )
                     else:
@@ -320,14 +315,18 @@ class PlanExecutorAgent:
             if assignments and active_dispatch is None:
                 dispatch_id = f"critic-{dispatch_counter + 1}"
                 sends = [
-                    _build_critic_send(dispatch_id=dispatch_id, session_id=session_id, assignment=assignment)
+                    _build_critic_send(
+                        dispatch_id=dispatch_id,
+                        session_id=session_id,
+                        plan_number=pn,
+                        assignment=assignment,
+                    )
                     for assignment in assignments
                 ]
                 _start_dispatch(
                     review,
                     dispatch_id=dispatch_id,
                     kind="critic",
-                    plan_generation=plan_generation,
                     expected_assignment_ids=[a["assignment_id"] for a in assignments],
                 )
                 return Command(update={"review": review}, goto=sends)
@@ -336,10 +335,12 @@ class PlanExecutorAgent:
                 relevant_results = _matching_dispatch_records(critic_results, active_dispatch)
                 if not _records_complete(relevant_results, active_dispatch):
                     return Command(update={})
+                last_did = active_dispatch["dispatch_id"]
                 review.update(
                     {
                         "active_dispatch": None,
                         "pending_critic_assignments": [],
+                        "last_critic_dispatch_id": last_did,
                         "last_critic_assignment_ids": [result["assignment_id"] for result in relevant_results],
                         "last_rewrites_required_by_assignment": {
                             result["assignment_id"]: bool(result.get("actionable"))
@@ -365,7 +366,7 @@ class PlanExecutorAgent:
                             group=groups[group_idx],
                             group_idx=group_idx,
                             session_id=session_id,
-                            plan_generation=plan_generation,
+                            plan_number=pn,
                             rewrite_instructions=assignment.get("rewrite_instructions", ""),
                             target_slide_numbers=assignment.get("target_slide_numbers", []),
                         )
@@ -374,7 +375,6 @@ class PlanExecutorAgent:
                     review,
                     dispatch_id=dispatch_id,
                     kind="rewrite",
-                    plan_generation=plan_generation,
                     expected_assignment_ids=[a["assignment_id"] for a in assignments],
                 )
                 return Command(update={"review": review}, goto=sends)
