@@ -215,14 +215,13 @@ class ResearchDatabase(DatabaseProvider):
                             "ADD COLUMN plan_number INTEGER NOT NULL DEFAULT 0;"
                         )
 
-                # Rename legacy plan_generation -> plan_number on slide_review_events (column rename via rebuild).
+                # Rename legacy plan_generation -> plan_number on slide_review_events.
                 sre_info = self._conn.execute("PRAGMA table_info(slide_review_events)").fetchall()
                 sre_names = {r["name"] for r in sre_info}
                 if sre_names and "plan_generation" in sre_names and "plan_number" not in sre_names:
-                    self._conn.execute("ALTER TABLE slide_review_events RENAME TO slide_review_events_old;")
-                    self._conn.execute(CREATE_SLIDE_REVIEW_EVENTS_TABLE)
-                    self._conn.execute("INSERT INTO slide_review_events SELECT * FROM slide_review_events_old;")
-                    self._conn.execute("DROP TABLE slide_review_events_old;")
+                    self._conn.execute(
+                        "ALTER TABLE slide_review_events RENAME COLUMN plan_generation TO plan_number;"
+                    )
 
                 rc_columns = [
                     info["name"]
@@ -257,19 +256,9 @@ class ResearchDatabase(DatabaseProvider):
                     r["name"] for r in self._conn.execute("PRAGMA table_info(retrieved_chunks)").fetchall()
                 }
                 if rcc_names and "plan_generation" in rcc_names and "plan_number" not in rcc_names:
-                    self._conn.execute("ALTER TABLE retrieved_chunks RENAME TO retrieved_chunks_old;")
-                    self._conn.execute(CREATE_RETRIEVED_CHUNKS_TABLE)
-                    self._conn.execute("INSERT INTO retrieved_chunks SELECT * FROM retrieved_chunks_old;")
-                    self._conn.execute("DROP TABLE retrieved_chunks_old;")
-                    for idx_sql in (
-                        "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_session_id "
-                        "ON retrieved_chunks(session_id);",
-                        "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_call_id "
-                        "ON retrieved_chunks(call_id);",
-                        "CREATE INDEX IF NOT EXISTS idx_retrieved_chunks_session_call "
-                        "ON retrieved_chunks(session_id, call_id);",
-                    ):
-                        self._conn.execute(idx_sql)
+                    self._conn.execute(
+                        "ALTER TABLE retrieved_chunks RENAME COLUMN plan_generation TO plan_number;"
+                    )
 
                 # Per-plan columns must exist before these indexes (migrations add columns on old DBs).
                 sre_columns2 = [
