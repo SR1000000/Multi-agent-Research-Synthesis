@@ -122,10 +122,10 @@ class TestSupervisorReplan(unittest.TestCase):
         self.assertEqual(cmd.update["plan_number"], 3)
 
     @patch("src.agents.supervisor.ResearchDatabase")
-    def test_path_a_plan3_at_cap_accepts_not_forced(
+    def test_path_a_plan3_at_cap_exports_when_replan_budget_spent_no_critical(
         self, mock_db_class: MagicMock
     ) -> None:
-        """After ``MAX_REPLANS`` forced replans, further cap hits use normal accept."""
+        """Above ``MAX_REPLANS`` at cycle cap: export unless last counts include critical."""
         mock_ctx, mock_db = _patch_db_and_backup()
         mock_db_class.return_value = mock_ctx
 
@@ -146,6 +146,34 @@ class TestSupervisorReplan(unittest.TestCase):
         cmd = SupervisorAgent().run(state)
         self.assertEqual(cmd.goto, END)
         self.assertTrue(cmd.update["review"].get("export_ready"))
+        self.assertEqual(cmd.update["review"].get("final_decision"), "accept")
+        mock_db.save_review_event.assert_called()
+
+    @patch("src.agents.supervisor.ResearchDatabase")
+    def test_path_a_plan3_at_cap_no_export_when_critical(
+        self, mock_db_class: MagicMock
+    ) -> None:
+        mock_ctx, mock_db = _patch_db_and_backup()
+        mock_db_class.return_value = mock_ctx
+
+        review = make_initial_review_state(max_cycles=MAX_CYCLES)
+        review["cycle_number"] = MAX_CYCLES
+        review["last_rewrite_assignment_ids"] = ["r1"]
+        review["last_issue_counts"] = {"critical": 1, "major": 0, "minor": 0}
+
+        state = {
+            "session_id": "sess",
+            "query": "q",
+            "plan_number": 3,
+            "force_replan_at_max_cycles": True,
+            "presentation_plan": _minimal_presentation_plan(),
+            "review": review,
+            "critic_results": [],
+        }
+        cmd = SupervisorAgent().run(state)
+        self.assertEqual(cmd.goto, END)
+        self.assertFalse(cmd.update["review"].get("export_ready"))
+        self.assertIsNone(cmd.update["review"].get("final_decision"))
         mock_db.save_review_event.assert_not_called()
 
     @patch("src.agents.supervisor.ResearchDatabase")
@@ -171,9 +199,10 @@ class TestSupervisorReplan(unittest.TestCase):
         self.assertEqual(cmd.goto, "plan_executor")
         self.assertEqual(cmd.update["review"]["cycle_number"], 1)
 
+    @patch("src.agents.supervisor.backup_replan_debug_snapshot")
     @patch("src.agents.supervisor.ResearchDatabase")
-    def test_at_cap_without_flag_accepts_path_a(
-        self, mock_db_class: MagicMock
+    def test_at_cap_without_flag_replans_path_a_when_budget_remains(
+        self, mock_db_class: MagicMock, mock_backup: MagicMock
     ) -> None:
         mock_ctx, mock_db = _patch_db_and_backup()
         mock_db_class.return_value = mock_ctx
@@ -192,8 +221,10 @@ class TestSupervisorReplan(unittest.TestCase):
             "critic_results": [],
         }
         cmd = SupervisorAgent().run(state)
-        self.assertEqual(cmd.goto, END)
-        mock_db.save_review_event.assert_not_called()
+        self.assertEqual(cmd.goto, "planner")
+        self.assertEqual(cmd.update["plan_number"], 2)
+        mock_backup.assert_called_once()
+        mock_db.save_review_event.assert_called()
 
     @patch("src.agents.supervisor.SupervisorAgent._call", autospec=True)
     @patch("src.agents.supervisor.backup_replan_debug_snapshot")

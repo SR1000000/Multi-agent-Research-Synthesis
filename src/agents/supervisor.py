@@ -4,7 +4,9 @@ SupervisorAgent — orchestrates the critic-and-rewrite quality gate for slide d
 The supervisor sits between critic cycles and rewrite cycles in the LangGraph pipeline.
 After critics report their findings it decides whether to accept the deck, dispatch targeted
 rewrites, or trigger a full replan.  Decisions are forced to be conservative: critical issues
-always override an LLM "accept", and the cycle cap prevents infinite rewrite loops.
+always override an LLM "accept".  Hitting the critic/rewrite cycle cap while replan budget
+remains triggers a full replan; once ``plan_number`` exceeds ``MAX_REPLANS`` the run must
+terminate: it exports unless aggregated critic severity counts still show critical issues.
 """
 import json
 
@@ -170,7 +172,7 @@ class SupervisorAgent(BaseLLMAgent):
 
     On each invocation it inspects the current review state and critic findings to decide
     between three outcomes:
-      - accept:  deck meets the quality bar → route to END (or force-export on cycle cap).
+      - accept:  deck meets the quality bar → route to END.
       - revise:  targeted issues found → dispatch rewrite assignments then re-run critics.
       - replan:  fundamental structural problems → reset review state and call the planner.
 
@@ -297,31 +299,24 @@ class SupervisorAgent(BaseLLMAgent):
             if count >= 2
         ) or "(none)"
 
-        # No critic results yet for the current checkpoint — launch or relaunch a critic cycle.
-        if not critic_results:
-            next_cycle = max(1, cycle_number + 1)
-            if at_cycle_cap and review.get("last_rewrite_assignment_ids"):
-                if at_cap_forced:
-                    return self._replan(
-                        state,
-                        review,
-                        cycle_number,
-                        severity_counts=review.get(
-                            "last_issue_counts", {"critical": 0, "major": 0, "minor": 0}
-                        ),
-                    )
-                review.update({"final_decision": "accept", "export_ready": True, "phase": "complete"})
+        def end_after_replan_budget_gone(
+            severity_cts: dict[str, int],
+            rewrites_req: dict[str, bool],
+            log_context: str,
+        ) -> Command:
+            critical = int(severity_cts.get("critical") or 0)
+            if critical > 0:
+                review.update({"final_decision": None, "export_ready": False, "phase": "complete"})
                 summary = {
                     "plan_number": plan_number,
                     "cycle_number": cycle_number,
-                    "issue_counts": review.get("last_issue_counts", {"critical": 0, "major": 0, "minor": 0}),
-                    "decision": "accept",
+                    "issue_counts": severity_cts,
+                    "decision": "max_cycles_exhausted_critical",
                     "routing": "END",
-                    "rewrites_required_by_assignment": review.get("last_rewrites_required_by_assignment", {}),
+                    "rewrites_required_by_assignment": rewrites_req,
                 }
                 self._logger.log(
-                    "[supervisor] accept: max critic cycles reached while rewrites were still pending; exporting partial deck "
-                    f"(cycle {cycle_number})"
+                    f"{log_context} — {critical} critical issue(s); replan budget exhausted; not exporting."
                 )
                 return Command(
                     update={
@@ -330,6 +325,60 @@ class SupervisorAgent(BaseLLMAgent):
                         "messages": [json.dumps({"supervisor_cycle_summary": summary}, sort_keys=True)],
                     },
                     goto=END,
+                )
+            review.update({"final_decision": "accept", "export_ready": True, "phase": "complete"})
+            summary = {
+                "plan_number": plan_number,
+                "cycle_number": cycle_number,
+                "issue_counts": severity_cts,
+                "decision": "accept",
+                "routing": "END",
+                "rewrites_required_by_assignment": rewrites_req,
+                "replan_budget_exhausted": True,
+            }
+            self._logger.log(
+                f"{log_context} — replan budget exhausted; exporting (no critical issues, major/minor may remain)."
+            )
+            with ResearchDatabase() as research_db:
+                research_db.save_review_event(
+                    session_id=state["session_id"],
+                    cycle_number=cycle_number,
+                    plan_number=plan_number,
+                    scope_type="deck",
+                    scope_id="deck",
+                    check_type="grounding_consistency",
+                    decision="accept",
+                )
+            return Command(
+                update={
+                    "review": review,
+                    "review_summaries": [summary],
+                    "messages": [json.dumps({"supervisor_cycle_summary": summary}, sort_keys=True)],
+                },
+                goto=END,
+            )
+
+        # No critic results yet for the current checkpoint — launch or relaunch a critic cycle.
+        if not critic_results:
+            next_cycle = max(1, cycle_number + 1)
+            if at_cycle_cap and review.get("last_rewrite_assignment_ids"):
+                if plan_number <= MAX_REPLANS:
+                    return self._replan(
+                        state,
+                        review,
+                        cycle_number,
+                        severity_counts=review.get(
+                            "last_issue_counts", {"critical": 0, "major": 0, "minor": 0}
+                        ),
+                    )
+                last_counts = review.get("last_issue_counts", {"critical": 0, "major": 0, "minor": 0})
+                return end_after_replan_budget_gone(
+                    last_counts,
+                    review.get("last_rewrites_required_by_assignment", {}),
+                    (
+                        f"[supervisor] critic cycle cap (cycle {cycle_number}): rewrites pending, "
+                        "no new critic batch yet"
+                    ),
                 )
 
             assignments = _build_group_assignments(plan=plan, cycle_number=next_cycle)
@@ -357,28 +406,15 @@ class SupervisorAgent(BaseLLMAgent):
         # Post-rewrite: need another critic pass over updated slides.
         if review.get("last_rewrite_assignment_ids"):
             if at_cycle_cap:
-                if at_cap_forced:
+                if plan_number <= MAX_REPLANS:
                     return self._replan(state, review, cycle_number, severity_counts=severity_counts)
-                review.update({"final_decision": "accept", "export_ready": True, "phase": "complete"})
-                summary = {
-                    "plan_number": plan_number,
-                    "cycle_number": cycle_number,
-                    "issue_counts": severity_counts,
-                    "decision": "accept",
-                    "routing": "END",
-                    "rewrites_required_by_assignment": rewrites_required,
-                }
-                self._logger.log(
-                    f"[supervisor] accept: max cycles reached after rewrite pass; exporting partial deck (cycle {cycle_number}, "
-                    f"counts={severity_counts})"
-                )
-                return Command(
-                    update={
-                        "review": review,
-                        "review_summaries": [summary],
-                        "messages": [json.dumps({"supervisor_cycle_summary": summary}, sort_keys=True)],
-                    },
-                    goto=END,
+                return end_after_replan_budget_gone(
+                    severity_counts,
+                    rewrites_required,
+                    (
+                        f"[supervisor] critic cycle cap (cycle {cycle_number}): after rewrite pass, "
+                        f"counts={severity_counts}"
+                    ),
                 )
 
             next_cycle = cycle_number + 1
@@ -462,7 +498,33 @@ class SupervisorAgent(BaseLLMAgent):
         elif decision == "revise" and not actionable_results:
             decision = "accept"
         if at_cycle_cap and decision == "revise":
-            decision = "replan"
+            if plan_number <= MAX_REPLANS:
+                decision = "replan"
+            else:
+                critical_n = int(severity_counts.get("critical") or 0)
+                if critical_n > 0:
+                    return end_after_replan_budget_gone(
+                        severity_counts,
+                        rewrites_required,
+                        (
+                            f"[supervisor] cycle {cycle_number}: critic cycle cap with further "
+                            "revisions needed but replan budget exhausted"
+                        ),
+                    )
+                decision = "accept"
+
+        if decision == "replan" and plan_number > MAX_REPLANS:
+            critical_n = int(severity_counts.get("critical") or 0)
+            if critical_n > 0:
+                return end_after_replan_budget_gone(
+                    severity_counts,
+                    rewrites_required,
+                    (
+                        f"[supervisor] cycle {cycle_number}: model requested replan but replan "
+                        "budget is exhausted"
+                    ),
+                )
+            decision = "accept"
 
         summary = {
             "plan_number": plan_number,
