@@ -300,7 +300,6 @@ class LlamaParseBackend(OCRBackend):
                     f"[LlamaParseBackend] Parse still in progress job_id={job_id} "
                     f"elapsed={elapsed}s (waiting on LlamaCloud)…"
                 )
-                print(msg, flush=True)
                 self._logger.log(msg, level="info")
 
         hb = threading.Thread(target=_heartbeat, name=f"llamaparse-wait-{job_id[:8]}", daemon=True)
@@ -415,7 +414,6 @@ class LlamaParseBackend(OCRBackend):
                             raise RuntimeError("LlamaParse create did not return job id.")
                         self._wait_parse_job_with_status(job_id)
                         done_msg = f"[LlamaParseBackend] Parse job finished job_id={job_id}, fetching result…"
-                        print(done_msg, flush=True)
                         self._logger.log(done_msg, level="info")
                         result = self._client.parsing.get(job_id, expand=_PARSE_EXPAND)
                         return result, job_id
