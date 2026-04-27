@@ -1,8 +1,9 @@
 # Multi-Agent Research Presentation Synthesizer
 
 LangGraph-coordinated pipeline that ingests one or more research PDFs and
-produces a PowerPoint presentation driven by parallel AI agents:
-**Planner → Slide Writers → Critics → Supervisor** with iterative review cycles and fan-out/fan-in parallelism. After the Planner produces a plan, the first parallel drafting wave begins; the Supervisor drives later parallel critic and rewrite waves.
+produces a PowerPoint presentation through planning, parallel drafting, critic review,
+targeted rewrites, and export. Parallel work always fans back into a coordination
+checkpoint before the Supervisor decides whether to accept, revise, or replan.
 
 ## Setup
 
@@ -63,7 +64,7 @@ You can keep multiple experimental YAML files elsewhere and point the app at one
 python main.py --llm-config path/to/your/config.dev.yaml
 ```
 
-The pipeline uses four router group aliases — `planner`, `slides`, `critic`, and `app` — each mapped to a pool of models with fallbacks. Any provider and model string LiteLLM supports can be added following the same config structure. See the [LiteLLM provider docs](https://docs.litellm.ai/docs/providers) for parameter names and provider-specific options.
+The pipeline uses router group aliases such as `planner`, `slides`, `critic`, `supervisor`, `context`, and `app`, each mapped to a pool of models with fallbacks. Any provider and model string LiteLLM supports can be added following the same config structure. See the [LiteLLM provider docs](https://docs.litellm.ai/docs/providers) for parameter names and provider-specific options.
 
 ---
 
@@ -106,12 +107,15 @@ The finished presentation is saved as a `.pptx` file in `output/` by default, or
 | `--pdf PATH [PATH ...]` | `.samples/Transformers.pdf` | One or more PDF files to process |
 | `--query TEXT` | `"Explain this paper to an audience of laypeople"` | Presentation query / audience |
 | `--max-slides N` | `15` | Soft slide target (Planner adjusts based on content density) |
+| `--max-cycles N` | `4` | Maximum critic/rewrite review cycles before acceptance, replan, or terminal failure |
 | `--processor` | `llama_parse` | Document processor backend: `llama_parse` (or `llama` as an alias) |
 | `--text-splitter` | `semantic` | Chunking strategy: `semantic` or `none` |
 | `--object-store` | _(R2 with local fallback)_ | `local` or `r2` for image storage |
 | `--output-dir PATH` | `output/` | Directory where the generated `.pptx` will be written |
+| `--reference-doc PATH` | bundled template | Optional PowerPoint template passed to Pandoc |
 | `--llm-config PATH` | `src/llm/config.dev.yaml` | LiteLLM Router config file |
 | `-i`, `--interactive` | off | Pause after each document extraction for confirmation |
+| `--skip-supervisor` | off | Skip critic/supervisor review and export after the first drafting wave |
 | `--no-logging` | _(logging on)_ | Disable Langfuse tracing |
 
 ---
@@ -141,64 +145,52 @@ Use `--object-store local` to skip R2 entirely.
 
 ## Graph Flow
 
+```mermaid
+flowchart TD
+    preprocess[Document Processing] --> planner[Planner]
+    planner --> drafting["Parallel Drafting\n(one Slide Writer per group)"]
+    drafting --> supervisor{Supervisor}
+    supervisor -->|"start review"| critic["Parallel Critic Review\n(grounding + narrative)"]
+    critic --> supervisor
+    supervisor -->|revise| rewrite["Parallel Rewrites\n(affected groups only)"]
+    rewrite --> critic
+    supervisor -->|replan| planner
+    supervisor -->|accept| export[PowerPoint Export]
 ```
-START (After document processing)
-  └─► Planner
-        Examines summarized chunks from research.db
-        Calls LLM → structured plan (thesis, audience, presentation length, slide assignments)
-        Stores resolved presentation plan in state
-        │
-        ▼
-      First parallel drafting wave (one Slide Writer per group)
-        Slide Writer 1 → writes proto-slides → research.db
-        Slide Writer 2 → writes proto-slides → research.db
-        Slide Writer N → writes proto-slides → research.db
-        Fan-in: Slide Writers that produced no slides are retried (up to 2× per group)
-        │
-        ▼
-      Supervisor
-        Loads full review-event history from research.db (recurring fingerprints)
-        If no critic results yet → next critic cycle (parallel Critics per group)
-        If rewrites ran this cycle → follow-up critic cycle
-        Else → LLM decision: accept / revise / replan
-          │
-          ├─► accept → ready for export → END
-          │     PandocBuilder reads proto-slides → output/*.pptx
-          │
-          ├─► revise → parallel Slide Writer rewrites for actionable groups
-          │     (then fan-in → Supervisor, then follow-up critics as above)
-          │
-          └─► replan → goto Planner to restart the process from the beginning
-                (cycle summary appended to state)
-```
+
+After document processing, the Planner creates a presentation plan and slide groups.
+Each group is drafted in parallel, then all results return to a fan-in checkpoint.
+Groups that produce no first-draft slides are retried up to two times; exhausted
+groups are skipped with a partial-deck warning rather than blocking the run forever.
+
+Review cycles include per-group grounding checks and a whole-deck narrative check.
+The Supervisor uses the latest critic batch plus persisted review history to accept
+the deck, dispatch targeted rewrites, or request a full replan. Rewrites always return
+through the same fan-in checkpoint and are followed by another critic pass before the
+deck can be accepted.
 
 ### Planner
 
-The Planner is a presentation architect, not a content writer. It:
-
-1. Detects section boundaries in each paper using Markdown heading analysis
-2. Builds a human-readable section outline with labels (for example S0: Abstract, S3: Model Architecture)
-3. Calls the language model — which works with section labels, never raw chunk IDs — to produce a presentation plan with a thesis, per-slide blueprints (narrative role and intent), and agent groupings (a few slides per group)
-4. Validates the model output strictly; retries the full call (up to 2 times) if any section label is invalid, any group is out of range, or any blueprint is empty
-5. Resolves section labels to concrete chunk IDs in code before storing the plan in state
-
-Once the plan is stored, the run moves into the first parallel drafting wave (one Slide Writer per group). Retries for groups that produced no slides are handled on that entry path.
+The Planner is a presentation architect, not a content writer.  It creates a presentation plan and slide groups.
+Once the plan is stored, the run moves into the first parallel drafting wave (one Slide Writer per group). The coordination checkpoint waits for the whole batch and retries groups that produced no slides before the Supervisor reviews the deck.
 
 ### Slide Writers
 
-Each Slide Writer receives the blueprints and chunk text for its assigned group. In **initial write** mode it drafts slides from scratch following the blueprint intent. In **rewrite** mode it receives the current proto-slides plus explicit rewrite instructions from the Supervisor and produces corrected versions. Both modes persist structured proto-slide records to `research.db`. Errors are caught without crashing the graph; empty groups can be retried as part of the drafting entry path after planning.
+Each Slide Writer receives the blueprints and source context for its assigned group. In **initial write** mode it drafts slides from scratch following the blueprint intent. In **rewrite** mode it receives the current proto-slides plus explicit rewrite instructions and produces corrected versions for the affected slides. Both modes persist structured proto-slide records to `research.db`. Errors are caught without crashing the graph; empty first-draft groups can be retried before review begins.
 
 ### Critics
 
-Each Critic evaluates one group of slides for **grounding consistency** — whether slide content is supported by the source chunks. It returns a summary, whether any issue requires action, and a typed issue list (critical / major / minor) where every issue includes a concrete rewrite instruction. Each issue gets a **fingerprint** (scope, issue type, and location) that the Supervisor uses to detect recurring problems across cycles. Events are persisted to `slide_review_events` in `research.db`.
+Critics run in parallel during each review cycle. Per-group Critics check **grounding consistency** — whether slide content is supported by the source material — while a deck-level Critic checks **narrative coherence** across the full presentation. Each result includes a summary, whether any issue requires action, and a typed issue list (critical / major / minor) where every issue includes a concrete rewrite instruction. Each issue gets a **fingerprint** that the Supervisor uses to detect recurring problems across cycles. Events are persisted to `slide_review_events` in `research.db`.
 
 ### Supervisor
 
 The Supervisor is the session's decision-maker. It evaluates critic results after each fan-in:
 
 - **accept** → marks the deck ready for export, graph exits to END and the PPTX is built
-- **revise** → launches parallel Slide Writer rewrites for every actionable group; a follow-up critic cycle runs automatically after rewrites complete
-- **replan** → returns to the Planner when the cycle cap is hit (default 3 cycles) or persistent critical issues remain unresolved
+- **revise** → launches targeted parallel rewrites for actionable groups or slides; a follow-up critic cycle runs automatically after rewrites complete
+- **replan** → returns to the Planner when the review cycle cap is hit or persistent structural issues remain unresolved
+
+The default review cap is 4 critic/rewrite cycles, and the run can attempt up to 2 full replans. If the replan budget is exhausted while critical issues remain, the graph can end without exporting. Use `--skip-supervisor` to bypass this quality gate and export directly after the first drafting wave.
 
 ---
 

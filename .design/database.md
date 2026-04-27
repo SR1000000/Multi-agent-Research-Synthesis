@@ -7,7 +7,7 @@ This document describes the SQLite layer used to cache ingested documents, store
 The project uses a single SQLite database file, default path **`data/research.db`** (`StorageConfig` in `src/memory/research/config.py`). The same file holds:
 
 1. **Durable document cache** — parsed PDFs keyed by SHA-256 content hash so re-runs skip LlamaParse and re-embedding when the file is unchanged.
-2. **Synthesis workspace** — proto-slides and review events for a single LangGraph run, cleared when `main.py` starts.
+2. **Synthesis workspace** — proto-slides and review events for a single graph run, cleared when `main.py` starts.
 
 Connection setup loads the **sqlite-vec** extension (`load_sqlite_vec_extension` in `src/memory/research/database.py`) so the `text_chunks_vec` virtual table works. Journal mode defaults to **WAL** (`PRAGMA journal_mode=WAL`).
 
@@ -51,7 +51,7 @@ HTML (or rich) table `content`, dimensions, `page_number`, and contextual fields
 
 ## Proto-slides workspace (`proto_slides`)
 
-Cleared at the start of each `main.py` run via `clear_proto_slides()` while the document tables above are left intact.
+Cleared at the start of each `main.py` run while the document tables above are left intact. During graph execution, this table holds the latest draft for each content slide. Rewrites replace the active slide content while preserving the previous revision snapshot for debugging and review context.
 
 | Column | Purpose |
 |--------|---------|
@@ -63,7 +63,9 @@ Cleared at the start of each `main.py` run via `clear_proto_slides()` while the 
 
 ## Review audit (`slide_review_events`)
 
-Cleared with proto-slides at run start (`clear_slide_review_events()`). Records supervisor/critic decisions: `session_id`, `cycle_number`, `scope_type` / `scope_id`, `check_type`, optional `assignment_id`, `issue_code`, `severity`, `fingerprint`, `rewrite_instruction_summary`, `affected_slide_numbers`, `decision`, `created_at`.
+Cleared with proto-slides at run start. Records critic findings, passing checks, and supervisor accept/replan decisions. Review events include session and plan attempt, cycle number, review scope, check type, optional assignment, severity, issue fingerprint, rewrite instruction summary, affected slide numbers, decision, and timestamp.
+
+The Supervisor uses this audit trail to detect recurring issues across review cycles. Replan debugging snapshots can also preserve graph metadata and the active plan before the review loop starts over.
 
 ## Inspecting the database
 

@@ -1,6 +1,6 @@
 # Document Processing Design
 
-Technical description of PDF ingestion, chunking, artifact extraction, and how results feed the database and agents.
+Technical description of PDF ingestion, chunking, artifact extraction, and how results feed the database and graph.
 
 ## OCR backend architecture
 
@@ -83,13 +83,15 @@ After full-document markdown is produced:
 - **SQLite (`data/research.db`)** — See `database.md`: documents, chunks, vec table, images, tables, equations.
 - **Object store** — `LlamaParseBackend` can upload images through an `ObjectStoreProvider` (`LocalObjectStore` / `R2ObjectStore` from `main.py` `--object-store`), with paths recorded on `ExtractedImage.storage_path`.
 
-## Agent integration
+## Graph integration
 
-### How agents use chunks
+Document processing runs before the graph. Its outputs become the evidence base used by planning, slide drafting, critic review, and final export.
 
-- **Planner** (`src/agents/planner.py`) loads **all** chunks per document with `db.get_chunks_for_dispatch(doc_id)`, groups them into **sections** using heading heuristics on chunk text, and builds a presentation plan whose blueprints reference **chunk IDs** (not a separate keyword-scoring step).
-- **Slide writers / critics** load the referenced rows from `text_chunks` by ID and pass ordered text (preferring available `contextualized_text` where useful for prompts).
+### How graph stages use chunks
+
+- **Planning** loads all chunks per document, groups them into sections using heading heuristics on chunk text, and builds a presentation plan whose slide blueprints reference the source chunks.
+- **Drafting and review** load the referenced source rows and use ordered text, preferring contextualized text where useful. Slide drafting can also use retrieval over the stored artifacts during initial writing and rewriting.
 
 ### Embeddings and retrieval
 
-Chunks are embedded at ingestion for storage in `text_chunks_vec`. The current planner path is section-based over full chunk lists; swapping in embedding search later would mean querying `text_chunks_vec` (or similar) before planning instead of or in addition to full-chunk sectioning.
+Chunks are embedded at ingestion for storage in `text_chunks_vec`. The current planning path is section-based over full chunk lists; retrieval over embeddings and stored artifacts is available to later graph stages that need more targeted evidence.

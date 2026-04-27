@@ -2,7 +2,7 @@
 
 ## Overview
 
-A multi-agent research synthesis pipeline built on LangGraph. Given a user query and one or more source documents, the system produces a structured, insight-driven presentation through parallel drafting and iterative review. Four specialized agents — **Planner**, **Slide Writer**, **Critic**, and **Supervisor** — collaborate in a directed graph with explicit review cycles governed by a central decision-maker.
+A multi-agent research synthesis pipeline built on LangGraph. Given a user query and one or more source documents, the system produces a structured, insight-driven presentation through planning, parallel drafting, iterative review, targeted rewrites, optional replanning, and export. Four specialized agent roles — **Planner**, **Slide Writer**, **Critic**, and **Supervisor** — collaborate through a coordination checkpoint that handles fan-out and fan-in between decisions.
 
 The key design philosophy: **each agent is stateless per call, but the session is stateful**. History, artifacts, and routing decisions are carried explicitly through LangGraph state and a persistent SQLite database, not implicitly through a shared context window.
 
@@ -10,21 +10,20 @@ The key design philosophy: **each agent is stateless per call, but the session i
 
 ## Graph Architecture
 
-```
-[ENTRY] → Planner ──► parallel Slide Writers ──┐
-                          │                    │
-             (merge)      │                    │
-                          ▼                    │
-                   Supervisor ◄────────────────┘
-                       │
-                       ├─► (after initial drafting or rewrite) parallel Critics ──► (merge) ──► Supervisor
-                       ├─► (decision: revise) parallel Slide Writer rewrites ──► (merge) ──► Supervisor
-                       ├─► (decision: accept) export presentation → .pptx
-                       ├─► (decision: replan) goto Planner to restart the process from the beginning
-                       └─► END
+```mermaid
+flowchart TD
+    preprocess[Document Processing] --> planner[Planner]
+    planner --> drafting["Parallel Drafting\n(one Slide Writer per group)"]
+    drafting --> supervisor{Supervisor}
+    supervisor -->|"start review"| critic["Parallel Critic Review\n(grounding + narrative)"]
+    critic --> supervisor
+    supervisor -->|revise| rewrite["Parallel Rewrites\n(affected groups only)"]
+    rewrite --> critic
+    supervisor -->|replan| planner
+    supervisor -->|accept| export[PowerPoint Export]
 ```
 
-After planning, the **Planner** effectively hands the run to parallel Slide Writers (one group per worker). When those workers finish, merged results flow to the **Supervisor**. The **Supervisor** decides whether to fan out critics, fan out rewrites, accept the deck, or send control back to the **Planner** for a new plan (in case the issue is fundamentally unfixable). Each parallel batch completes before the Supervisor runs again.
+After planning, the run moves to a parallel drafting batch with one Slide Writer per slide group. All parallel work returns to a fan-in checkpoint before the Supervisor runs. The Supervisor decides whether to start review, dispatch targeted rewrites, accept the deck for export, or return to planning for a new deck structure. Each parallel batch completes before the next decision point.
 
 ---
 
@@ -35,12 +34,12 @@ The session moves through review phases that determine what runs next:
 | Phase | What happens |
 |---|---|
 | **Initial drafting** | One Slide Writer per slide group works in parallel to produce first drafts |
-| **Awaiting supervisor** | All workers in the current batch have finished; the Supervisor runs next |
-| **Critic dispatch** | One Critic per group runs in parallel to check grounding against sources |
-| **Rewrite dispatch** | Slide Writers run in parallel again only for groups that need fixes, using instructions from the Supervisor and critiques from the Critics |
-| **Complete** | An accept or replan decision has been made; the graph exits to export the presentation or returns to the Planner |
+| **Awaiting supervisor** | The current batch has finished and the Supervisor decides the next route |
+| **Critic dispatch** | Per-group grounding Critics and one deck-level narrative Critic run in parallel |
+| **Rewrite dispatch** | Slide Writers run in parallel again only for affected groups or slides, using explicit rewrite instructions |
+| **Complete** | The graph has accepted the deck for export or ended without export |
 
-The maximum number of review cycles is 3 (configurable). Each full iteration of critic → supervisor → rewrite → critic counts as one cycle.
+The default maximum is 4 critic/rewrite cycles, configurable at runtime. A session can attempt up to 2 full replans before it must either export an acceptable deck or end without export if critical issues remain.
 
 ---
 
@@ -58,7 +57,7 @@ The Planner is the presentation architect.
 4. Validates the output strictly; retries the full model call (up to 2 times) if any section label is invalid, any group is out of range, or any blueprint is empty
 5. Resolves section labels to concrete source chunks in code, then stores the resolved plan in state
 
-When the run is replanned, the Planner receives the previous plan’s cycle summary and failure history so it can take a meaningfully different structural direction rather than regenerating the same plan.
+When the run is replanned, the review loop is reset and the plan attempt advances. Prior review events and summaries remain available for audit and recurrence tracking, but the design should not assume they are automatically injected into the next planning prompt.
 
 ### Slide Writer
 
@@ -71,9 +70,9 @@ Both modes write structured proto-slide records to the research database and rep
 
 ### Critic
 
-The Critic evaluates a group of slides for **grounding consistency** — whether slide content is supported by the source chunks. It is stateless by design: one Critic per group per cycle.
+Critics evaluate the current deck from two angles. Per-group Critics check **grounding consistency** — whether slide content is supported by the source material. A deck-level Critic checks **narrative coherence** — whether the full presentation flows according to the plan and audience intent. Each critic call is stateless by design.
 
-Input: current proto-slides for the target slides, the original source chunks, and the slide blueprints (for intent validation).
+Input: current proto-slides for the target slides, the relevant source material when grounding is being checked, and the slide plan for intent validation.
 
 Output: a structured critic result with:
 
@@ -106,8 +105,8 @@ The Supervisor is the session’s decision-maker. It runs after each fan-in (whe
 **Routing outcomes:**
 
 - **accept** → mark the deck ready for export and end the graph
-- **revise** → build assignments for actionable groups (rewrite instructions derived from critic issues), enter the rewrite phase, and fan out Slide Writers again — same parallel pattern as after planning, but driven by the Supervisor’s decision
-- **replan** → return to the Planner with the cycle summary appended to state
+- **revise** → build targeted rewrite assignments from actionable critic issues, enter the rewrite phase, and fan out Slide Writers again — same parallel pattern as after planning, but driven by the Supervisor’s decision
+- **replan** → return to the Planner with a fresh plan attempt after resetting the review loop
 
 **Orchestration note:** Whenever the Supervisor chooses another parallel critic pass or a parallel rewrite pass, it is effectively ordering the next fan-out; workers merge back before the Supervisor runs again.
 
@@ -125,4 +124,4 @@ Every issue raised by a Critic — and every accept or replan decision by the Su
 
 **2. Review summaries in state**
 
-Each Supervisor call appends a compact cycle summary to state. This provides an ordered record of cycle decisions and issue counts that can be injected into Planner prompts on replan.
+Each Supervisor call appends a compact cycle summary to state. This provides an ordered record of cycle decisions and issue counts for tracing, debugging, and future planning improvements.
