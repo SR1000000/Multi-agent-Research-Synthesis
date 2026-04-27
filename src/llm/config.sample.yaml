@@ -127,8 +127,8 @@ groups:
 
   planner-fallback:
     models:
-      - "mistral/mistral-medium-2508"
       - "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+      - "mistral/mistral-medium-2508"
     fallbacks:
       - "planner"
       - "fallback"
@@ -154,7 +154,7 @@ groups:
     models:
       - "mistral/magistral-medium-latest"
       - "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
-      - "groq/meta-llama/llama-4-scout-17b-16e-instruct"
+      - "ollama/qwen3.5:397b-cloud"
     fallbacks:
       - "critic"
       - "fallback"
@@ -201,7 +201,6 @@ groups:
       - "mistral/mistral-medium-2508"
       - "mistral/magistral-medium-latest"
       - "ollama/minimax-m2.7:cloud"
-      - "groq/meta-llama/llama-4-scout-17b-16e-instruct"
       - "gemini/gemma-4-31b-it"
       - "ollama/gemma4:31b-cloud"
       - "groq/llama-3.3-70b-versatile"
