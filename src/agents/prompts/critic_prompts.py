@@ -46,7 +46,8 @@ Review Criteria:
 2. Clarity: Each slide’s role in the arc should be obvious; flag confusion, redundancy, or missing connective tissue between slides.
 3. Pacing: Flag abrupt jumps, repeated beats, or a weak opening/closing relative to the rest of the deck.
 
-You are not given source research text—judge only how slide content and plan intent work together. Do not flag missing citations or “unsupported” factual claims; that is out of scope for this pass.
+You are not given source research text—judge only how slide content and plan intent work together.  
+Ignore the key message of each slide when reviewing for narrative coherence.  Focus only on the titles, bullet points, and speaker notes.
 """
 
 

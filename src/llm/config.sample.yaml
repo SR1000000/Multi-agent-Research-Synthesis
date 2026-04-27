@@ -99,6 +99,26 @@ providers:
       ministral-14b-2512:
         rpm: 30
 
+  nvidia_nim:
+    shared:
+      api_key: "os.environ/NVIDIA_NIM_API_KEY"
+    models:
+      deepseek-ai/deepseek-v4-flash:
+        rpm: 40
+      deepseek-ai/deepseek-v4-pro:
+        rpm: 40
+      deepseek-ai/deepseek-v3.2:
+        rpm: 40
+      z-ai/glm4.7: {}
+      nvidia/nemotron-4-340b-reward: {}
+      mistralai/mistral-large-3-675b-instruct-2512: {}
+      mistralai/mistral-medium-3-instruct: {}
+      mistralai/mistral-nemotron: {}
+      vlm/google/paligemma: {}
+      google/gemma-3-27b-it: {}
+      microsoft/phi-3.5-vision-instruct: {}
+      microsoft/phi-4-multimodal-instruct: {}
+
   groq:
     shared:
       api_key: "os.environ/GROQ_API_KEY"
@@ -127,8 +147,8 @@ groups:
 
   planner-fallback:
     models:
-      - "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
       - "mistral/mistral-medium-2508"
+      - "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
     fallbacks:
       - "planner"
       - "fallback"
@@ -203,7 +223,6 @@ groups:
       - "ollama/minimax-m2.7:cloud"
       - "gemini/gemma-4-31b-it"
       - "ollama/gemma4:31b-cloud"
-      - "groq/llama-3.3-70b-versatile"
     fallbacks:
       - "fallback"
 
