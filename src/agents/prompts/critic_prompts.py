@@ -58,7 +58,9 @@ def build_critic_output_format(output_model: type[BaseModel]) -> str:
             "Top-level keys MUST be exactly `summary`, `actionable`, and `issues` - do not wrap the payload in another key.",
             "If no meaningful issues exist, set actionable=false and issues=[].",
             "If one or more issues exist, set actionable=true and include every required field on each issue "
-            "(issue_code, severity, issue_type, location, rewrite_instruction).",
+            "(issue_code, severity, issue_type, location, affected_slide_numbers, rewrite_instruction).",
+            "On every issue, affected_slide_numbers must list every slide the issue applies to (non-empty for actionable issues); "
+            "for whole-deck concerns, list all target slide numbers.",
             "issue_code values must be unique within this response (e.g. ISS_001, ISS_002).",
             "Use the exact field names issue_code and issue_type - not `id`, `classification`, or other synonyms.",
             "location must pinpoint what to change (e.g. slide number and bullet or heading).",

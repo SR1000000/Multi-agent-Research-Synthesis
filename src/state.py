@@ -401,7 +401,9 @@ class CriticResultRecord(TypedDict):
     scope_id:
         Human-readable label for the scope.
     group_idx:
-        Zero-based index of the slide group that was reviewed.
+        Zero-based index of the slide group that was reviewed. Use ``-1`` for a
+        deck-scoped critic assignment (e.g. narrative coherence over the full deck);
+        such results are split into per-group rewrite work by the supervisor.
     target_slide_numbers:
         Slide numbers that were in scope for this critique.
     actionable:
@@ -627,6 +629,10 @@ class ResearchState(TypedDict):
         Test-only: when true, first ``MAX_REPLANS`` times the supervisor is at
         the critic/rewrite cap, force ``replan`` so the test harness can
         exercise replan without LLM choice.
+    force_accept_first_plan_at_cap:
+        When true, if the critic/rewrite cap is reached on plan 1 and the
+        supervisor would replan or halt without export, force acceptance and
+        proceed to export instead.
 
     Append-only execution records
     -----------------------------
@@ -673,6 +679,7 @@ class ResearchState(TypedDict):
     skip_supervisor: bool
     plan_number: int
     force_replan_at_max_cycles: bool
+    force_accept_first_plan_at_cap: bool
 
     # -- presentation plan (set by Planner, read by Plan Executor + Slide Writers) --
     presentation_plan: Optional[PresentationPlan]

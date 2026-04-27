@@ -332,5 +332,105 @@ class TestSupervisorReplan(unittest.TestCase):
         mock_backup.assert_called_once()
 
 
+class TestForceAcceptFirstPlan(unittest.TestCase):
+    """Tests for --force-accept-first-plan: at cap on plan 1, replan/reject → accept+export."""
+
+    @patch("src.agents.supervisor.backup_replan_debug_snapshot")
+    @patch("src.agents.supervisor.ResearchDatabase")
+    def test_no_critic_batch_rewrites_pending_exports(
+        self, mock_db_class: MagicMock, mock_backup: MagicMock
+    ) -> None:
+        """No critic batch yet, at cap, rewrites pending, plan 1 → force accept, goto END."""
+        mock_ctx, mock_db = _patch_db_and_backup()
+        mock_db_class.return_value = mock_ctx
+
+        review = make_initial_review_state(max_cycles=MAX_CYCLES)
+        review["cycle_number"] = MAX_CYCLES
+        review["last_rewrite_assignment_ids"] = ["rewrite-x"]
+        review["dispatch_counter"] = 7
+
+        state = {
+            "session_id": "sess",
+            "query": "q",
+            "plan_number": 1,
+            "force_replan_at_max_cycles": False,
+            "force_accept_first_plan_at_cap": True,
+            "presentation_plan": _minimal_presentation_plan(),
+            "review": review,
+            "critic_results": [],
+            "review_summaries": [],
+        }
+        cmd = SupervisorAgent().run(state)
+
+        from langgraph.graph import END as _END
+        self.assertEqual(cmd.goto, _END)
+        self.assertTrue(cmd.update["review"]["export_ready"])
+        self.assertEqual(cmd.update["review"]["final_decision"], "accept")
+        s0 = cmd.update["review_summaries"][0]
+        self.assertEqual(s0["decision"], "accept")
+        self.assertEqual(s0["routing"], "accept")
+        mock_backup.assert_not_called()
+
+    @patch("src.agents.supervisor.backup_replan_debug_snapshot")
+    @patch("src.agents.supervisor.ResearchDatabase")
+    def test_force_accept_wins_over_force_replan(
+        self, mock_db_class: MagicMock, mock_backup: MagicMock
+    ) -> None:
+        """Both flags set: force-accept-first-plan wins and exports instead of replanning."""
+        mock_ctx, mock_db = _patch_db_and_backup()
+        mock_db_class.return_value = mock_ctx
+
+        review = make_initial_review_state(max_cycles=MAX_CYCLES)
+        review["cycle_number"] = MAX_CYCLES
+        review["last_rewrite_assignment_ids"] = ["rewrite-y"]
+
+        state = {
+            "session_id": "sess",
+            "query": "q",
+            "plan_number": 1,
+            "force_replan_at_max_cycles": True,
+            "force_accept_first_plan_at_cap": True,
+            "presentation_plan": _minimal_presentation_plan(),
+            "review": review,
+            "critic_results": [],
+            "review_summaries": [],
+        }
+        cmd = SupervisorAgent().run(state)
+
+        from langgraph.graph import END as _END
+        self.assertEqual(cmd.goto, _END)
+        self.assertTrue(cmd.update["review"]["export_ready"])
+        mock_backup.assert_not_called()
+
+    @patch("src.agents.supervisor.backup_replan_debug_snapshot")
+    @patch("src.agents.supervisor.ResearchDatabase")
+    def test_plan2_not_affected(
+        self, mock_db_class: MagicMock, mock_backup: MagicMock
+    ) -> None:
+        """Flag set but plan_number=2: normal replan still happens (flag only covers plan 1)."""
+        mock_ctx, mock_db = _patch_db_and_backup()
+        mock_db_class.return_value = mock_ctx
+
+        review = make_initial_review_state(max_cycles=MAX_CYCLES)
+        review["cycle_number"] = MAX_CYCLES
+        review["last_rewrite_assignment_ids"] = ["rewrite-z"]
+
+        state = {
+            "session_id": "sess",
+            "query": "q",
+            "plan_number": 2,
+            "force_replan_at_max_cycles": False,
+            "force_accept_first_plan_at_cap": True,
+            "presentation_plan": _minimal_presentation_plan(),
+            "review": review,
+            "critic_results": [],
+            "review_summaries": [],
+        }
+        cmd = SupervisorAgent().run(state)
+
+        self.assertEqual(cmd.goto, "planner")
+        self.assertEqual(cmd.update["plan_number"], 3)
+
+
 if __name__ == "__main__":
     unittest.main()

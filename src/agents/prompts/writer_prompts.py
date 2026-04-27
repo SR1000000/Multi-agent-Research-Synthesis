@@ -81,14 +81,21 @@ Only deviate from the reviewer instructions if it counters your imperative to gr
 """
 
 
-def build_assignment_block(slide_blueprints: list[dict]) -> str:
-    """Format slide blueprint list for SLIDE ASSIGNMENTS blocks (retrieval and generation turns)."""
-    return "\n".join(
-        f"Slide {bp.get('slide_number', i + 1)}: "
-        f"[{bp.get('narrative_role', 'evidence')}] "
-        f'"{bp.get("working_title", "")}" - {bp.get("intent", "")}'
-        for i, bp in enumerate(slide_blueprints)
-    )
+def build_assignment_block(slide_blueprints: list[dict], *, include_working_title: bool = True) -> str:
+    """Format slide blueprint list for SLIDE ASSIGNMENTS blocks (retrieval and generation turns).
+
+    ``include_working_title`` should be False for rewrite passes: the current title is already
+    present in the existing slide drafts, so repeating the planner's original working title creates
+    a competing anchor that can suppress critic-requested title changes.
+    """
+    lines = []
+    for i, bp in enumerate(slide_blueprints):
+        line = f"Slide {bp.get('slide_number', i + 1)}: [{bp.get('narrative_role', 'evidence')}]"
+        if include_working_title:
+            line += f' "{bp.get("working_title", "")}"'
+        line += f" - {bp.get('intent', '')}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def build_slide_base_prompt_parts(
@@ -137,7 +144,8 @@ def build_slide_retrieval_turns(
     existing_slides: list[ProtoSlide],
 ) -> list[dict]:
     """First user turn for tool-enabled runs: require retrieve_artifacts, then evidence brief."""
-    assignment_block = build_assignment_block(slide_blueprints)
+    is_rewrite = bool(rewrite_instructions.strip())
+    assignment_block = build_assignment_block(slide_blueprints, include_working_title=not is_rewrite)
     existing_slides_block = "\n\n".join(
         format_slide_for_prompt(slide) for slide in existing_slides
     )
@@ -200,7 +208,7 @@ def build_slide_rewrite_user_prompt(
     existing_slides: list[ProtoSlide],
 ) -> str:
     """User message for critic-driven slide revision."""
-    blueprint_block = build_assignment_block(slide_blueprints)
+    blueprint_block = build_assignment_block(slide_blueprints, include_working_title=False)
     existing_slides_block = "\n\n".join(
         format_slide_for_prompt(slide) for slide in existing_slides
     )

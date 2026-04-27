@@ -4,7 +4,7 @@ import hashlib
 from typing import Literal, TypedDict, cast
 
 from langgraph.types import Command
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from src.agents.base import BaseLLMAgent
 from src.agents.prompts.common import format_image_assets_block, format_slide_for_prompt, ordered_chunk_texts
@@ -51,7 +51,13 @@ class CriticIssue(BaseModel):
     severity: Literal["critical", "major", "minor"]
     issue_type: str
     location: str = Field(description="Pinpoint what to change (e.g. slide number and bullet or heading).")
-    affected_slide_numbers: list[int] = Field(default_factory=list)
+    affected_slide_numbers: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Every slide this issue touches; required for actionable issues. "
+            "Deck-wide issues must list all target slide numbers."
+        ),
+    )
     rewrite_instruction: str = Field(description="Precise instruction describing how to fix the issue.")
 
 
@@ -68,6 +74,23 @@ class CriticOutput(BaseModel):
         default_factory=list,
         description="List of specific issues found. Leave empty if actionable is False."
     )
+
+    # Need to use model_validator here instead of schema enforcement because schema enforcement
+    # does not enforce semantic relationships between fields.
+    @model_validator(mode="after")
+    def _require_affected_slides_when_actionable(self) -> CriticOutput:
+        if not self.actionable:
+            return self
+        if not self.issues:
+            raise ValueError("When actionable=True, issues must contain at least one issue.")
+        for idx, issue in enumerate(self.issues):
+            if not issue.affected_slide_numbers:
+                code = issue.issue_code or f"index {idx}"
+                raise ValueError(
+                    f"When actionable=True, every issue must have non-empty affected_slide_numbers; "
+                    f"issue {code!r} has an empty list."
+                )
+        return self
 
 
 class SlideCriticAgent(BaseLLMAgent):

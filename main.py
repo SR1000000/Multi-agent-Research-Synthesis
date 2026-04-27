@@ -156,6 +156,15 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--force-accept-first-plan",
+        action="store_true",
+        default=False,
+        help=(
+            "If the critic/rewrite cycle cap is reached on the first presentation plan "
+            "and the supervisor would replan or reject, force acceptance and proceed to export."
+        ),
+    )
+    parser.add_argument(
         "--no-cache-control",
         action="store_true",
         default=False,
@@ -312,7 +321,8 @@ def _build_initial_state(
         "max_slides":        args.max_slides,
         "skip_supervisor":   args.skip_supervisor,
         "plan_number":       1,
-        "force_replan_at_max_cycles": args.force_replan,
+        "force_replan_at_max_cycles":        args.force_replan,
+        "force_accept_first_plan_at_cap":    args.force_accept_first_plan,
         "slide_numbers":     [],
         "presentation_plan": None,
         "review":            make_initial_review_state(max_cycles=args.max_cycles),
