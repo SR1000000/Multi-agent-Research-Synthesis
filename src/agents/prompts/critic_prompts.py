@@ -8,43 +8,46 @@ from pydantic import BaseModel
 
 from src.agents.prompts.common import schema_prompt_contract
 
-# Will have to be updated for multiple review criteria
 CRITIC_ROLE = """
-You are a Slide Deck Critic. Your job is to review assigned slides against the
-source research chunks and identify only meaningful issues that require correction.
-You must evaluate and report issues ONLY within the assigned review criteria for
-this pass; do not raise issues from criteria that were not assigned.
+You are a Slide Deck Critic. Your job is to review the assigned scope and surface only
+meaningful issues that require correction. You must evaluate and report issues ONLY within
+the assigned review criteria for this pass; do not raise issues from criteria that were not assigned.
 
 Core Directives:
 1. Convergence over Perfection: Your goal is incremental improvement, not infinite polish.
-An issue is only an "issue" if it triggers your assigned review criteria.
-2. Grounding over speculation: Do not require citations for claims that are clearly supported by the provided chunks, but flag hallucinations, unsupported claims, contradictions, and misleading framing.
-3. History Respect: Acknowledge when issues from prior cycles have been addressed.
-4. Sufficiency Check: If the assigned slides are adequately grounded and understandable, return no actionable issues.
-5. Scope Discipline: Review only the assigned scope. If the title slide is assigned for a grounding check, trivially pass it unless the instructions explicitly say otherwise.
-6. Criteria Discipline: If you notice a potential issue outside assigned criteria, ignore it for this run.
+2. History Respect: Acknowledge when issues from prior cycles have been addressed.
+3. Scope Discipline: Review only the assigned scope.
+4. Criteria Discipline: If you notice a potential issue outside your assigned criteria, ignore it for this run.
 
 For each issue found:
 - Assign a unique ID (ISS_001, ISS_002, ...)
-- Classify: factual_inaccuracy | hallucination | unsupported_claim | logical_gap | structural | clarity | contradiction
 - Severity: critical (Blocks publication) | major (Significantly degrades quality) | minor (Polish)
+- Location: pinpoint what to change (e.g. slide number and bullet or heading).
 - Provide a precise rewrite instruction that would fix the issue.
 """
 
-# Reserved for a future layout-focused critic pass; not wired in the current graph.
-LAYOUT_REVIEW_CRITERIA = """
-Layout and image-placement review criteria (modular block):
-Review the assigned slides against the IMAGE ASSETS listed in the prompt.
+GROUNDING_REVIEW_CRITERIA = """
+Review Criteria:
+2. Grounding over speculation: Do not require citations for claims that are clearly supported by the provided chunks, but flag hallucinations, unsupported claims, contradictions, and misleading framing.
+4. Sufficiency Check: If the assigned slides are adequately grounded and understandable, return no actionable issues.
 
-Image Placement Assessment:
-1. If `media_id` is set, verify the referenced image is relevant to the slide's content.
-2. If `media_id` is set, verify the layout choice matches the image's aspect ratio:
-   - landscape images -> media_top or media_bottom
-   - portrait images -> media_left or media_right
-   - square images -> media_left or media_right preferred
-3. If no image is used but a clearly relevant image asset exists for an evidence or
-   insight slide, raise a minor issue suggesting image inclusion with the specific Image ID.
-4. Do NOT penalize omission of images when no relevant image is available.
+For each issue found:
+- Classify: factual_inaccuracy | hallucination | unsupported_claim | logical_gap | structural | clarity | contradiction
+
+How to use evidence (the user message below includes baseline source chunks, in-session retrieval log, and image assets when applicable):
+- Review slide claims against the BASELINE SOURCE MATERIAL and IN-SESSION RETRIEVAL LOG together as the source of truth for grounding. Treat the combined evidence as what the writer was allowed to use.
+- If the combined evidence does not support a concrete claim on a slide, that is a grounding issue.
+- Identify only significant issues that require correction under these criteria.
+"""
+
+NARRATIVE_REVIEW_CRITERIA = """
+Review Criteria:
+1. Narrative coherence: The deck should read as one story—logical order, clear transitions, and a thesis that the slides support end-to-end.
+2. Clarity: Each slide’s role in the arc should be obvious; flag confusion, redundancy, or missing connective tissue between slides.
+3. Pacing: Flag abrupt jumps, repeated beats, or a weak opening/closing relative to the rest of the deck.
+
+You are not given source research text—judge only how slide content and plan intent work together.  
+Ignore the key message of each slide when reviewing for narrative coherence.  Focus only on the titles, bullet points, and speaker notes.
 """
 
 
@@ -56,11 +59,14 @@ def build_critic_output_format(output_model: type[BaseModel]) -> str:
             "Top-level keys MUST be exactly `summary`, `actionable`, and `issues` - do not wrap the payload in another key.",
             "If no meaningful issues exist, set actionable=false and issues=[].",
             "If one or more issues exist, set actionable=true and include every required field on each issue "
-            "(issue_code, severity, issue_type, location, rewrite_instruction).",
+            "(issue_code, severity, issue_type, location, affected_slide_numbers, rewrite_instruction).",
+            "On every issue, affected_slide_numbers must list every slide the issue applies to (non-empty for actionable issues); "
+            "for whole-deck concerns, list all target slide numbers.",
             "issue_code values must be unique within this response (e.g. ISS_001, ISS_002).",
             "Use the exact field names issue_code and issue_type - not `id`, `classification`, or other synonyms.",
             "location must pinpoint what to change (e.g. slide number and bullet or heading).",
             "rewrite_instruction must be one concrete edit directive per issue, not only a restatement of the problem.",
+            "If no changes are needed, set actionable=false and issues=[].",
         ],
     )
 
@@ -87,7 +93,7 @@ def format_retrieved_artifact_row(row: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def build_critic_user_prompt(
+def build_grounding_critic_user_prompt(
     *,
     cycle_number: int,
     check_type: str,
@@ -101,7 +107,7 @@ def build_critic_user_prompt(
     image_block: str,
     output_model: type[BaseModel],
 ) -> str:
-    """Assemble the full user message for a critic run (ingested by `SlideCriticAgent._call`)."""
+    """Assemble the user message for a grounding / evidence-aware critic run."""
     return "\n".join(
         [
             f"Cycle: {cycle_number}",
@@ -123,13 +129,35 @@ def build_critic_user_prompt(
             "",
             "AVAILABLE IMAGE ASSETS:",
             image_block or "(none)",
+            build_critic_output_format(output_model),
+        ]
+    )
+
+
+def build_narrative_critic_user_prompt(
+    *,
+    cycle_number: int,
+    check_type: str,
+    scope_type: str,
+    scope_id: str,
+    target_slide_numbers: list[int],
+    blueprint_block: str,
+    slides_block: str,
+    output_model: type[BaseModel],
+) -> str:
+    """Assemble the user message for a narrative / deck-flow critic (no source chunks or RAG)."""
+    return "\n".join(
+        [
+            f"Cycle: {cycle_number}",
+            f"Check type: {check_type}",
+            f"Scope: {scope_type}::{scope_id}",
+            f"Target slides: {target_slide_numbers}",
             "",
-            "Identify only significant issues that break grounding, clarity, coherence, or the review criteria. "
-            "If no changes are needed, set actionable=false and issues=[].",
-            "Review the slides against the BASELINE SOURCE MATERIAL and IN-SESSION RETRIEVAL LOG. Treat this combined evidence as the source of truth for grounding checks.",
-            "If the combined evidence is missing support for a concrete claim on a slide, treat that as a grounding issue.",
-            "Review the slides against the BASELINE SOURCE MATERIAL and IN-SESSION RETRIEVAL LOG. Treat this combined evidence as the source of truth for grounding checks.",
+            "SLIDE ASSIGNMENTS (plan intent for slides in scope):",
+            blueprint_block or "(none)",
             "",
+            "CURRENT SLIDES (draft content, presentation order):",
+            slides_block,
             build_critic_output_format(output_model),
         ]
     )

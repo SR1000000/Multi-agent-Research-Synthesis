@@ -54,7 +54,7 @@ providers:
     models:
       qwen3.5:397b-cloud:
         timeout: 240
-      minimax-m2.7:cloud: {}
+      minimax-m2.7:cloud: {}  # Tends to validation error
       gemma4:31b-cloud:
         max_parallel_requests: 5
       gemma3:4b-cloud:
@@ -99,6 +99,26 @@ providers:
       ministral-14b-2512:
         rpm: 30
 
+  nvidia_nim:
+    shared:
+      api_key: "os.environ/NVIDIA_NIM_API_KEY"
+    models:
+      deepseek-ai/deepseek-v4-flash:
+        rpm: 40
+      deepseek-ai/deepseek-v4-pro:
+        rpm: 40
+      deepseek-ai/deepseek-v3.2:
+        rpm: 40
+      z-ai/glm4.7: {}
+      nvidia/nemotron-4-340b-reward: {}
+      mistralai/mistral-large-3-675b-instruct-2512: {}
+      mistralai/mistral-medium-3-instruct: {}
+      mistralai/mistral-nemotron: {}
+      vlm/google/paligemma: {}
+      google/gemma-3-27b-it: {}
+      microsoft/phi-3.5-vision-instruct: {}
+      microsoft/phi-4-multimodal-instruct: {}
+
   groq:
     shared:
       api_key: "os.environ/GROQ_API_KEY"
@@ -116,28 +136,45 @@ groups:
     fallbacks:
       - "fallback"
 
-  slides:
-    models:
-      - "mistral/mistral-large-2411"
-      - "mistral/mistral-medium-2508"
-      - "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
-    fallbacks:
-      - "slides"
-      - "fallback"
-
   planner:
     models:
-      - "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+      - "mistral/magistral-medium-latest"
       - "ollama/qwen3.5:397b-cloud"
       - "mistral/mistral-large-2411"
     fallbacks:
       - "planner"
+      - "planner-fallback"
+
+  planner-fallback:
+    models:
+      - "mistral/mistral-medium-2508"
+      - "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+    fallbacks:
+      - "planner"
+      - "fallback"
+
+  supervisor:
+    models:
+      - "gemini/gemma-4-31b-it"
+      - "gemini/gemini-3.1-flash-lite-preview"
+    fallbacks:
+      - "supervisor"
+      - "fallback"
+
+  slides:
+    models:
+      - "mistral/mistral-large-2411"
+      - "mistral/mistral-medium-2508"
+      - "gemini/gemini-3.1-flash-lite-preview"
+    fallbacks:
+      - "slides"
+      - "fallback"
 
   critic:
     models:
-      - "ollama/minimax-m2.7:cloud"
       - "mistral/magistral-medium-latest"
-      - "gemini/gemini-3.1-flash-lite-preview"
+      - "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+      - "ollama/qwen3.5:397b-cloud"
     fallbacks:
       - "critic"
       - "fallback"
@@ -149,6 +186,7 @@ groups:
       - "groq/meta-llama/llama-4-scout-17b-16e-instruct"
       - "mistral/mistral-medium-2505"
       - "mistral/ministral-14b-2512"
+      - "mistral/mistral-small-2603"
       - "gemini/gemini-3-flash-preview"
       - "gemini/gemini-2.5-flash"
       - "gemini/gemini-2.5-flash-lite"
@@ -166,11 +204,12 @@ groups:
 
   context:
     models:
+      - "gemini/gemma-4-31b-it"
       - "groq/llama-3.3-70b-versatile"
-      - "ollama/gemma3:27b-cloud"
-      - "ollama/gemma3:12b-cloud"
       - "openrouter/nvidia/nemotron-nano-12b-v2-vl:free"
       - "openrouter/openai/gpt-oss-120b:free"
+      - "ollama/gemma3:27b-cloud"
+      - "ollama/gemma3:12b-cloud"
     fallbacks:
       - "context"
       - "context-vision"
@@ -178,14 +217,14 @@ groups:
 
   fallback:
     models:
-      - "ollama/minimax-m2.7:cloud"
       - "mistral/mistral-large-2411"
       - "mistral/mistral-medium-2508"
       - "mistral/magistral-medium-latest"
-      - "groq/llama-3.3-70b-versatile"
-      - "groq/meta-llama/llama-4-scout-17b-16e-instruct"
+      - "ollama/minimax-m2.7:cloud"
       - "gemini/gemma-4-31b-it"
       - "ollama/gemma4:31b-cloud"
+    fallbacks:
+      - "fallback"
 
 litellm:
   default_group: "app"

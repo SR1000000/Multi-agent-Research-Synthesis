@@ -42,8 +42,8 @@ Prevents unbounded plan → review → discard → plan loops while still allowi
 ReviewScopeType = Literal["deck", "group", "slide"]
 """Granularity at which a critic or rewrite assignment targets slides."""
 
-ReviewCheckType = Literal["grounding_consistency"]
-"""Kind of quality check being performed.  Currently only grounding/consistency is implemented."""
+ReviewCheckType = Literal["grounding_consistency", "narrative_coherence"]
+"""Kind of quality check (e.g. grounding vs deck narrative coherence)."""
 
 ReviewDispatchKind = Literal["initial_write", "critic", "rewrite"]
 """Which dispatch phase an ``ActiveDispatch`` belongs to."""
@@ -289,9 +289,9 @@ class ReviewAssignment(TypedDict):
 
 
 class ActiveDispatch(TypedDict):
-    """Tracks the single in-flight batch of assignments the Supervisor is waiting on.
+    """Tracks the single in-flight batch of assignments the Plan Executor is waiting on.
 
-    Only one ``ActiveDispatch`` exists at a time.  The Supervisor sets this when
+    Only one ``ActiveDispatch`` exists at a time.  The Plan Executor sets this when
     it fans out a set of assignments and clears it once all expected results have
     arrived in ``ResearchState``.
 
@@ -318,7 +318,7 @@ class ActiveDispatch(TypedDict):
 class SlideWriteRecord(TypedDict):
     """Immutable record appended to ``ResearchState.slides_written`` when a Slide Writer completes.
 
-    Used by the Supervisor to detect when all slides in a dispatch batch have
+    Used by the Plan Executor to detect when all slides in a dispatch batch have
     been written, and to audit which group/assignment each write belongs to.
 
     Fields
@@ -347,6 +347,9 @@ class CriticIssueRecord(TypedDict):
     """A single actionable quality issue identified by the Slide Critic.
 
     Stored inside ``CriticResultRecord.issues``.
+    Needs to be separate from CriticIssue in slide_critic.py because it also contains a
+    fingerprint field, which should not be passed to the llm (which the CriticIssue class 
+    is in its entirety)
 
     Fields
     ------
@@ -381,7 +384,7 @@ class CriticResultRecord(TypedDict):
     """Complete output of one Slide Critic invocation, appended to ``ResearchState.critic_results``.
 
     One record is produced per critic assignment.  The Supervisor reads these
-    records to decide whether to accept the deck, trigger rewrites, or replan.
+    records to decide whether to accept the deck, trigger rewrites, or replan. 
 
     Fields
     ------
@@ -398,7 +401,9 @@ class CriticResultRecord(TypedDict):
     scope_id:
         Human-readable label for the scope.
     group_idx:
-        Zero-based index of the slide group that was reviewed.
+        Zero-based index of the slide group that was reviewed. Use ``-1`` for a
+        deck-scoped critic assignment (e.g. narrative coherence over the full deck);
+        such results are split into per-group rewrite work by the supervisor.
     target_slide_numbers:
         Slide numbers that were in scope for this critique.
     actionable:
@@ -624,6 +629,10 @@ class ResearchState(TypedDict):
         Test-only: when true, first ``MAX_REPLANS`` times the supervisor is at
         the critic/rewrite cap, force ``replan`` so the test harness can
         exercise replan without LLM choice.
+    force_accept_first_plan_at_cap:
+        When true, if the critic/rewrite cap is reached on plan 1 and the
+        supervisor would replan or halt without export, force acceptance and
+        proceed to export instead.
 
     Append-only execution records
     -----------------------------
@@ -670,6 +679,7 @@ class ResearchState(TypedDict):
     skip_supervisor: bool
     plan_number: int
     force_replan_at_max_cycles: bool
+    force_accept_first_plan_at_cap: bool
 
     # -- presentation plan (set by Planner, read by Plan Executor + Slide Writers) --
     presentation_plan: Optional[PresentationPlan]

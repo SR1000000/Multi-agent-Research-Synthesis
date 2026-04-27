@@ -48,12 +48,15 @@ dense research data into high-impact, professional presentation slides.
      * `portrait` (taller than wide) -> use `media_left` or `media_right`
      * `square` -> prefer `media_left` or `media_right`
    - Reduce bullet density slightly to leave room for the image (3 tight bullets beats 5 verbose ones).
-   - Lean on the VLM description in each IMAGE ASSETS line as your primary guide to what the image shows; \
+   - Lean on the contextualized text in each IMAGE ASSETS line as your primary guide to what the image shows; \
      the paper caption portion is a secondary signal.
 
    Use each image at most once across this batch of slides. The default disposition is to \
    use an image when one is relevant; only omit it if it genuinely does not support any slide \
    in this batch.
+
+Note: If the two_column layout is chosen, there should be only two bullets, with all relevant information \
+    in the sub-bullets of their respective bullet.
 """
 
 SLIDE_REWRITER_ROLE = """
@@ -78,14 +81,21 @@ Only deviate from the reviewer instructions if it counters your imperative to gr
 """
 
 
-def build_assignment_block(slide_blueprints: list[dict]) -> str:
-    """Format slide blueprint list for SLIDE ASSIGNMENTS blocks (retrieval and generation turns)."""
-    return "\n".join(
-        f"Slide {bp.get('slide_number', i + 1)}: "
-        f"[{bp.get('narrative_role', 'evidence')}] "
-        f'"{bp.get("working_title", "")}" - {bp.get("intent", "")}'
-        for i, bp in enumerate(slide_blueprints)
-    )
+def build_assignment_block(slide_blueprints: list[dict], *, include_working_title: bool = True) -> str:
+    """Format slide blueprint list for SLIDE ASSIGNMENTS blocks (retrieval and generation turns).
+
+    ``include_working_title`` should be False for rewrite passes: the current title is already
+    present in the existing slide drafts, so repeating the planner's original working title creates
+    a competing anchor that can suppress critic-requested title changes.
+    """
+    lines = []
+    for i, bp in enumerate(slide_blueprints):
+        line = f"Slide {bp.get('slide_number', i + 1)}: [{bp.get('narrative_role', 'evidence')}]"
+        if include_working_title:
+            line += f' "{bp.get("working_title", "")}"'
+        line += f" - {bp.get('intent', '')}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def build_slide_base_prompt_parts(
@@ -134,7 +144,8 @@ def build_slide_retrieval_turns(
     existing_slides: list[ProtoSlide],
 ) -> list[dict]:
     """First user turn for tool-enabled runs: require retrieve_artifacts, then evidence brief."""
-    assignment_block = build_assignment_block(slide_blueprints)
+    is_rewrite = bool(rewrite_instructions.strip())
+    assignment_block = build_assignment_block(slide_blueprints, include_working_title=not is_rewrite)
     existing_slides_block = "\n\n".join(
         format_slide_for_prompt(slide) for slide in existing_slides
     )
@@ -197,7 +208,7 @@ def build_slide_rewrite_user_prompt(
     existing_slides: list[ProtoSlide],
 ) -> str:
     """User message for critic-driven slide revision."""
-    blueprint_block = build_assignment_block(slide_blueprints)
+    blueprint_block = build_assignment_block(slide_blueprints, include_working_title=False)
     existing_slides_block = "\n\n".join(
         format_slide_for_prompt(slide) for slide in existing_slides
     )

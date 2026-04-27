@@ -378,7 +378,8 @@ class Contextualizer:
                                 f"Surrounding text:\n<before>{text_before}</before>\n"
                                 f"<after>{text_after}</after>\n\n"
                                 f"[IMAGE]: The image shows: {image.caption}\n\n"
-                                "Provide a succinct context in 1 paragraph, no more than 5 sentences describing this image's role and specific position within the document.\n"
+                                "Provide a succinct context no more than 3 paragraphs, no more than 15 sentences total describing this image's role in the paper and what it shows.\n"
+                                "Be specific and detailed, and do not use bullets, labels, or markdown headings.\n"
                                 "Focus on how the surrounding narrative frames this image and what information it conveys.\n"
                     },
                     {
