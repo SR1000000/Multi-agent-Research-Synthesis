@@ -363,7 +363,8 @@ class SupervisorAgent(BaseLLMAgent):
                 plan_number=int(state.get("plan_number", 1)),
                 scope_type="deck",
                 scope_id="deck",
-                check_type="grounding_consistency",
+                # Supervisor-level routing decision event (not a critic check).
+                check_type="supervisor",
                 decision="replan",
             )
 
@@ -407,7 +408,8 @@ class SupervisorAgent(BaseLLMAgent):
                 plan_number=plan_number,
                 scope_type="deck",
                 scope_id="deck",
-                check_type="grounding_consistency",
+                # Supervisor-level routing decision event (not a critic check).
+                check_type="supervisor",
                 decision="accept",
             )
         return Command(
@@ -545,7 +547,8 @@ class SupervisorAgent(BaseLLMAgent):
                     plan_number=plan_number,
                     scope_type="deck",
                     scope_id="deck",
-                    check_type="grounding_consistency",
+                    # Supervisor-level routing decision event (not a critic check).
+                    check_type="supervisor",
                     decision="accept",
                 )
             return Command(
