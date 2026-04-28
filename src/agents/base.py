@@ -1,4 +1,6 @@
 import json
+import secrets
+import string
 import time
 from contextvars import ContextVar
 from collections.abc import Callable
@@ -40,6 +42,19 @@ class StructuredOutputResult:
     parsed: BaseModel
     metadata: StructuredOutputMetadata
     attempts_used: int
+
+
+def _generate_tool_call_id() -> str:
+    """Generate a 9-character alphanumeric ID compatible with Mistral.
+
+    Mistral (and some other providers via LiteLLM) requires tool call IDs to be
+    exactly 9 characters long and contain only a-z, A-Z, and 0-9.
+    Pretty sure this (and its addition below) doesn't break anything, everything still works
+    and logically the tool call id is only visible for the llm for their
+    messages consistency. 
+    """
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(9))
 
 
 class BaseLLMAgent:
@@ -446,9 +461,11 @@ class BaseLLMAgent:
                     )
                     break
 
+                # call_id no longer used?
                 call_id = getattr(call, "id", None)
                 if call_id is None and isinstance(call, dict):
                     call_id = call.get("id")
+                    
                 fn = getattr(call, "function", None)
                 if fn is None and isinstance(call, dict):
                     fn = call.get("function")
@@ -464,9 +481,15 @@ class BaseLLMAgent:
                 
                 # Normalize and persist assistant tool_calls in message history so
                 # subsequent role="tool" messages have a valid parent call id.
+                
+                # Mistral is strict: tool call IDs must be exactly 9 alphanumeric chars.
+                # We override any incoming ID with a compatible one to ensure
+                # the conversation history remains valid for all providers.
+                safe_call_id = _generate_tool_call_id()
+
                 assistant_tool_calls.append(
                     {
-                        "id": call_id or f"tool_call_{tool_calls_used}",
+                        "id": safe_call_id,
                         "type": "function",
                         "function": {
                             "name": name,
@@ -509,7 +532,7 @@ class BaseLLMAgent:
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": call_id or f"tool_call_{tool_calls_used}",
+                        "tool_call_id": safe_call_id,
                         "name": name,
                         "content": format_tool_result_for_llm(result),
                     }
