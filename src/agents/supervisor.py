@@ -11,6 +11,7 @@ terminate: it exports unless aggregated critic severity counts still show critic
 from __future__ import annotations
 
 import json
+from typing import Literal
 
 from langgraph.graph import END
 from langgraph.types import Command
@@ -41,7 +42,7 @@ class SupervisorOutput(BaseModel):
     The LLM proposes a decision; the agent then acts on it, subject to budget limits.
     """
 
-    decision:  str   # "accept" | "revise" | "replan"
+    decision: Literal["accept", "revise", "replan", "critic_cycle"]  # "critic_cycle" is never output from
     reasoning: str
     feedback:  str = ""
 
