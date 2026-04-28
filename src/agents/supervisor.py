@@ -42,7 +42,7 @@ class SupervisorOutput(BaseModel):
     The LLM proposes a decision; the agent then acts on it, subject to budget limits.
     """
 
-    decision: Literal["accept", "revise", "replan", "critic_cycle"]  # "critic_cycle" is never output from
+    decision: Literal["accept", "revise", "replan", "critic_cycle"]  # "critic_cycle" is never output from llm call, it is only used for "decision" routing that skips the llm call
     reasoning: str
     feedback:  str = ""
 
