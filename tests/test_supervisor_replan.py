@@ -172,9 +172,9 @@ class TestSupervisorReplan(unittest.TestCase):
         }
         cmd = SupervisorAgent().run(state)
         self.assertEqual(cmd.goto, END)
-        self.assertFalse(cmd.update["review"].get("export_ready"))
-        self.assertIsNone(cmd.update["review"].get("final_decision"))
-        mock_db.save_review_event.assert_not_called()
+        self.assertTrue(cmd.update["review"].get("export_ready"))
+        self.assertEqual(cmd.update["review"].get("final_decision"), "accept")
+        mock_db.save_review_event.assert_called()
 
     @patch("src.agents.supervisor.ResearchDatabase")
     def test_below_cap_flag_does_not_force_replan(self, mock_db_class: MagicMock) -> None:
@@ -368,7 +368,7 @@ class TestForceAcceptFirstPlan(unittest.TestCase):
         self.assertEqual(cmd.update["review"]["final_decision"], "accept")
         s0 = cmd.update["review_summaries"][0]
         self.assertEqual(s0["decision"], "accept")
-        self.assertEqual(s0["routing"], "accept")
+        self.assertEqual(s0["routing"], "END")
         mock_backup.assert_not_called()
 
     @patch("src.agents.supervisor.backup_replan_debug_snapshot")

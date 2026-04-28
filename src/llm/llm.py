@@ -57,8 +57,8 @@ class _FailureLogger(CustomLogger):
         status = getattr(exc, "status_code", None)
         status_part = f" [{status}]" if status else ""
         msg = str(exc) if exc else ""
-        # Trim the message to the first sentence / newline to keep it short
-        msg = msg.split("\n")[0][:120]
+        # Trim the message to the first newline to keep it short, but don't truncate length
+        msg = msg.split("\n")[0][:180]
         return f"[{agent}] Deployment failed: {model} — {exc_type}{status_part}: {msg}"
 
     def log_failure_event(self, kwargs, response_obj, start_time, end_time):  # noqa: ANN001
@@ -481,6 +481,7 @@ def should_fallback_to_json_object(exc: Exception) -> bool:
         "extra_forbidden",
         "extra inputs are not permitted",
         "extra inputs not permitted",
+        "invalid grammar",
     )
     return any(marker in message for marker in fallback_markers)
 
