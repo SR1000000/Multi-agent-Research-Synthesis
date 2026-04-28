@@ -514,11 +514,11 @@ class SupervisorAgent(BaseLLMAgent):
 
         # Log the decision
         if llm_result:
-            _reasoning_one = " ".join((llm_result.reasoning or "").split())
+            _reasoning_cleaned = " ".join((llm_result.reasoning or "").split())
             _short_reasoning = (
-                _reasoning_one
-                if len(_reasoning_one) <= 240
-                else _reasoning_one[:239] + "…"
+                _reasoning_cleaned
+                if len(_reasoning_cleaned) <= 240
+                else _reasoning_cleaned[:239] + "…"
             )
             self._logger.log(
                 f"[supervisor] cycle {cycle_number}: model={llm_result.decision} -> effective={decision} "
