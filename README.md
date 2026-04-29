@@ -124,6 +124,10 @@ The finished presentation is saved as a `.pptx` file in `output/` by default, or
 | `-i`, `--interactive` | off | Pause after each document extraction for confirmation |
 | `--skip-supervisor` | off | Skip critic/supervisor review and export after the first drafting wave |
 | `--no-logging` | _(logging on)_ | Disable Langfuse tracing |
+| `--force-replan` | off | Test/debug only: force up to two replans at review cap before acceptance |
+| `--force-accept-first-plan` | off | Force acceptance and export if cycle cap is reached on the first plan |
+| `--no-cache-control` | off | Disable prompt cache_control sent to the LLM provider |
+| `--no-context-batching` | off | Disable batch LLM calls in contextualization (sequential execution) |
 
 ---
 
