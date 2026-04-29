@@ -403,6 +403,7 @@ def main() -> None:
         # Clear deck generation artifacts so each run starts clean (ingestion tables unchanged).
         db.clear_proto_slides()
         db.clear_slide_review_events()
+        db.clear_best_proto_slides()
 
         doc_ids: list[str] = []
         paper_titles: list[str] = []
@@ -505,6 +506,18 @@ def main() -> None:
         pptx_path = output_dir / f"{prefix}{safe_name}.pptx"
         if final_state.get("review", {}).get("export_ready"):
             try:
+                best = db.load_best_slides()
+                if best:
+                    logger.log(
+                        f"[export] Using best-seen proto-slides "
+                        f"({len(best)} slides, "
+                        f"snapshot={db.load_best_severity_snapshot()})"
+                    )
+                else:
+                    logger.log(
+                        "[export] No best-seen set recorded; "
+                        "falling back to live proto-slides."
+                    )
                 out = PandocBuilder(
                     output_path=pptx_path,
                     db=db,
@@ -512,6 +525,7 @@ def main() -> None:
                     subtitle=plan_subtitle,
                     object_store=object_store,
                     reference_doc=reference_doc,
+                    slides_override=best or None,
                 ).build()
                 print(f"\n[export] Presentation saved -> {out}")
             except ValueError as exc:

@@ -253,12 +253,14 @@ class PandocBuilder:
         subtitle: str = "",
         object_store: ObjectStoreProvider | None = None,
         reference_doc: Path | None = None,
+        slides_override: List[ProtoSlide] | None = None,
     ) -> None:
         self.output_path = Path(output_path)
         self._db = db
         self._title = title
         self._subtitle = subtitle
         self._object_store = object_store
+        self._slides_override = slides_override
         if reference_doc is None and _DEFAULT_REFERENCE_DOC.exists():
             self._reference_doc = _DEFAULT_REFERENCE_DOC
         else:
@@ -266,25 +268,33 @@ class PandocBuilder:
 
     def build(self) -> Path:
         """
-        Loads all proto-slides from research.db in slide-number order, renders them
-        to Pandoc Markdown (prepending a YAML title slide from constructor metadata),
-        and writes the presentation to self.output_path.
-        Returns the resolved path.
+        Load slides (from override or DB), render them to Pandoc Markdown
+        (prepending a YAML title slide from constructor metadata), and write
+        the presentation to self.output_path.  Returns the resolved path.
+
+        Pass *slides_override* to export an arbitrary list of ProtoSlide objects
+        (e.g. the best-seen set) without reading from proto_slides.  Leave it
+        as None (the default) to retain the original DB-read behaviour, which
+        preserves full backward compatibility with all existing callers.
 
         Raises:
-            ValueError: if no slides exist in the database.
+            ValueError: if no slides are available from either source.
         """
-        slide_numbers = self._db.list_slide_numbers()
-        if not slide_numbers:
-            raise ValueError(
-                "PandocBuilder: no proto-slides found in research.db. "
-                "Run the slide-generation graph first."
-            )
-
-        slides: List[ProtoSlide] = [
-            self._db.load_slide(n) for n in slide_numbers
-        ]
-        slides = [s for s in slides if s is not None]
+        if self._slides_override is not None:
+            slides: List[ProtoSlide] = self._slides_override
+            if not slides:
+                raise ValueError(
+                    "PandocBuilder: slides_override was provided but is empty."
+                )
+        else:
+            slide_numbers = self._db.list_slide_numbers()
+            if not slide_numbers:
+                raise ValueError(
+                    "PandocBuilder: no proto-slides found in research.db. "
+                    "Run the slide-generation graph first."
+                )
+            slides = [self._db.load_slide(n) for n in slide_numbers]
+            slides = [s for s in slides if s is not None]
 
         with tempfile.TemporaryDirectory(prefix="mars_img_") as tmp:
             tmp_dir = Path(tmp)

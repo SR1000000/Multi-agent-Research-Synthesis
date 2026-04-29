@@ -28,6 +28,7 @@ from src.memory.research.retrieval import (
 from src.memory.research.schema import (
     CREATE_ARTIFACT_SEARCH_FTS_TABLE,
     CREATE_ARTIFACT_SEARCH_SOURCE_VIEW,
+    CREATE_BEST_PROTO_SLIDES_TABLE,
     CREATE_DOCUMENTS_TABLE,
     CREATE_EQUATIONS_TABLE,
     CREATE_FTS_ROWID_MAP_TABLE,
@@ -135,6 +136,7 @@ class ResearchDatabase(DatabaseProvider):
             CREATE_ARTIFACT_SEARCH_FTS_TABLE,
             CREATE_FTS_ROWID_MAP_TABLE,
             CREATE_PROTO_SLIDES_TABLE,
+            CREATE_BEST_PROTO_SLIDES_TABLE,  # new; CREATE TABLE IF NOT EXISTS handles existing DBs
             CREATE_RETRIEVED_CHUNKS_TABLE,
             CREATE_SLIDE_REVIEW_EVENTS_TABLE,
         ]
@@ -333,6 +335,30 @@ class ResearchDatabase(DatabaseProvider):
 
     def clear_slide_review_events(self) -> None:
         return slide.clear_slide_review_events(self)
+
+    def check_promote_best_slides(
+        self,
+        slides: list,
+        severity_counts: dict,
+        cycle_number: int,
+        plan_number: int,
+    ) -> bool:
+        """Promote slides to best-seen if severity_counts beats the stored snapshot."""
+        return slide.check_promote_best_slides(
+            self, slides, severity_counts, cycle_number, plan_number
+        )
+
+    def load_best_slides(self) -> list:
+        """Load all best-seen proto-slides ordered by slide_number ascending."""
+        return slide.load_best_slides(self)
+
+    def load_best_severity_snapshot(self) -> dict | None:
+        """Return the severity snapshot of the stored best set, or None if empty."""
+        return slide.load_best_severity_snapshot(self)
+
+    def clear_best_proto_slides(self) -> None:
+        """Delete all rows from best_proto_slides (called on program start)."""
+        return slide.clear_best_proto_slides(self)
 
     def save_review_event(self, **kwargs) -> None:
         return slide.save_review_event(self, **kwargs)
