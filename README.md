@@ -29,6 +29,8 @@ copy .env.sample .env
 
 See `.env.sample` for all supported keys (LLM providers, Langfuse, Cloudflare R2).
 
+For LlamaParse, set **`LLAMA_CLOUD_API_KEY`** in your `.env`, else document processing will fail. You can get your API key from [LlamaParse](https://cloud.llamaindex.ai/).
+
 ### 4. Langfuse Logging (optional)
 
 To enable observability, set these keys in your `.env`:
@@ -135,7 +137,7 @@ The finished presentation is saved as a `.pptx` file in `output/` by default, or
 
 While multiple processor backends are implemented, only **LlamaParse** is available with the provided `requirements.txt` (other backends require additional dependencies and separate environments).
 
-For LlamaParse, set **`LLAMA_CLOUD_API_KEY`** in your `.env`.
+
 
 ---
 
