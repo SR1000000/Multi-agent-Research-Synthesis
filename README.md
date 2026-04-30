@@ -83,6 +83,7 @@ python main.py --pdf path/to/paper.pdf
 ```
 
 For the time being, `--force-accept-first-plan` is recommended since replans can take a long time to complete for only marginal improvements.  The first few cycles are usually enough to get a presentation without major issues.
+
 If you are using the document processing contextualizer AND you are severely rate/token-limited (e.g. you are using the free tier of all your LLM providers), it is recommended to use the `--no-context-batching` flag to disable the batching of LLM calls in the contextualizer (which will introduce many pages of deployment failures if you don't have enough fallback models).  The program can power through a lot of pages with this flag, but it will be much slower.  Any artifacts or chunks that are not contextualized because of llm call failures will be added to a backlog for re-contextualization in the next run (+cache hit) of the program.
 
 ### Multiple PDFs
