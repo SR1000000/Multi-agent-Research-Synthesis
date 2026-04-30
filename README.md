@@ -34,6 +34,8 @@ copy .env.sample .env
 
 See `.env.sample` for all supported keys (LLM providers, Langfuse, Cloudflare R2).
 
+**Warning**: The provided config.sample.yaml file uses the free tier of 6 different LLM providers.  If you are using the provided config.sample.yaml file, you will need API keys for all 6 providers.
+
 For LlamaParse, set **`LLAMA_CLOUD_API_KEY`** in your `.env`, else document processing will fail. You can get your API key from [LlamaParse](https://cloud.llamaindex.ai/).  Free tier signup gives you 10,000 credits, which is enough to process roughly 1000 pages of PDF.
 
 ### 4. Langfuse Logging (optional)
