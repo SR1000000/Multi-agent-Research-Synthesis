@@ -25,6 +25,9 @@ flowchart TD
 
 After planning, the run moves to a parallel drafting batch with one Slide Writer per slide group. All parallel work returns to a fan-in checkpoint before the Supervisor runs. The Supervisor decides whether to start review, dispatch targeted rewrites, accept the deck for export, or return to planning for a new deck structure. Each parallel batch completes before the next decision point.
 
+> [!NOTE]
+> **Plan Executor**: The actual LangGraph implementation includes a `plan_executor` node between planning and drafting, and between the parallel workers and the supervisor. It is intentionally omitted from the diagram and agent roles because it is a purely deterministic coordination layer. It handles fan-out dispatch, fan-in waiting, and retry logic without any LLM calls or agentic qualities.
+
 ---
 
 ## Review Phases
@@ -88,19 +91,22 @@ The Supervisor is the session’s decision-maker. It runs after each fan-in (whe
 
 **Decision logic:**
 
-1. **No critic results for the current cycle** → start a new critic cycle (increment cycle count; if the cap is exceeded and rewrites were still pending, force replan)
-2. **Rewrites ran in the current cycle** → dispatch a follow-up critic pass over the updated slides (post-rewrite verification)
-3. **Fresh critic results, no pending rewrites** → call the language model with critic summaries, severity counts, and recurring fingerprints; the model returns accept, revise, or replan
+- **Pre-LLM routing** (deterministic, no model call):
+  - If no critic results exist for the current cycle, or rewrites just completed → dispatch a new critic cycle (increment cycle count; if over cap with replan budget remaining, force replan).
+  - If `force_replan_at_max_cycles` is set and at the cycle cap → force replan.
+- **LLM routing** (when fresh critic results exist with no pending rewrites):
+  - Call the model with critic summaries, severity counts, and recurring fingerprints.
+  - Model returns `accept`, `revise`, or `replan`.
 
 **Guard overrides applied after the model decision:**
 
 | Condition | Override |
 |---|---|
-| Model says accept but critical actionable issues exist | → revise |
-| Model says accept but major actionable issues exist (not at cycle cap) | → revise |
-| Model says accept but non-persistent actionable issues remain (not at cycle cap) | → revise |
-| Model says revise but no actionable issues | → accept |
-| Decision is revise but cycle count is at the maximum | → replan |
+| Model says `revise` but no actionable results | → `accept` |
+| Model says `revise` but at cycle cap and replan budget remains | → `replan` |
+| Model says `revise` but at cycle cap and replan budget exhausted | → `accept` (with `budget_exhausted` flag) |
+| Model says `replan` but replan budget exhausted | → `accept` (with `budget_exhausted` flag) |
+| `force_accept_first_plan_at_cap` flag set, at cap, on plan 1 | → `accept` |
 
 **Routing outcomes:**
 
