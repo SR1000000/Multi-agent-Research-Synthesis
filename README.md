@@ -29,6 +29,8 @@ copy .env.sample .env
 
 See `.env.sample` for all supported keys (LLM providers, Langfuse, Cloudflare R2).
 
+For LlamaParse, set **`LLAMA_CLOUD_API_KEY`** in your `.env`, else document processing will fail. You can get your API key from [LlamaParse](https://cloud.llamaindex.ai/).
+
 ### 4. Langfuse Logging (optional)
 
 To enable observability, set these keys in your `.env`:
@@ -39,7 +41,7 @@ LANGFUSE_PUBLIC_KEY="pk-lf-..."
 LANGFUSE_BASE_URL="https://cloud.langfuse.com"
 ```
 
-Disable with `--no-logging` at runtime.
+Disable with `--no-logging` as a commandline argument.
 
 ### 5. LLM providers and routing
 
@@ -89,34 +91,45 @@ Use `--query` to specify the audience or framing:
 ```bash
 python main.py --pdf paper.pdf --query "Explain this to an audience of computer science undergraduates"
 python main.py --pdf paper1.pdf paper2.pdf --query "Compare these two papers and highlight where they agree and disagree"
-python main.py --pdf paper.pdf --query "Give a 5-minute overview of the key findings"
+python main.py --pdf paper.pdf --query "Make a presentation pointing out all the paper's flaws and mistakes to a group of senior researchers in the field."
 ```
 
 The default query is `"Explain this paper to an audience of laypeople"`.
 
 ### Output
 
-The finished presentation is saved as a `.pptx` file in `output/` by default, or to a custom directory via `--output-dir`. The filename is derived from the first paper's title (or the session ID if no title is detected). Proto-slides are stored in the `proto_slides` table inside `data/research.db`, and that table is cleared at the start of each new run.
+The finished presentation is saved as a `.pptx` file in `output/` by default, or to a custom directory via `--output-dir`. The filename is derived from the first paper's title (or the session ID if no title is detected).
 
 ---
 
 ## Optional Arguments
+
+### Usability
 
 | Argument | Default | Description |
 |---|---|---|
 | `--pdf PATH [PATH ...]` | `.samples/Transformers.pdf` | One or more PDF files to process |
 | `--query TEXT` | `"Explain this paper to an audience of laypeople"` | Presentation query / audience |
 | `--max-slides N` | `15` | Soft slide target (Planner adjusts based on content density) |
-| `--max-cycles N` | `4` | Maximum critic/rewrite review cycles before acceptance, replan, or terminal failure |
-| `--processor` | `llama_parse` | Document processor backend: `llama_parse` (or `llama` as an alias) |
-| `--text-splitter` | `semantic` | Chunking strategy: `semantic` or `none` |
 | `--object-store` | _(R2 with local fallback)_ | `local` or `r2` for image storage |
 | `--output-dir PATH` | `output/` | Directory where the generated `.pptx` will be written |
 | `--reference-doc PATH` | bundled template | Optional PowerPoint template passed to Pandoc |
+
+### Debugging
+
+| Argument | Default | Description |
+|---|---|---|
+| `--max-cycles N` | `4` | Maximum critic/rewrite review cycles before acceptance, replan, or terminal failure |
+| `--processor` | `llama_parse` | Document processor backend: `llama_parse` (or `llama` as an alias) |
+| `--text-splitter` | `semantic` | Chunking strategy: `semantic` or `none` |
 | `--llm-config PATH` | `src/llm/config.dev.yaml` | LiteLLM Router config file |
 | `-i`, `--interactive` | off | Pause after each document extraction for confirmation |
 | `--skip-supervisor` | off | Skip critic/supervisor review and export after the first drafting wave |
 | `--no-logging` | _(logging on)_ | Disable Langfuse tracing |
+| `--force-replan` | off | Test/debug only: force up to two replans at review cap before acceptance |
+| `--force-accept-first-plan` | off | Force acceptance and export if cycle cap is reached on the first plan |
+| `--no-cache-control` | off | Disable prompt cache_control sent to the LLM provider |
+| `--no-context-batching` | off | Disable batch LLM calls in contextualization (sequential execution) |
 
 ---
 
@@ -124,7 +137,7 @@ The finished presentation is saved as a `.pptx` file in `output/` by default, or
 
 While multiple processor backends are implemented, only **LlamaParse** is available with the provided `requirements.txt` (other backends require additional dependencies and separate environments).
 
-For LlamaParse, set **`LLAMA_CLOUD_API_KEY`** in your `.env`.
+
 
 ---
 
@@ -190,7 +203,7 @@ The Supervisor is the session's decision-maker. It evaluates critic results afte
 - **revise** → launches targeted parallel rewrites for actionable groups or slides; a follow-up critic cycle runs automatically after rewrites complete
 - **replan** → returns to the Planner when the review cycle cap is hit or persistent structural issues remain unresolved
 
-The default review cap is 4 critic/rewrite cycles, and the run can attempt up to 2 full replans. If the replan budget is exhausted while critical issues remain, the graph can end without exporting. Use `--skip-supervisor` to bypass this quality gate and export directly after the first drafting wave.
+The default review cap is 4 critic/rewrite cycles, and the run can attempt up to 2 full replans. If the replan budget is exhausted while critical issues remain, the graph can end without exporting. Use `--skip-supervisor` to bypass the supervisor loop and export directly after the first drafting wave.
 
 ---
 
