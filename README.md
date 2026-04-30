@@ -34,7 +34,7 @@ copy .env.sample .env
 
 See `.env.sample` for all supported keys (LLM providers, Langfuse, Cloudflare R2).
 
-For LlamaParse, set **`LLAMA_CLOUD_API_KEY`** in your `.env`, else document processing will fail. You can get your API key from [LlamaParse](https://cloud.llamaindex.ai/).
+For LlamaParse, set **`LLAMA_CLOUD_API_KEY`** in your `.env`, else document processing will fail. You can get your API key from [LlamaParse](https://cloud.llamaindex.ai/).  Free tier signup gives you 10,000 credits, which is enough to process roughly 1000 pages of PDF.
 
 ### 4. Langfuse Logging (optional)
 
@@ -51,6 +51,7 @@ Disable with `--no-logging` as a commandline argument.
 ### 5. LLM providers and routing
 
 Runtime LLM comes from a **LiteLLM Router** built from YAML. The app reads **`src/llm/config.dev.yaml`** at startup (see `init_from_config` in `src/llm/llm.py`).
+If there is no `config.dev.yaml` file, the app will copy the sample config file to `config.dev.yaml`.
 
 #### Create your local `config.dev.yaml`
 
@@ -81,6 +82,10 @@ The pipeline uses router group aliases such as `planner`, `slides`, `critic`, `s
 python main.py --pdf path/to/paper.pdf
 ```
 
+For the time being, `--force-accept-first-plan` is recommended since replans can take a long time to complete for only marginal improvements.  The first few cycles are usually enough to get a presentation without major issues.
+If you are using the document processing contextualizer, it is recommended to use the `--no-cache-control` flag to disable the cache control sent to the LLM provider (which is a not very well-supported by LiteLLM).
+If you are using the document processing contextualizer AND you are severely rate/token-limited (e.g. you are using the free tier of all your LLM providers), it is recommended to use the `--no-context-batching` flag to disable the batching of LLM calls in the contextualizer (which will introduce many pages of deployment failures if you don't have enough fallback models).
+
 ### Multiple PDFs
 
 Pass multiple paths to generate a single presentation from several papers:
@@ -103,7 +108,7 @@ The default query is `"Explain this paper to an audience of laypeople"`.
 
 ### Output
 
-The finished presentation is saved as a `.pptx` file in `output/` by default, or to a custom directory via `--output-dir`. The filename is derived from the first paper's title (or the session ID if no title is detected).
+The finished presentation is saved as a `.pptx` file in `output/` by default, or to a custom directory via `--output-dir`. The filename is derived from the slide deck's title (or the session ID if no title is present).
 
 ---
 
@@ -115,8 +120,6 @@ The finished presentation is saved as a `.pptx` file in `output/` by default, or
 |---|---|---|
 | `--pdf PATH [PATH ...]` | `.samples/Transformers.pdf` | One or more PDF files to process |
 | `--query TEXT` | `"Explain this paper to an audience of laypeople"` | Presentation query / audience |
-| `--max-slides N` | `15` | Soft slide target (Planner adjusts based on content density) |
-| `--object-store` | _(R2 with local fallback)_ | `local` or `r2` for image storage |
 | `--output-dir PATH` | `output/` | Directory where the generated `.pptx` will be written |
 | `--reference-doc PATH` | bundled template | Optional PowerPoint template passed to Pandoc |
 
@@ -124,13 +127,14 @@ The finished presentation is saved as a `.pptx` file in `output/` by default, or
 
 | Argument | Default | Description |
 |---|---|---|
-| `--max-cycles N` | `4` | Maximum critic/rewrite review cycles before acceptance, replan, or terminal failure |
-| `--processor` | `llama_parse` | Document processor backend: `llama_parse` (or `llama` as an alias) |
-| `--text-splitter` | `semantic` | Chunking strategy: `semantic` or `none` |
+| `--object-store` | _(R2 with local fallback)_ | `local` or `r2` for image storage |
+| `--max-slides N` | `15` | Soft slide target (Planner adjusts based on content density) |
+| `--max-cycles N` | `4` | Maximum critic/rewrite review cycles before acceptance or replan. |
 | `--llm-config PATH` | `src/llm/config.dev.yaml` | LiteLLM Router config file |
 | `-i`, `--interactive` | off | Pause after each document extraction for confirmation |
 | `--skip-supervisor` | off | Skip critic/supervisor review and export after the first drafting wave |
 | `--no-logging` | _(logging on)_ | Disable Langfuse tracing |
+| `--text-splitter` | `semantic` | Chunking strategy: `semantic` or `none` |
 | `--force-replan` | off | Test/debug only: force up to two replans at review cap before acceptance |
 | `--force-accept-first-plan` | off | Force acceptance and export if cycle cap is reached on the first plan |
 | `--no-cache-control` | off | Disable prompt cache_control sent to the LLM provider |
