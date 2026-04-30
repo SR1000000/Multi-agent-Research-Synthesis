@@ -166,9 +166,9 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--no-cache-control",
-        action="store_true",
+        action="store_false",
         default=True,
-        help="Disable prompt cache_control sent to the LLM provider (contextualizer)",
+        help="Enable prompt cache_control sent to the LLM provider (contextualizer)",
     )
     parser.add_argument(
         "--no-context-batching",
