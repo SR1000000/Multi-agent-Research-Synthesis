@@ -1,5 +1,7 @@
 # Multi-Agent Research Presentation Synthesizer
 
+By Vien Nguyen and Sheng Rao
+
 LangGraph-coordinated pipeline that ingests one or more research PDFs and
 produces a PowerPoint presentation through planning, parallel drafting, critic review,
 targeted rewrites, and export. Parallel work always fans back into a coordination
