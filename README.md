@@ -5,6 +5,11 @@ produces a PowerPoint presentation through planning, parallel drafting, critic r
 targeted rewrites, and export. Parallel work always fans back into a coordination
 checkpoint before the Supervisor decides whether to accept, revise, or replan.
 
+## Project Documentation
+
+> [!IMPORTANT]
+> For a deep dive into the system architecture, database schemas, and design philosophy, please refer to the **[.design](.design/)** directory. This folder contains detailed markdown files covering the graph flow, document processing pipeline, and persistence layers.
+
 ## Setup
 
 ### 1. Python 3.11+
@@ -203,7 +208,70 @@ The Supervisor is the session's decision-maker. It evaluates critic results afte
 - **revise** → launches targeted parallel rewrites for actionable groups or slides; a follow-up critic cycle runs automatically after rewrites complete
 - **replan** → returns to the Planner when the review cycle cap is hit or persistent structural issues remain unresolved
 
-The default review cap is 4 critic/rewrite cycles, and the run can attempt up to 2 full replans. If the replan budget is exhausted while critical issues remain, the graph can end without exporting. Use `--skip-supervisor` to bypass the supervisor loop and export directly after the first drafting wave.
+The default review cap is 4 critic/rewrite cycles, and the run can attempt up to 2 full replans. If the replan budget is exhausted while critical issues remain, the graph can end without exporting. Use `--force-accept-first-plan` if you are concerned with time to have the supervisor accept the best-seen draft at cycle cap, instead of requesting replans.
+
+---
+
+## Source Structure
+
+### Core
+- `main.py`: CLI entry point; wires configuration, document processing, retrieval tools, graph execution, and export.
+- `src/graph.py`: Builds the LangGraph workflow and connects planner, executor, writers, critics, and supervisor.
+- `src/state.py`: Shared Pydantic and TypedDict schemas for plans, slide groups, review state, and graph state.
+- `src/util.py`: Shared utility helpers.
+
+### Agents
+- `src/agents/planner.py`: Orchestrates high-level presentation architecture and planning.
+- `src/agents/plan_executor.py`: Coordinates fan-out/fan-in dispatch for slide writers, critics, rewrites, and supervisor handoffs.
+- `src/agents/slide_writer.py`: Generates initial slide drafts and targeted rewrites from research context.
+- `src/agents/slide_critic.py`: Runs grounding and narrative review passes.
+- `src/agents/supervisor.py`: Primary decision-maker for agent routing and flow control.
+- `src/agents/base.py`: Shared LLM-agent base classes and structured-output helpers.
+- `src/agents/prompts/`: Prompt builders and shared prompt formatting utilities.
+- `src/agents/__init__.py`: Package initialization for agents.
+
+### LLM & Routing
+- `src/llm/llm.py`: Completion interface and LiteLLM router initialization.
+- `src/llm/config.sample.yaml`: Template for LiteLLM router configuration.
+- `src/llm/__init__.py`: Package initialization for LLM components.
+
+### Processing & Ingestion
+- `src/processing/document/processor.py`: Orchestrates OCR, chunking, contextualization, embedding, and database persistence.
+- `src/processing/document/schema.py`: Dataclasses and Pydantic models for extracted chunks, images, tables, equations, metadata, and manifests.
+- `src/processing/document/backend_base.py`: OCR backend interface.
+- `src/processing/document/backends/`: OCR backend implementations and reference backends; `llama_parse_backend.py` is the supported runtime backend.
+- `src/processing/document/chunks.py`: Chunk conversion and normalization helpers.
+- `src/processing/document/_common.py`: Shared document-processing constants and helpers.
+- `src/processing/document/__init__.py`: Public document-processing exports.
+- `src/processing/context/contextualizer.py`: LLM contextualization for chunks and extracted artifacts.
+- `src/processing/context/document.py`: Document-level context generation and serialization helpers.
+- `src/processing/context/prompts.py`: Contextualization prompts.
+- `src/processing/chunker/`: Text splitting configuration, provider, and semantic splitter implementation.
+- `src/processing/embedder/`: Embedding interfaces, provider selection, and sentence-transformer implementation.
+- `src/processing/export/`: PowerPoint export builders, including Pandoc/PPTX builders and `reference.pptx`.
+
+### Memory & Retrieval
+- `src/memory/research/database.py`: SQLite database wrapper with sqlite-vec setup and persistence/retrieval methods.
+- `src/memory/research/schema.py`: SQLite DDL and persisted slide/image metadata schemas.
+- `src/memory/research/document.py`: Document, chunk, image, table, equation, and context persistence helpers.
+- `src/memory/research/slide.py`: Proto-slide and review-event persistence helpers.
+- `src/memory/research/retrieval.py`: Retrieval query helpers, FTS maintenance, and retrieved-context persistence.
+- `src/memory/research/replan_backup.py`: Debug snapshot backup support for replans.
+- `src/memory/research/config.py`: Storage configuration and table-name constants.
+- `src/memory/objectstore/`: Local and Cloudflare R2 object-store implementations plus image-upload helpers.
+- `src/memory/provider/provider.py`: Abstract database-provider interface.
+- `src/memory/scripts/`: Database maintenance and utility scripts.
+- `src/memory/__init__.py`: Package initialization for memory components.
+- `src/retriever/retriever.py`: Vector similarity search implementation.
+- `src/retriever/retrieval_text.py`: Text normalization helpers for retrieved chunks and artifacts.
+- `src/retriever/__init__.py`: Package initialization for retrieval.
+
+### Tools & Logging
+- `src/tools/rag.py`: RAG-specific tools for document and image retrieval.
+- `src/tools/registry.py`: Central registration and binding for agent tools.
+- `src/tools/__init__.py`: Package initialization for tools.
+- `src/logging/logger.py`: Event logging and Langfuse telemetry integration.
+- `src/logging/__init__.py`: Package initialization for logging.
 
 ---
 
@@ -214,8 +282,8 @@ The default review cap is 4 critic/rewrite cycles, and the run can attempt up to
 
 ### Validation Error Dumps
 
-When an LLM response fails Pydantic schema validation, the full error and offending JSON are written to `validation_errors/` (git-ignored). The terminal shows a one-liner with the path. The folder is cleared at the start of every run.
+When an LLM response fails Pydantic schema validation, the full error and offending JSON are written to `validation_errors/` (git-ignored).  The LLM call is retried, with the validation error included in the prompt. The terminal shows a one-liner with the path.  The folder is cleared at the start of every run, not the end, so the contents can be examined after finishing a run.
 
-```
-[validation] 3 error dump(s) written to validation_errors/
-```
+---
+
+_Note: Most of the code in this repository was developed with significant assistance from AI coding models._
