@@ -27,7 +27,9 @@ The pipeline uses the **Strategy** pattern: each backend subclasses `OCRBackend`
 
 1. **Cache** — SHA-256 of the PDF; if `db.document_exists(hash)`, return `load_document_by_hash` (skips parse and embedding).
 2. **Extract** — `backend.extract(path)`; result gets `content_hash` and `run_id` as set by the backend / caller.
-3. **Contextualize** — optional `Contextualizer` (see `schema.py`); **`main.py` does not pass one**, so this step is unused in the default app.
+3. **Contextualize** — Two distinct contextualizers are injected by `main.py` into `DocProcessor`:
+   - **`Contextualizer`** (`src/processing/context/contextualizer.py`): Runs batch LLM calls to produce localized `contextualized_text` for each chunk, image, table, and equation. Supports `--no-cache-control` and `--no-context-batching` flags. Output is used for the embedder and FTS index.
+   - **`DocumentContextualizer`** (`src/processing/context/document.py`): Runs a separate LLM pass to produce a document-level structured summary (section outline, paper metadata) stored in `documents.document_context`. This is a distinct second stage with its own config.
 4. **Embed** — if an embedder is provided, each chunk is embedded using `contextualized_text` when non-empty, else `text`; vectors are stored on the `ExtractionResult` for DB persistence.
 5. **Verify** — `_common.verify_extraction_result` checks consistency.
 6. **Persist** — optional debug JSON dump via the logger; then `db.save_document` when a database is configured.

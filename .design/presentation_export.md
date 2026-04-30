@@ -66,13 +66,17 @@ Key rendering details:
 pypandoc.convert_text(
     markdown,
     "pptx",
-    format="markdown+tex_math_dollars",
+    format="markdown+tex_math_dollars-implicit_figures",
     outputfile=str(output_path),
-    extra_args=["--standalone"],
+    extra_args=extra_args,
 )
 ```
 
-The `tex_math_dollars` Markdown extension enables `$...$` (inline) and `$$...$$` (display) math parsing. Pandoc converts LaTeX math to **OMML** (Office Math Markup Language), which PowerPoint renders natively without any plugins.
+The `tex_math_dollars` Markdown extension enables `$...$` (inline) and `$$...$$` (display) math parsing. Pandoc converts LaTeX math to **OMML** (Office Math Markup Language), which PowerPoint renders natively without any plugins. The `-implicit_figures` flag prevents Pandoc from treating isolated images as figures, avoiding repeated alt text as visible captions.
+
+#### Reference Doc Behaviour
+A **bundled default** template (`reference.pptx`) lives at `src/processing/export/reference.pptx` and is used automatically via the `--reference-doc` flag if no custom reference doc is provided. 
+If a reference doc is supplied but Pandoc fails during conversion (e.g., due to an incompatible template), `PandocBuilder` automatically retries the conversion **without the template** and logs a warning, instead of crashing the export pipeline.
 
 ### Markdown & LaTeX in Bullet Text
 
@@ -90,6 +94,25 @@ The `BulletPoint.text` field and `sub_bullets` strings support Markdown and LaTe
 
 Equations should only be included when they are central to the slide's `key_message` or represent a landmark result from the source material.
 
+### Image Embedding
+
+Slides can include an image via `SlideContent.media_id`, which references an image ID in `research.db`.
+`PandocBuilder` resolves the image at build time, checking three sources in order: local `storage_path`, object store download (for `http(s)://` paths), then inline `base64_data`. Images are written to a temporary directory for the duration of the Pandoc conversion and cleaned up automatically.
+
+The `layout` field on `SlideContent` drives the Pandoc column/div structure used to position the image:
+
+| Layout | Rendering |
+|---|---|
+| `media_left` | Image (40%) left column, bullets (60%) right column |
+| `media_right` | Bullets (60%) left, image (40%) right |
+| `media_top` | Image above bullet list |
+| `media_bottom` | Bullet list above image |
+| `media_center` | Image centered using 20%/60%/20% gutter columns |
+| `two_column` | No image; bullets split at midpoint into two equal columns |
+| `title_and_body` | No image; standard bullet list (default) |
+
+A `sanitize_xml_text()` pass repairs Type 1 PDF encoding artifacts (e.g. raw glyph bytes promoted to U+00xx) and strips XML 1.0 illegal characters from all text before it reaches Pandoc.
+
 ---
 
 ## Archival Implementation: `PptxBuilder`
@@ -98,6 +121,8 @@ Equations should only be included when they are central to the slide's `key_mess
 **Dependency**: `python-pptx>=1.0.0`
 
 This was the original export engine. It generates `.pptx` files directly using the `python-pptx` library with no intermediate Markdown step. It does not support LaTeX math rendering.
+
+Future work: implement python-pptx as an additional layer after Pandoc to add autofit capabilities to all text boxes in the presentation, fixing the issues with too much text overflowing the slides.  Pandoc is unable to do this.
 
 ---
 
@@ -124,13 +149,7 @@ Both `PandocBuilder` and the archival `PptxBuilder` conform to the `build()` con
 
 ### Adding New Layouts
 
-For `PandocBuilder`, layout literals in `SlideContent` are not directly mapped — Pandoc's default PPTX template is used. To apply custom slide layouts:
+For `PandocBuilder`, while layouts map directly to Pandoc columns for positioning, you can further customize styles:
 
 1.  Provide a reference `.pptx` template via `--reference-doc=template.pptx` in `extra_args`.
 2.  Pandoc will use the layout from the reference doc whose name matches the slide level.
-
-For the archival `PptxBuilder`:
-
-1.  Update the shared slide-content schema.
-2.  Update `_LAYOUT_MAP` in `PptxBuilder` to map that literal to a template layout.
-3.  Add any custom logic in `_set_body` or `_write_run` if the layout requires special styling.

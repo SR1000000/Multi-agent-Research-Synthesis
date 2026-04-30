@@ -5,6 +5,11 @@ produces a PowerPoint presentation through planning, parallel drafting, critic r
 targeted rewrites, and export. Parallel work always fans back into a coordination
 checkpoint before the Supervisor decides whether to accept, revise, or replan.
 
+## Project Documentation
+
+> [!IMPORTANT]
+> For a deep dive into the system architecture, database schemas, and design philosophy, please refer to the **[.design](.design/)** directory. This folder contains detailed markdown files covering the graph flow, document processing pipeline, and persistence layers.
+
 ## Setup
 
 ### 1. Python 3.11+
@@ -13,7 +18,7 @@ checkpoint before the Supervisor decides whether to accept, revise, or replan.
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate          # Linux/Mac: source .venv/bin/activate
+.venv\Scripts\activate          # Linux/Mac: source .venv/bin/activate   bash on Windows: source .venv/Scripts/activate
 pip install -r requirements.txt
 ```
 
@@ -29,7 +34,7 @@ copy .env.sample .env
 
 See `.env.sample` for all supported keys (LLM providers, Langfuse, Cloudflare R2).
 
-For LlamaParse, set **`LLAMA_CLOUD_API_KEY`** in your `.env`, else document processing will fail. You can get your API key from [LlamaParse](https://cloud.llamaindex.ai/).
+For LlamaParse, set **`LLAMA_CLOUD_API_KEY`** in your `.env`, else document processing will fail. You can get your API key from [LlamaParse](https://cloud.llamaindex.ai/).  Free tier signup gives you 10,000 credits, which is enough to process roughly 1000 pages of PDF.
 
 ### 4. Langfuse Logging (optional)
 
@@ -46,6 +51,7 @@ Disable with `--no-logging` as a commandline argument.
 ### 5. LLM providers and routing
 
 Runtime LLM comes from a **LiteLLM Router** built from YAML. The app reads **`src/llm/config.dev.yaml`** at startup (see `init_from_config` in `src/llm/llm.py`).
+If there is no `config.dev.yaml` file, the app will copy the sample config file to `config.dev.yaml`.
 
 #### Create your local `config.dev.yaml`
 
@@ -76,6 +82,9 @@ The pipeline uses router group aliases such as `planner`, `slides`, `critic`, `s
 python main.py --pdf path/to/paper.pdf
 ```
 
+For the time being, `--force-accept-first-plan` is recommended since replans can take a long time to complete for only marginal improvements.  The first few cycles are usually enough to get a presentation without major issues.
+If you are using the document processing contextualizer AND you are severely rate/token-limited (e.g. you are using the free tier of all your LLM providers), it is recommended to use the `--no-context-batching` flag to disable the batching of LLM calls in the contextualizer (which will introduce many pages of deployment failures if you don't have enough fallback models).  The program can power through a lot of pages with this flag, but it will be much slower.  Any artifacts or chunks that are not contextualized because of llm call failures will be added to a backlog for re-contextualization in the next run (+cache hit) of the program.
+
 ### Multiple PDFs
 
 Pass multiple paths to generate a single presentation from several papers:
@@ -98,7 +107,7 @@ The default query is `"Explain this paper to an audience of laypeople"`.
 
 ### Output
 
-The finished presentation is saved as a `.pptx` file in `output/` by default, or to a custom directory via `--output-dir`. The filename is derived from the first paper's title (or the session ID if no title is detected).
+The finished presentation is saved as a `.pptx` file in `output/` by default, or to a custom directory via `--output-dir`. The filename is derived from the slide deck's title (or the session ID if no title is present).
 
 ---
 
@@ -110,8 +119,6 @@ The finished presentation is saved as a `.pptx` file in `output/` by default, or
 |---|---|---|
 | `--pdf PATH [PATH ...]` | `.samples/Transformers.pdf` | One or more PDF files to process |
 | `--query TEXT` | `"Explain this paper to an audience of laypeople"` | Presentation query / audience |
-| `--max-slides N` | `15` | Soft slide target (Planner adjusts based on content density) |
-| `--object-store` | _(R2 with local fallback)_ | `local` or `r2` for image storage |
 | `--output-dir PATH` | `output/` | Directory where the generated `.pptx` will be written |
 | `--reference-doc PATH` | bundled template | Optional PowerPoint template passed to Pandoc |
 
@@ -119,13 +126,14 @@ The finished presentation is saved as a `.pptx` file in `output/` by default, or
 
 | Argument | Default | Description |
 |---|---|---|
-| `--max-cycles N` | `4` | Maximum critic/rewrite review cycles before acceptance, replan, or terminal failure |
-| `--processor` | `llama_parse` | Document processor backend: `llama_parse` (or `llama` as an alias) |
-| `--text-splitter` | `semantic` | Chunking strategy: `semantic` or `none` |
+| `--object-store` | _(R2 with local fallback)_ | `local` or `r2` for image storage |
+| `--max-slides N` | `15` | Soft slide target (Planner adjusts based on content density) |
+| `--max-cycles N` | `4` | Maximum critic/rewrite review cycles before acceptance or replan. |
 | `--llm-config PATH` | `src/llm/config.dev.yaml` | LiteLLM Router config file |
 | `-i`, `--interactive` | off | Pause after each document extraction for confirmation |
 | `--skip-supervisor` | off | Skip critic/supervisor review and export after the first drafting wave |
 | `--no-logging` | _(logging on)_ | Disable Langfuse tracing |
+| `--text-splitter` | `semantic` | Chunking strategy: `semantic` or `none` |
 | `--force-replan` | off | Test/debug only: force up to two replans at review cap before acceptance |
 | `--force-accept-first-plan` | off | Force acceptance and export if cycle cap is reached on the first plan |
 | `--no-cache-control` | off | Disable prompt cache_control sent to the LLM provider |
@@ -203,7 +211,70 @@ The Supervisor is the session's decision-maker. It evaluates critic results afte
 - **revise** → launches targeted parallel rewrites for actionable groups or slides; a follow-up critic cycle runs automatically after rewrites complete
 - **replan** → returns to the Planner when the review cycle cap is hit or persistent structural issues remain unresolved
 
-The default review cap is 4 critic/rewrite cycles, and the run can attempt up to 2 full replans. If the replan budget is exhausted while critical issues remain, the graph can end without exporting. Use `--skip-supervisor` to bypass the supervisor loop and export directly after the first drafting wave.
+The default review cap is 4 critic/rewrite cycles, and the run can attempt up to 2 full replans. If the replan budget is exhausted while critical issues remain, the graph can end without exporting. Use `--force-accept-first-plan` if you are concerned with time to have the supervisor accept the best-seen draft at cycle cap, instead of requesting replans.
+
+---
+
+## Source Structure
+
+### Core
+- `main.py`: CLI entry point; wires configuration, document processing, retrieval tools, graph execution, and export.
+- `src/graph.py`: Builds the LangGraph workflow and connects planner, executor, writers, critics, and supervisor.
+- `src/state.py`: Shared Pydantic and TypedDict schemas for plans, slide groups, review state, and graph state.
+- `src/util.py`: Shared utility helpers.
+
+### Agents
+- `src/agents/planner.py`: Orchestrates high-level presentation architecture and planning.
+- `src/agents/plan_executor.py`: Coordinates fan-out/fan-in dispatch for slide writers, critics, rewrites, and supervisor handoffs.
+- `src/agents/slide_writer.py`: Generates initial slide drafts and targeted rewrites from research context.
+- `src/agents/slide_critic.py`: Runs grounding and narrative review passes.
+- `src/agents/supervisor.py`: Primary decision-maker for agent routing and flow control.
+- `src/agents/base.py`: Shared LLM-agent base classes and structured-output helpers.
+- `src/agents/prompts/`: Prompt builders and shared prompt formatting utilities.
+- `src/agents/__init__.py`: Package initialization for agents.
+
+### LLM & Routing
+- `src/llm/llm.py`: Completion interface and LiteLLM router initialization.
+- `src/llm/config.sample.yaml`: Template for LiteLLM router configuration.
+- `src/llm/__init__.py`: Package initialization for LLM components.
+
+### Processing & Ingestion
+- `src/processing/document/processor.py`: Orchestrates OCR, chunking, contextualization, embedding, and database persistence.
+- `src/processing/document/schema.py`: Dataclasses and Pydantic models for extracted chunks, images, tables, equations, metadata, and manifests.
+- `src/processing/document/backend_base.py`: OCR backend interface.
+- `src/processing/document/backends/`: OCR backend implementations and reference backends; `llama_parse_backend.py` is the supported runtime backend.
+- `src/processing/document/chunks.py`: Chunk conversion and normalization helpers.
+- `src/processing/document/_common.py`: Shared document-processing constants and helpers.
+- `src/processing/document/__init__.py`: Public document-processing exports.
+- `src/processing/context/contextualizer.py`: LLM contextualization for chunks and extracted artifacts.
+- `src/processing/context/document.py`: Document-level context generation and serialization helpers.
+- `src/processing/context/prompts.py`: Contextualization prompts.
+- `src/processing/chunker/`: Text splitting configuration, provider, and semantic splitter implementation.
+- `src/processing/embedder/`: Embedding interfaces, provider selection, and sentence-transformer implementation.
+- `src/processing/export/`: PowerPoint export builders, including Pandoc/PPTX builders and `reference.pptx`.
+
+### Memory & Retrieval
+- `src/memory/research/database.py`: SQLite database wrapper with sqlite-vec setup and persistence/retrieval methods.
+- `src/memory/research/schema.py`: SQLite DDL and persisted slide/image metadata schemas.
+- `src/memory/research/document.py`: Document, chunk, image, table, equation, and context persistence helpers.
+- `src/memory/research/slide.py`: Proto-slide and review-event persistence helpers.
+- `src/memory/research/retrieval.py`: Retrieval query helpers, FTS maintenance, and retrieved-context persistence.
+- `src/memory/research/replan_backup.py`: Debug snapshot backup support for replans.
+- `src/memory/research/config.py`: Storage configuration and table-name constants.
+- `src/memory/objectstore/`: Local and Cloudflare R2 object-store implementations plus image-upload helpers.
+- `src/memory/provider/provider.py`: Abstract database-provider interface.
+- `src/memory/scripts/`: Database maintenance and utility scripts.
+- `src/memory/__init__.py`: Package initialization for memory components.
+- `src/retriever/retriever.py`: Vector similarity search implementation.
+- `src/retriever/retrieval_text.py`: Text normalization helpers for retrieved chunks and artifacts.
+- `src/retriever/__init__.py`: Package initialization for retrieval.
+
+### Tools & Logging
+- `src/tools/rag.py`: RAG-specific tools for document and image retrieval.
+- `src/tools/registry.py`: Central registration and binding for agent tools.
+- `src/tools/__init__.py`: Package initialization for tools.
+- `src/logging/logger.py`: Event logging and Langfuse telemetry integration.
+- `src/logging/__init__.py`: Package initialization for logging.
 
 ---
 
@@ -214,8 +285,8 @@ The default review cap is 4 critic/rewrite cycles, and the run can attempt up to
 
 ### Validation Error Dumps
 
-When an LLM response fails Pydantic schema validation, the full error and offending JSON are written to `validation_errors/` (git-ignored). The terminal shows a one-liner with the path. The folder is cleared at the start of every run.
+When an LLM response fails Pydantic schema validation, the full error and offending JSON are written to `validation_errors/` (git-ignored).  The LLM call is retried, with the validation error included in the prompt. The terminal shows a one-liner with the path.  The folder is cleared at the start of every run, not the end, so the contents can be examined after finishing a run.
 
-```
-[validation] 3 error dump(s) written to validation_errors/
-```
+---
+
+_Note: Most of the code in this repository was developed with significant assistance from AI coding models._

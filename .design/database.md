@@ -21,7 +21,7 @@ Schema DDL and Pydantic models for slide JSON share `src/memory/research/schema.
 |------|
 | One row per ingested PDF. Primary key `id` is the `doc_id` used everywhere else. |
 
-Notable columns: `source_path`, `filename`, full-document `markdown`, `page_count`, `content_hash` (SHA-256 of file bytes), optional `run_id` / `schema` (extraction metadata), `paper_metadata` (JSON), `created_at`.
+Notable columns: `source_path`, `filename`, full-document `markdown`, `page_count`, `content_hash` (SHA-256 of file bytes), optional `run_id` / `schema` (extraction metadata), `paper_metadata` (JSON), `document_context` (JSON structured summary), `created_at`.
 
 ### `text_chunks`
 
@@ -49,6 +49,13 @@ HTML (or rich) table `content`, dimensions, `page_number`, and contextual fields
 
 `DocProcessor.process_document` hashes the PDF, calls `document_exists` / `load_document_by_hash` on a cache hit, and otherwise runs extraction, optional embedding, verification, then `save_document`.
 
+### Full-Text Search (FTS) and Retrieval
+
+- **`artifact_search_fts`**: FTS5 virtual table for keyword retrieval across chunks, tables, equations, and images.
+- **`fts_rowid_map`**: Mapping table to manage FTS rowids for reliable updates and deletes.
+- **`artifact_search_source`**: View unifying chunks, tables, equations, and images to provide a normalized shape for searchable text.
+- **`retrieved_chunks`**: Stores the agent retrieval call log for RAG tracing, keyed by `session_id`, `call_id`, `kind`, `artifact_id`, and `plan_number`.
+
 ## Proto-slides workspace (`proto_slides`)
 
 Cleared at the start of each `main.py` run while the document tables above are left intact. During graph execution, this table holds the latest draft for each content slide. Rewrites replace the active slide content while preserving the previous revision snapshot for debugging and review context.
@@ -60,6 +67,10 @@ Cleared at the start of each `main.py` run while the document tables above are l
 | `chunk_references` | JSON list of `text_chunks.id` values grounding the slide. |
 | `created_at`, `updated_at` | Timestamps. |
 | `previous_content`, `previous_chunk_references`, `previous_updated_at` | Prior revision snapshot for rewrites. |
+
+### `best_proto_slides`
+
+Immutable snapshot of the best-seen proto-slides across critic cycles, managed by the Supervisor. Promoted atomically (DELETE + INSERT) when a cycle produces strictly better severity counts. Cleared at run start alongside `proto_slides` and `slide_review_events`.
 
 ## Review audit (`slide_review_events`)
 
