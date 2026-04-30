@@ -33,6 +33,8 @@ providers:
       api_base: "os.environ/OPENROUTER_BASE_URL"
     models:
       nvidia/nemotron-3-super-120b-a12b:free: {}
+      qwen/qwen3-coder:free: {}
+      qwen/qwen3-next-80b-a3b-instruct:free: {}
       inclusionai/ling-2.6-flash:free: {}
       google/gemma-4-26b-a4b-it:free:
         max_parallel_requests: 2
@@ -79,6 +81,9 @@ providers:
       mistral-large-2411:
         tpm: 300000
         rpm: 60
+      mistral-medium-latest:
+        tpm: 375000
+        rpm: 25
       mistral-medium-2508:
         tpm: 375000
         rpm: 25
@@ -103,20 +108,18 @@ providers:
     shared:
       api_key: "os.environ/NVIDIA_NIM_API_KEY"
     models:
-      deepseek-ai/deepseek-v4-flash:
-        rpm: 40
-      deepseek-ai/deepseek-v4-pro:
-        rpm: 40
+      #deepseek-ai/deepseek-v4-flash: {}
+      #deepseek-ai/deepseek-v4-pro: {}
       deepseek-ai/deepseek-v3.2:
         rpm: 40
-      z-ai/glm4.7: {}
-      nvidia/nemotron-4-340b-reward: {}
+      #z-ai/glm4.7: {}  # empty assistant message?
+      nvidia/nemotron-4-340b-reward: {} # Unsupported parameters?
       mistralai/mistral-large-3-675b-instruct-2512: {}
-      mistralai/mistral-medium-3-instruct: {}
-      mistralai/mistral-nemotron: {}
-      vlm/google/paligemma: {}
+      mistralai/mistral-nemotron:
+        rpm: 40
+      z-ai/glm4.7: 
+        rpm: 40
       google/gemma-3-27b-it: {}
-      microsoft/phi-3.5-vision-instruct: {}
       microsoft/phi-4-multimodal-instruct: {}
 
   groq:
@@ -138,7 +141,7 @@ groups:
 
   planner:
     models:
-      - "mistral/magistral-medium-latest"
+      - "nvidia_nim/deepseek-ai/deepseek-v3.2"
       - "ollama/qwen3.5:397b-cloud"
       - "mistral/mistral-large-2411"
     fallbacks:
@@ -149,6 +152,7 @@ groups:
     models:
       - "mistral/mistral-medium-2508"
       - "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+      - "nvidia_nim/mistralai/mistral-nemotron"
     fallbacks:
       - "planner"
       - "fallback"
@@ -164,7 +168,11 @@ groups:
   slides:
     models:
       - "mistral/mistral-large-2411"
-      - "mistral/mistral-medium-2508"
+      #- "nvidia_nim/mistralai/mistral-large-3-675b-instruct-2512"
+      - "mistral/mistral-medium-latest"
+      - "nvidia_nim/z-ai/glm4.7"
+      - "nvidia_nim/deepseek-ai/deepseek-v3.2"
+      - "openrouter/qwen/qwen3-next-80b-a3b-instruct:free"
       - "gemini/gemini-3.1-flash-lite-preview"
     fallbacks:
       - "slides"
@@ -172,8 +180,10 @@ groups:
 
   critic:
     models:
+      - "nvidia_nim/mistralai/mistral-nemotron"
       - "mistral/magistral-medium-latest"
       - "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+      - "openrouter/qwen/qwen3-coder:free"
       - "ollama/qwen3.5:397b-cloud"
     fallbacks:
       - "critic"
@@ -195,6 +205,7 @@ groups:
       - "ollama/qwen3-vl:235b-instruct-cloud"
       - "ollama/qwen3-vl:235b-cloud"
       - "ollama/gemini-3-flash-preview:cloud"
+      - "nvidia_nim/microsoft/phi-4-multimodal-instruct"
       - "openrouter/google/gemma-4-26b-a4b-it:free"
       - "openrouter/google/gemma-4-31b-it:free"
       - "openrouter/google/gemma-3-12b-it:free"
@@ -220,6 +231,7 @@ groups:
       - "mistral/mistral-large-2411"
       - "mistral/mistral-medium-2508"
       - "mistral/magistral-medium-latest"
+      - "nvidia_nim/z-ai/glm4.7"
       - "ollama/minimax-m2.7:cloud"
       - "gemini/gemma-4-31b-it"
       - "ollama/gemma4:31b-cloud"
@@ -230,8 +242,8 @@ litellm:
   default_group: "app"
   router:
     num_retries: 1
-    retry_after: 5
-    cooldown_time: 60
+    retry_after: 3
+    cooldown_time: 30
     enable_pre_call_checks: true
     timeout: 120
-    routing_strategy: "least-busy"
+    routing_strategy: "latency-based-routing"
