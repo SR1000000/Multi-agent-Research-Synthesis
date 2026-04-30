@@ -18,7 +18,7 @@ checkpoint before the Supervisor decides whether to accept, revise, or replan.
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate          # Linux/Mac: source .venv/bin/activate
+.venv\Scripts\activate          # Linux/Mac: source .venv/bin/activate   bash on Windows: source .venv/Scripts/activate
 pip install -r requirements.txt
 ```
 
@@ -83,8 +83,7 @@ python main.py --pdf path/to/paper.pdf
 ```
 
 For the time being, `--force-accept-first-plan` is recommended since replans can take a long time to complete for only marginal improvements.  The first few cycles are usually enough to get a presentation without major issues.
-If you are using the document processing contextualizer, it is recommended to use the `--no-cache-control` flag to disable the cache control sent to the LLM provider (which is a not very well-supported by LiteLLM).
-If you are using the document processing contextualizer AND you are severely rate/token-limited (e.g. you are using the free tier of all your LLM providers), it is recommended to use the `--no-context-batching` flag to disable the batching of LLM calls in the contextualizer (which will introduce many pages of deployment failures if you don't have enough fallback models).
+If you are using the document processing contextualizer AND you are severely rate/token-limited (e.g. you are using the free tier of all your LLM providers), it is recommended to use the `--no-context-batching` flag to disable the batching of LLM calls in the contextualizer (which will introduce many pages of deployment failures if you don't have enough fallback models).  The program can power through a lot of pages with this flag, but it will be much slower.
 
 ### Multiple PDFs
 

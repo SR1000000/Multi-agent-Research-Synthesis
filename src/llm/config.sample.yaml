@@ -114,10 +114,7 @@ providers:
         rpm: 40
       #z-ai/glm4.7: {}  # empty assistant message?
       nvidia/nemotron-4-340b-reward: {} # Unsupported parameters?
-      mistralai/mistral-large-3-675b-instruct-2512: {}
       mistralai/mistral-nemotron:
-        rpm: 40
-      z-ai/glm4.7: 
         rpm: 40
       google/gemma-3-27b-it: {}
       microsoft/phi-4-multimodal-instruct: {}
@@ -168,7 +165,6 @@ groups:
   slides:
     models:
       - "mistral/mistral-large-2411"
-      #- "nvidia_nim/mistralai/mistral-large-3-675b-instruct-2512"
       - "mistral/mistral-medium-latest"
       - "nvidia_nim/z-ai/glm4.7"
       - "nvidia_nim/deepseek-ai/deepseek-v3.2"

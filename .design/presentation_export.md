@@ -122,7 +122,7 @@ A `sanitize_xml_text()` pass repairs Type 1 PDF encoding artifacts (e.g. raw gly
 
 This was the original export engine. It generates `.pptx` files directly using the `python-pptx` library with no intermediate Markdown step. It does not support LaTeX math rendering.
 
-Future work: implement python-pptx as an addtional layer after Pandoc to add autofit capabilities to all text boxes in the presentation, fixing the issues with too much text overflowing the slides.  Pandoc is unable to do this.
+Future work: implement python-pptx as an additional layer after Pandoc to add autofit capabilities to all text boxes in the presentation, fixing the issues with too much text overflowing the slides.  Pandoc is unable to do this.
 
 ---
 
