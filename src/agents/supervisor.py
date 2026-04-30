@@ -434,11 +434,39 @@ class SupervisorAgent(BaseLLMAgent):
         rewrites_required = {
             r["assignment_id"]: bool(r.get("actionable")) for r in critic_results
         }
-        history = []
+
+        # Single DB block: history load + best-seen promotion.
+        # By the time the supervisor is invoked the critic cycle has already
+        # completed, making this the earliest correct point to evaluate
+        # whether the current slide set beats the stored best.
+        history: list[dict] = []
         with ResearchDatabase() as research_db:
             history = research_db.list_review_events(
                 state["session_id"], plan_number=plan_number
             )
+            if critic_results:
+                all_slides = [
+                    s
+                    for s in (
+                        research_db.load_slide(n)
+                        for n in research_db.list_slide_numbers()
+                    )
+                    if s is not None
+                ]
+                promoted = research_db.check_promote_best_slides(
+                    slides=all_slides,
+                    severity_counts=severity_counts,
+                    cycle_number=cycle_number,
+                    plan_number=plan_number,
+                )
+                if promoted:
+                    self._logger.log(
+                        f"[supervisor] best-seen promoted: "
+                        f"plan={plan_number} cycle={cycle_number} "
+                        f"counts={severity_counts}"
+                    )
+
+
         recurring: dict[str, int] = {}
         for event in history:
             fingerprint = event.get("fingerprint")

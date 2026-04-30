@@ -206,3 +206,130 @@ def list_review_events(
         d["affected_slide_numbers"] = _row_affected_slide_numbers(row)
         result.append(d)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Best-seen proto-slide snapshot
+# ---------------------------------------------------------------------------
+
+def _is_better_severity(
+    current: dict[str, int],
+    stored: dict[str, int],
+) -> bool:
+    """Return True iff *current* severity counts are strictly better than *stored*.
+
+    Comparison is lexicographic by priority: critical → major → minor.
+    A lower count at the highest non-equal severity level wins.  Equal counts
+    return False so no unnecessary DB write is triggered.
+
+    This is a pure function with no side-effects — it is the single extension
+    point for richer scoring in future iterations.
+    """
+    for key in ("critical", "major", "minor"):
+        c, s = current.get(key, 0), stored.get(key, 0)
+        if c < s:
+            return True
+        if c > s:
+            return False
+    return False  # exactly equal — no update needed
+
+
+def check_promote_best_slides(
+    db,
+    slides: list[ProtoSlide],
+    severity_counts: dict[str, int],
+    cycle_number: int,
+    plan_number: int,
+) -> bool:
+    """Replace best_proto_slides with *slides* if *severity_counts* beats stored.
+
+    Reads severity_snapshot from any existing best row (LIMIT 1) and compares
+    via _is_better_severity.  On the very first call (empty table) the sentinel
+    {"critical": 999, "major": 999, "minor": 999} ensures promotion always fires.
+
+    Uses DELETE + INSERT inside a single transaction rather than INSERT OR REPLACE
+    so that stale rows from a prior plan with a different slide count cannot
+    survive into the new best set.
+
+    Returns True if the promotion occurred, False if the stored set was retained.
+    """
+    row = db._conn.execute(
+        "SELECT severity_snapshot FROM best_proto_slides LIMIT 1"
+    ).fetchone()
+    stored_counts: dict[str, int] = (
+        json.loads(row["severity_snapshot"])
+        if row
+        else {"critical": 999, "major": 999, "minor": 999}
+    )
+
+    if not _is_better_severity(current=severity_counts, stored=stored_counts):
+        return False
+
+    snapshot_json = json.dumps(severity_counts)
+    with db._conn:
+        db._conn.execute("DELETE FROM best_proto_slides")
+        db._conn.executemany(
+            """
+            INSERT INTO best_proto_slides
+                (slide_number, content, chunk_references,
+                 severity_snapshot, cycle_number, plan_number)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    slide.slide_number,
+                    slide.content.model_dump_json(),
+                    json.dumps(slide.chunk_references),
+                    snapshot_json,
+                    cycle_number,
+                    plan_number,
+                )
+                for slide in slides
+            ],
+        )
+    db._logger.log(
+        f"[ResearchDatabase] best_proto_slides promoted: "
+        f"plan={plan_number} cycle={cycle_number} counts={severity_counts}"
+    )
+    return True
+
+
+def load_best_slides(db) -> list[ProtoSlide]:
+    """Load all best-seen proto-slides ordered by slide_number ascending.
+
+    Returns an empty list if no best set has been promoted yet.
+    Deserialises content and chunk_references identically to load_slide().
+    """
+    rows = db._conn.execute(
+        "SELECT slide_number, content, chunk_references "
+        "FROM best_proto_slides ORDER BY slide_number ASC"
+    ).fetchall()
+    return [
+        ProtoSlide(
+            slide_number=row["slide_number"],
+            content=SlideContent.model_validate_json(row["content"]),
+            chunk_references=json.loads(row["chunk_references"]),
+        )
+        for row in rows
+    ]
+
+
+def load_best_severity_snapshot(db) -> dict[str, int] | None:
+    """Return the severity counts of the current best set, or None if empty.
+
+    Used at export time to log which cycle's slides are being exported.
+    """
+    row = db._conn.execute(
+        "SELECT severity_snapshot FROM best_proto_slides LIMIT 1"
+    ).fetchone()
+    return json.loads(row["severity_snapshot"]) if row else None
+
+
+def clear_best_proto_slides(db) -> None:
+    """Delete all rows from best_proto_slides.
+
+    Called on program start alongside clear_proto_slides() and
+    clear_slide_review_events() so every run begins with a clean slate.
+    """
+    with db._conn:
+        db._conn.execute("DELETE FROM best_proto_slides")

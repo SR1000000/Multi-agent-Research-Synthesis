@@ -289,6 +289,23 @@ CREATE TABLE IF NOT EXISTS proto_slides (
 );
 """
 
+# Immutable snapshot of the best-seen proto-slides set, managed by the
+# supervisor after each critic cycle.  Replaced atomically (DELETE + INSERT)
+# whenever a critic cycle produces strictly better severity counts than the
+# stored snapshot.  Cleared on program start alongside proto_slides and
+# slide_review_events.
+CREATE_BEST_PROTO_SLIDES_TABLE = """
+CREATE TABLE IF NOT EXISTS best_proto_slides (
+    slide_number      INTEGER PRIMARY KEY,
+    content           TEXT    NOT NULL,
+    chunk_references  TEXT    NOT NULL,
+    severity_snapshot TEXT    NOT NULL,
+    promoted_at       TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    cycle_number      INTEGER NOT NULL DEFAULT 0,
+    plan_number       INTEGER NOT NULL DEFAULT 0
+);
+"""
+
 CREATE_SLIDE_REVIEW_EVENTS_TABLE = """
 CREATE TABLE IF NOT EXISTS slide_review_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

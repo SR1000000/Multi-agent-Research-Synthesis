@@ -30,6 +30,7 @@ TABLE_NAMES = [
     "artifact_search_fts",
     "documents",
     "proto_slides",
+    "best_proto_slides",      # immutable best-seen snapshot; cleared on program start
     "retrieved_chunks",
     "slide_review_events"
 ]
