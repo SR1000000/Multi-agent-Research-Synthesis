@@ -173,15 +173,18 @@ Use `--object-store local` to skip R2 entirely.
 
 ```mermaid
 flowchart TD
-    preprocess[Document Processing] --> planner[Planner]
+    query[User Query] --> planner[Planner]
+    pdf["PDF(s)"] --> preprocess[Document Processing]
+    preprocess --> planner
     planner --> drafting["Parallel Drafting\n(one Slide Writer per group)"]
     drafting --> supervisor{Supervisor}
     supervisor -->|"start review"| critic["Parallel Critic Review\n(grounding + narrative)"]
     critic --> supervisor
+    supervisor -->|accept| export[PowerPoint Export]
     supervisor -->|revise| rewrite["Parallel Rewrites\n(affected groups only)"]
     rewrite --> critic
     supervisor -->|replan| planner
-    supervisor -->|accept| export[PowerPoint Export]
+
 ```
 
 After document processing, the Planner creates a presentation plan and slide groups.
