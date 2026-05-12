@@ -295,6 +295,3 @@ The default review cap is 4 critic/rewrite cycles, and the run can attempt up to
 
 When an LLM response fails Pydantic schema validation, the full error and offending JSON are written to `validation_errors/` (git-ignored).  The LLM call is retried, with the validation error included in the prompt. The terminal shows a one-liner with the path.  The folder is cleared at the start of every run, not the end, so the contents can be examined after finishing a run.
 
----
-
-_Note: Most of the code in this repository was developed with significant assistance from AI coding models._
